@@ -216,7 +216,10 @@ async fn attach_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     let tmux_session = crate::tmux::Session::new(&inst.id, &inst.title)?;
 
     if !tmux_session.exists() {
-        bail!("Session is not running. Start it first with: agent-of-empires session start {}", args.identifier);
+        bail!(
+            "Session is not running. Start it first with: agent-of-empires session start {}",
+            args.identifier
+        );
     }
 
     tmux_session.attach()?;
@@ -242,7 +245,9 @@ async fn show_session(profile: &str, args: ShowArgs) -> Result<()> {
                     let tmux_name = crate::tmux::Session::generate_name(&i.id, &i.title);
                     tmux_name == session_name
                 })
-                .ok_or_else(|| anyhow::anyhow!("Current tmux session is not an Agent of Empires session"))?
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Current tmux session is not an Agent of Empires session")
+                })?
         } else {
             bail!("Not in a tmux session. Specify a session ID or run inside tmux.");
         }
@@ -288,8 +293,7 @@ async fn current_session(args: CurrentArgs) -> Result<()> {
         .ok()
         .and_then(|_| crate::tmux::get_current_session_name());
 
-    let session_name = current_session
-        .ok_or_else(|| anyhow::anyhow!("Not in a tmux session"))?;
+    let session_name = current_session.ok_or_else(|| anyhow::anyhow!("Not in a tmux session"))?;
 
     // Search all profiles for this session
     let profiles = crate::session::list_profiles()?;

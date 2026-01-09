@@ -191,7 +191,9 @@ impl Instance {
             anyhow::bail!("Fork is only supported for Claude sessions");
         }
 
-        let claude_id = self.claude_session_id.as_ref()
+        let claude_id = self
+            .claude_session_id
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No Claude session ID to fork"))?;
 
         let mut forked = Self::new(new_title, &self.project_path);

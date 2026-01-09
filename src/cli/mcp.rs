@@ -117,7 +117,10 @@ async fn list_mcps(args: McpListArgs) -> Result<()> {
                 description: config.description.clone().unwrap_or_default(),
                 command: config.command.clone(),
                 url: config.url.clone(),
-                transport: config.transport.clone().unwrap_or_else(|| "stdio".to_string()),
+                transport: config
+                    .transport
+                    .clone()
+                    .unwrap_or_else(|| "stdio".to_string()),
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&mcp_list)?);
@@ -154,7 +157,9 @@ async fn attached_mcps(profile: &str, args: McpAttachedArgs) -> Result<()> {
                     let tmux_name = crate::tmux::Session::generate_name(&i.id, &i.title);
                     tmux_name == session_name
                 })
-                .ok_or_else(|| anyhow::anyhow!("Current tmux session is not an Agent of Empires session"))?
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Current tmux session is not an Agent of Empires session")
+                })?
         } else {
             bail!("Not in a tmux session. Specify a session ID or run inside tmux.");
         }

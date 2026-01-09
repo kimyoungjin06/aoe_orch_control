@@ -77,10 +77,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     } else {
         // Check for exact duplicate
         if is_duplicate_session(&instances, &title, path.to_str().unwrap_or("")) {
-            println!(
-                "Session already exists with same title and path: {}",
-                title
-            );
+            println!("Session already exists with same title and path: {}", title);
             return Ok(());
         }
         title
@@ -186,11 +183,7 @@ pub fn generate_unique_title(instances: &[Instance], base_title: &str, path: &st
         }
     }
 
-    format!(
-        "{} ({})",
-        base_title,
-        chrono::Utc::now().timestamp()
-    )
+    format!("{} ({})", base_title, chrono::Utc::now().timestamp())
 }
 
 fn detect_tool(cmd: &str) -> String {

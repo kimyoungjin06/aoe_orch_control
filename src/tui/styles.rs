@@ -55,5 +55,4 @@ impl Theme {
             accent: Color::Rgb(122, 162, 247),
         }
     }
-
 }

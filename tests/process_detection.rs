@@ -33,7 +33,10 @@ fn test_get_pane_pid() {
         .expect("Failed to create tmux session");
 
     if !create.status.success() {
-        eprintln!("Failed to create session: {}", String::from_utf8_lossy(&create.stderr));
+        eprintln!(
+            "Failed to create session: {}",
+            String::from_utf8_lossy(&create.stderr)
+        );
         return;
     }
 
@@ -54,7 +57,11 @@ fn test_get_pane_pid() {
         .args(["kill-session", "-t", session_name])
         .output();
 
-    assert!(pane_pid > 0, "Pane PID should be a valid process ID, got: '{}'", pane_pid_str.trim());
+    assert!(
+        pane_pid > 0,
+        "Pane PID should be a valid process ID, got: '{}'",
+        pane_pid_str.trim()
+    );
 }
 
 /// Test process state detection on the current process
@@ -82,7 +89,10 @@ fn test_current_process_state() {
             .output()
             .expect("Failed to run ps");
 
-        assert!(output.status.success(), "ps should succeed for current process");
+        assert!(
+            output.status.success(),
+            "ps should succeed for current process"
+        );
         let stat = String::from_utf8_lossy(&output.stdout);
         assert!(!stat.trim().is_empty(), "Process stat should not be empty");
     }
@@ -163,7 +173,10 @@ fn test_tmux_foreground_detection() {
         .expect("Failed to create tmux session");
 
     if !create.status.success() {
-        eprintln!("Failed to create session: {}", String::from_utf8_lossy(&create.stderr));
+        eprintln!(
+            "Failed to create session: {}",
+            String::from_utf8_lossy(&create.stderr)
+        );
         return;
     }
 
@@ -199,8 +212,10 @@ fn test_tmux_foreground_detection() {
             if let Ok(out) = output {
                 let tpgid = String::from_utf8_lossy(&out.stdout);
                 // Just verify we get some output
-                assert!(!tpgid.trim().is_empty() || !out.status.success(),
-                    "Should get tpgid or fail gracefully");
+                assert!(
+                    !tpgid.trim().is_empty() || !out.status.success(),
+                    "Should get tpgid or fail gracefully"
+                );
             }
         }
     }
@@ -223,12 +238,23 @@ fn test_stdin_waiting_detection() {
 
     // Create a session running 'read' which waits for input
     let create = Command::new("tmux")
-        .args(["new-session", "-d", "-s", session_name, "bash", "-c", "read line; echo $line"])
+        .args([
+            "new-session",
+            "-d",
+            "-s",
+            session_name,
+            "bash",
+            "-c",
+            "read line; echo $line",
+        ])
         .output()
         .expect("Failed to create tmux session");
 
     if !create.status.success() {
-        eprintln!("Failed to create session: {}", String::from_utf8_lossy(&create.stderr));
+        eprintln!(
+            "Failed to create session: {}",
+            String::from_utf8_lossy(&create.stderr)
+        );
         return;
     }
 
@@ -265,8 +291,10 @@ fn test_stdin_waiting_detection() {
 
             if let Ok(out) = output {
                 // Just verify the command runs
-                assert!(out.status.success() || !out.stderr.is_empty(),
-                    "ps should run or provide error info");
+                assert!(
+                    out.status.success() || !out.stderr.is_empty(),
+                    "ps should run or provide error info"
+                );
             }
         }
     }

@@ -38,7 +38,10 @@ fn test_tmux_session_lifecycle() {
         .output()
         .expect("Failed to check session");
 
-    assert!(check.status.success(), "Session should exist after creation");
+    assert!(
+        check.status.success(),
+        "Session should exist after creation"
+    );
 
     // Kill session
     let kill = Command::new("tmux")

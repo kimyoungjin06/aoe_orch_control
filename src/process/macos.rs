@@ -103,7 +103,7 @@ pub fn is_waiting_for_input(pid: u32) -> ProcessInputState {
         'T' => return ProcessInputState::SleepingOther, // Stopped
         'Z' => return ProcessInputState::SleepingOther, // Zombie
         'U' => return ProcessInputState::SleepingOther, // Uninterruptible I/O wait
-        'I' | 'S' => {} // Sleeping - need to check wait channel
+        'I' | 'S' => {}                                 // Sleeping - need to check wait channel
         _ => return ProcessInputState::Unknown,
     }
 
@@ -159,7 +159,9 @@ mod tests {
         // (Unknown is returned for ambiguous poll/kevent states)
         assert!(matches!(
             state,
-            ProcessInputState::Running | ProcessInputState::SleepingOther | ProcessInputState::Unknown
+            ProcessInputState::Running
+                | ProcessInputState::SleepingOther
+                | ProcessInputState::Unknown
         ));
     }
 }

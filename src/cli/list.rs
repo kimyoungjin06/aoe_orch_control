@@ -165,7 +165,11 @@ async fn run_all_profiles(json: bool) -> Result<()> {
                 println!(
                     "{}",
                     "-".repeat(
-                        TABLE_COL_TITLE + TABLE_COL_GROUP + TABLE_COL_PATH + TABLE_COL_ID_DISPLAY + 5
+                        TABLE_COL_TITLE
+                            + TABLE_COL_GROUP
+                            + TABLE_COL_PATH
+                            + TABLE_COL_ID_DISPLAY
+                            + 5
                     )
                 );
 

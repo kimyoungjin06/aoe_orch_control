@@ -83,9 +83,7 @@ impl Session {
             args.push(cmd.to_string());
         }
 
-        let output = Command::new("tmux")
-            .args(&args)
-            .output()?;
+        let output = Command::new("tmux").args(&args).output()?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -181,7 +179,6 @@ impl Session {
         let fg_pid = self.get_foreground_pid();
         Ok(detect_status_from_content(&content, tool, fg_pid))
     }
-
 }
 
 fn sanitize_session_name(name: &str) -> String {
@@ -201,8 +198,16 @@ fn detect_status_from_content(content: &str, tool: &str, fg_pid: Option<u32>) ->
     // #region agent log
     use std::io::Write;
     let log_path = "/Users/nbrake/scm/agent-deck/.cursor/debug.log";
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log_path) {
-        let _ = writeln!(f, r#"{{"hypothesisId":"F","location":"session.rs:detect_status_from_content","message":"tool value check","data":{{"tool":"{}","fg_pid":{:?}}}}}"#, tool, fg_pid);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+    {
+        let _ = writeln!(
+            f,
+            r#"{{"hypothesisId":"F","location":"session.rs:detect_status_from_content","message":"tool value check","data":{{"tool":"{}","fg_pid":{:?}}}}}"#,
+            tool, fg_pid
+        );
     }
     // #endregion
 
@@ -211,8 +216,16 @@ fn detect_status_from_content(content: &str, tool: &str, fg_pid: Option<u32>) ->
         let proc_state = process::is_waiting_for_input(pid);
 
         // #region agent log
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log_path) {
-            let _ = writeln!(f, r#"{{"hypothesisId":"B","location":"session.rs:detect_status_from_content","message":"process state","data":{{"tool":"{}","pid":{},"proc_state":"{:?}"}}}}"#, tool, pid, proc_state);
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+        {
+            let _ = writeln!(
+                f,
+                r#"{{"hypothesisId":"B","location":"session.rs:detect_status_from_content","message":"process state","data":{{"tool":"{}","pid":{},"proc_state":"{:?}"}}}}"#,
+                tool, pid, proc_state
+            );
         }
         // #endregion
 
@@ -240,16 +253,36 @@ fn detect_status_from_content(content: &str, tool: &str, fg_pid: Option<u32>) ->
     let last_content_lower = last_content.to_lowercase();
 
     // #region agent log
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log_path) {
-        let escaped = last_content_lower.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
-        let _ = writeln!(f, r#"{{"hypothesisId":"C","location":"session.rs:detect_status_from_content","message":"content for pattern matching","data":{{"tool":"{}","line_count":{},"last_content":"{}"}}}}"#, tool, lines.len(), escaped);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+    {
+        let escaped = last_content_lower
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\n");
+        let _ = writeln!(
+            f,
+            r#"{{"hypothesisId":"C","location":"session.rs:detect_status_from_content","message":"content for pattern matching","data":{{"tool":"{}","line_count":{},"last_content":"{}"}}}}"#,
+            tool,
+            lines.len(),
+            escaped
+        );
     }
     // #endregion
 
     // #region agent log
     let effective_tool = if tool == "shell" && is_opencode_content(&last_content_lower) {
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log_path) {
-            let _ = writeln!(f, r#"{{"hypothesisId":"FIX","location":"session.rs:detect_status_from_content","message":"auto-detected opencode from content","data":{{}}}}"#);
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+        {
+            let _ = writeln!(
+                f,
+                r#"{{"hypothesisId":"FIX","location":"session.rs:detect_status_from_content","message":"auto-detected opencode from content","data":{{}}}}"#
+            );
         }
         "opencode"
     } else {
@@ -265,18 +298,19 @@ fn detect_status_from_content(content: &str, tool: &str, fg_pid: Option<u32>) ->
 }
 
 fn is_opencode_content(content: &str) -> bool {
-    let opencode_indicators = [
-        "tab switch agent",
-        "ctrl+p commands",
-        "/compact",
-        "/status",
-    ];
+    let opencode_indicators = ["tab switch agent", "ctrl+p commands", "/compact", "/status"];
     opencode_indicators.iter().any(|ind| content.contains(ind))
 }
 
 fn detect_claude_status(content: &str) -> Status {
     let lines: Vec<&str> = content.lines().collect();
-    let last_15: Vec<&str> = lines.iter().rev().take(15).filter(|l| !l.trim().is_empty()).copied().collect();
+    let last_15: Vec<&str> = lines
+        .iter()
+        .rev()
+        .take(15)
+        .filter(|l| !l.trim().is_empty())
+        .copied()
+        .collect();
     let recent_content = last_15.iter().rev().cloned().collect::<Vec<_>>().join("\n");
     let recent_lower = recent_content.to_lowercase();
 
@@ -318,7 +352,9 @@ fn detect_claude_status(content: &str) -> Status {
     }
 
     // WAITING: Selection cursor with numbered options (e.g., "❯ 1.", "❯ 2.")
-    if recent_content.contains("❯") && (recent_content.contains("1.") || recent_content.contains("2.")) {
+    if recent_content.contains("❯")
+        && (recent_content.contains("1.") || recent_content.contains("2."))
+    {
         return Status::Waiting;
     }
 
@@ -328,7 +364,10 @@ fn detect_claude_status(content: &str) -> Status {
         if clean_line == ">" || clean_line == "> " {
             return Status::Waiting;
         }
-        if clean_line.starts_with("> ") && !clean_line.to_lowercase().contains("esc") && clean_line.len() < 100 {
+        if clean_line.starts_with("> ")
+            && !clean_line.to_lowercase().contains("esc")
+            && clean_line.len() < 100
+        {
             return Status::Waiting;
         }
     }
@@ -351,16 +390,31 @@ fn detect_opencode_status(content: &str) -> Status {
     // #endregion
 
     let lines: Vec<&str> = content.lines().collect();
-    let last_15: Vec<&str> = lines.iter().rev().take(15).filter(|l| !l.trim().is_empty()).copied().collect();
+    let last_15: Vec<&str> = lines
+        .iter()
+        .rev()
+        .take(15)
+        .filter(|l| !l.trim().is_empty())
+        .copied()
+        .collect();
     let recent_content = last_15.iter().rev().cloned().collect::<Vec<_>>().join("\n");
     let recent_lower = recent_content.to_lowercase();
 
     // RUNNING: OpenCode shows "esc to interrupt" at the bottom when busy (same as Claude Code)
-    let has_esc_interrupt = recent_lower.contains("esc to interrupt") || recent_lower.contains("esc interrupt");
+    let has_esc_interrupt =
+        recent_lower.contains("esc to interrupt") || recent_lower.contains("esc interrupt");
 
     // #region agent log
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log_path) {
-        let _ = writeln!(f, r#"{{"hypothesisId":"D","location":"session.rs:detect_opencode_status","message":"checking esc interrupt","data":{{"has_esc_interrupt":{}}}}}"#, has_esc_interrupt);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+    {
+        let _ = writeln!(
+            f,
+            r#"{{"hypothesisId":"D","location":"session.rs:detect_opencode_status","message":"checking esc interrupt","data":{{"has_esc_interrupt":{}}}}}"#,
+            has_esc_interrupt
+        );
     }
     // #endregion
 
@@ -381,9 +435,20 @@ fn detect_opencode_status(content: &str) -> Status {
     }
 
     // #region agent log
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log_path) {
-        let last5_escaped: Vec<String> = last_5.iter().map(|s| s.replace('\\', "\\\\").replace('"', "\\\"")).collect();
-        let _ = writeln!(f, r#"{{"hypothesisId":"D","location":"session.rs:detect_opencode_status","message":"checking spinners","data":{{"has_spinner":{},"last_5":{:?}}}}}"#, has_spinner, last5_escaped);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+    {
+        let last5_escaped: Vec<String> = last_5
+            .iter()
+            .map(|s| s.replace('\\', "\\\\").replace('"', "\\\""))
+            .collect();
+        let _ = writeln!(
+            f,
+            r#"{{"hypothesisId":"D","location":"session.rs:detect_opencode_status","message":"checking spinners","data":{{"has_spinner":{},"last_5":{:?}}}}}"#,
+            has_spinner, last5_escaped
+        );
     }
     // #endregion
 
@@ -412,7 +477,9 @@ fn detect_opencode_status(content: &str) -> Status {
     }
 
     // WAITING: Selection cursor with numbered options
-    if recent_content.contains("❯") && (recent_content.contains("1.") || recent_content.contains("2.")) {
+    if recent_content.contains("❯")
+        && (recent_content.contains("1.") || recent_content.contains("2."))
+    {
         return Status::Waiting;
     }
 
@@ -420,12 +487,26 @@ fn detect_opencode_status(content: &str) -> Status {
     let last_line_result = lines.iter().rev().find(|l| !l.trim().is_empty());
 
     // #region agent log
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log_path) {
-        let line_info = last_line_result.map(|l| {
-            let clean = strip_ansi(l).trim().to_string();
-            format!("raw='{}', clean='{}'", l.replace('\\', "\\\\").replace('"', "\\\""), clean.replace('\\', "\\\\").replace('"', "\\\""))
-        }).unwrap_or_else(|| "none".to_string());
-        let _ = writeln!(f, r#"{{"hypothesisId":"E","location":"session.rs:detect_opencode_status","message":"last line check","data":{{"last_line":"{}"}}}}"#, line_info);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+    {
+        let line_info = last_line_result
+            .map(|l| {
+                let clean = strip_ansi(l).trim().to_string();
+                format!(
+                    "raw='{}', clean='{}'",
+                    l.replace('\\', "\\\\").replace('"', "\\\""),
+                    clean.replace('\\', "\\\\").replace('"', "\\\"")
+                )
+            })
+            .unwrap_or_else(|| "none".to_string());
+        let _ = writeln!(
+            f,
+            r#"{{"hypothesisId":"E","location":"session.rs:detect_opencode_status","message":"last line check","data":{{"last_line":"{}"}}}}"#,
+            line_info
+        );
     }
     // #endregion
 
@@ -436,7 +517,10 @@ fn detect_opencode_status(content: &str) -> Status {
         if clean_line == ">" || clean_line == "> " || clean_line == ">>" {
             return Status::Waiting;
         }
-        if clean_line.starts_with("> ") && !clean_line.to_lowercase().contains("esc") && clean_line.len() < 100 {
+        if clean_line.starts_with("> ")
+            && !clean_line.to_lowercase().contains("esc")
+            && clean_line.len() < 100
+        {
             return Status::Waiting;
         }
     }
@@ -453,7 +537,9 @@ fn detect_opencode_status(content: &str) -> Status {
         "how can i help",
         "let me know",
     ];
-    let has_completion = completion_indicators.iter().any(|ind| recent_lower.contains(ind));
+    let has_completion = completion_indicators
+        .iter()
+        .any(|ind| recent_lower.contains(ind));
     if has_completion {
         for line in &last_5 {
             let clean = strip_ansi(line).trim().to_string();
@@ -464,8 +550,15 @@ fn detect_opencode_status(content: &str) -> Status {
     }
 
     // #region agent log
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log_path) {
-        let _ = writeln!(f, r#"{{"hypothesisId":"D","location":"session.rs:detect_opencode_status","message":"returning Idle - no patterns matched","data":{{}}}}"#);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+    {
+        let _ = writeln!(
+            f,
+            r#"{{"hypothesisId":"D","location":"session.rs:detect_opencode_status","message":"returning Idle - no patterns matched","data":{{}}}}"#
+        );
     }
     // #endregion
 
@@ -474,12 +567,29 @@ fn detect_opencode_status(content: &str) -> Status {
 
 fn detect_shell_status(content: &str) -> Status {
     // Shell prompts
-    if content.ends_with("$ ") || content.ends_with("> ") || content.ends_with("# ") || content.ends_with("% ") {
+    if content.ends_with("$ ")
+        || content.ends_with("> ")
+        || content.ends_with("# ")
+        || content.ends_with("% ")
+    {
         return Status::Waiting;
     }
 
     // Running if we see a spinner or progress indicator
-    let running_indicators = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "...", "───"];
+    let running_indicators = [
+        "⠋",
+        "⠙",
+        "⠹",
+        "⠸",
+        "⠼",
+        "⠴",
+        "⠦",
+        "⠧",
+        "⠇",
+        "⠏",
+        "...",
+        "───",
+    ];
     for indicator in &running_indicators {
         if content.contains(indicator) {
             return Status::Running;
@@ -511,8 +621,14 @@ mod tests {
     #[test]
     fn test_detect_claude_status_running() {
         // "esc to interrupt" indicates Claude is actively working
-        assert_eq!(detect_claude_status("Working on your request (esc to interrupt)"), Status::Running);
-        assert_eq!(detect_claude_status("Thinking... · esc to interrupt"), Status::Running);
+        assert_eq!(
+            detect_claude_status("Working on your request (esc to interrupt)"),
+            Status::Running
+        );
+        assert_eq!(
+            detect_claude_status("Thinking... · esc to interrupt"),
+            Status::Running
+        );
 
         // Spinner characters indicate active processing
         assert_eq!(detect_claude_status("Processing ⠋"), Status::Running);
@@ -523,7 +639,10 @@ mod tests {
     fn test_detect_claude_status_waiting() {
         // Permission prompts
         assert_eq!(detect_claude_status("Yes, allow once"), Status::Waiting);
-        assert_eq!(detect_claude_status("Do you trust the files in this folder?"), Status::Waiting);
+        assert_eq!(
+            detect_claude_status("Do you trust the files in this folder?"),
+            Status::Waiting
+        );
 
         // Input prompt
         assert_eq!(detect_claude_status("Task complete.\n>"), Status::Waiting);
@@ -533,8 +652,14 @@ mod tests {
         assert_eq!(detect_claude_status("Continue? (Y/n)"), Status::Waiting);
 
         // Selection menus
-        assert_eq!(detect_claude_status("Enter to select · Tab/Arrow keys to navigate · Esc to cancel"), Status::Waiting);
-        assert_eq!(detect_claude_status("❯ 1. Planned activities\n  2. Spontaneous"), Status::Waiting);
+        assert_eq!(
+            detect_claude_status("Enter to select · Tab/Arrow keys to navigate · Esc to cancel"),
+            Status::Waiting
+        );
+        assert_eq!(
+            detect_claude_status("❯ 1. Planned activities\n  2. Spontaneous"),
+            Status::Waiting
+        );
     }
 
     #[test]
@@ -554,8 +679,14 @@ mod tests {
     #[test]
     fn test_detect_opencode_status_running() {
         // "esc to interrupt" at bottom = running (same pattern as Claude Code)
-        assert_eq!(detect_opencode_status("Processing your request\nesc to interrupt"), Status::Running);
-        assert_eq!(detect_opencode_status("Working... esc interrupt"), Status::Running);
+        assert_eq!(
+            detect_opencode_status("Processing your request\nesc to interrupt"),
+            Status::Running
+        );
+        assert_eq!(
+            detect_opencode_status("Working... esc interrupt"),
+            Status::Running
+        );
 
         // Spinner characters indicate active processing
         assert_eq!(detect_opencode_status("Generating ⠋"), Status::Running);
@@ -565,16 +696,25 @@ mod tests {
     #[test]
     fn test_detect_opencode_status_waiting() {
         // Permission prompts
-        assert_eq!(detect_opencode_status("Allow this action? [y/n]"), Status::Waiting);
+        assert_eq!(
+            detect_opencode_status("Allow this action? [y/n]"),
+            Status::Waiting
+        );
         assert_eq!(detect_opencode_status("Continue? (y/n)"), Status::Waiting);
         assert_eq!(detect_opencode_status("Approve changes"), Status::Waiting);
 
         // Input prompt
         assert_eq!(detect_opencode_status("Task complete.\n>"), Status::Waiting);
-        assert_eq!(detect_opencode_status("Ready for input\n> "), Status::Waiting);
+        assert_eq!(
+            detect_opencode_status("Ready for input\n> "),
+            Status::Waiting
+        );
 
         // Completion + prompt
-        assert_eq!(detect_opencode_status("Done! What else can I help with?\n>"), Status::Waiting);
+        assert_eq!(
+            detect_opencode_status("Done! What else can I help with?\n>"),
+            Status::Waiting
+        );
     }
 
     #[test]
@@ -582,6 +722,9 @@ mod tests {
         // No indicators = idle
         assert_eq!(detect_opencode_status("completed the task"), Status::Idle);
         assert_eq!(detect_opencode_status("some random output"), Status::Idle);
-        assert_eq!(detect_opencode_status("file saved successfully"), Status::Idle);
+        assert_eq!(
+            detect_opencode_status("file saved successfully"),
+            Status::Idle
+        );
     }
 }

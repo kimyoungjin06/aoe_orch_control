@@ -36,10 +36,7 @@ pub fn get_pane_pid(session_name: &str) -> Option<u32> {
         return None;
     }
 
-    String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .parse()
-        .ok()
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
 }
 
 /// Get the foreground process group leader PID for a given shell PID
@@ -87,7 +84,13 @@ mod tests {
 
     #[test]
     fn test_process_input_state_variants() {
-        assert_eq!(ProcessInputState::WaitingForInput, ProcessInputState::WaitingForInput);
-        assert_ne!(ProcessInputState::WaitingForInput, ProcessInputState::Running);
+        assert_eq!(
+            ProcessInputState::WaitingForInput,
+            ProcessInputState::WaitingForInput
+        );
+        assert_ne!(
+            ProcessInputState::WaitingForInput,
+            ProcessInputState::Running
+        );
     }
 }

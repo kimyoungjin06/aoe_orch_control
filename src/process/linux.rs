@@ -110,11 +110,7 @@ pub fn is_waiting_for_input(pid: u32) -> ProcessInputState {
         // - "pipe_read" - reading from pipe (not direct stdin)
         // - "poll_schedule_timeout" - polling with timeout
 
-        let tty_read_indicators = [
-            "n_tty_read",
-            "tty_read",
-            "pty_read",
-        ];
+        let tty_read_indicators = ["n_tty_read", "tty_read", "pty_read"];
 
         for indicator in tty_read_indicators {
             if wchan.contains(indicator) {
@@ -133,13 +129,7 @@ pub fn is_waiting_for_input(pid: u32) -> ProcessInputState {
         }
 
         // Network or other I/O waits
-        let network_indicators = [
-            "sk_wait",
-            "inet_",
-            "tcp_",
-            "unix_stream",
-            "pipe_read",
-        ];
+        let network_indicators = ["sk_wait", "inet_", "tcp_", "unix_stream", "pipe_read"];
         for indicator in network_indicators {
             if wchan.contains(indicator) {
                 return ProcessInputState::SleepingOther;
@@ -179,6 +169,9 @@ mod tests {
     fn test_parse_process_state() {
         assert_eq!(parse_process_state("1 (test) S 0 1 1 0 1"), Some('S'));
         assert_eq!(parse_process_state("1 (test) R 0 1 1 0 1"), Some('R'));
-        assert_eq!(parse_process_state("1 (test with spaces) D 0 1 1 0 1"), Some('D'));
+        assert_eq!(
+            parse_process_state("1 (test with spaces) D 0 1 1 0 1"),
+            Some('D')
+        );
     }
 }

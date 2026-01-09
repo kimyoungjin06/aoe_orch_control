@@ -105,7 +105,10 @@ async fn list_groups(profile: &str, args: GroupListArgs) -> Result<()> {
 
         println!("Groups:\n");
         for group in &all_groups {
-            let session_count = instances.iter().filter(|i| i.group_path == group.path).count();
+            let session_count = instances
+                .iter()
+                .filter(|i| i.group_path == group.path)
+                .count();
             let indent = group.path.matches('/').count();
             println!(
                 "{}• {} ({} sessions)",
@@ -157,7 +160,9 @@ async fn delete_group(profile: &str, args: GroupDeleteArgs) -> Result<()> {
     // Check for sessions in this group
     let session_count = instances
         .iter()
-        .filter(|i| i.group_path == args.name || i.group_path.starts_with(&format!("{}/", args.name)))
+        .filter(|i| {
+            i.group_path == args.name || i.group_path.starts_with(&format!("{}/", args.name))
+        })
         .count();
 
     if session_count > 0 {
@@ -171,7 +176,8 @@ async fn delete_group(profile: &str, args: GroupDeleteArgs) -> Result<()> {
 
         // Move sessions to default group
         for inst in &mut instances {
-            if inst.group_path == args.name || inst.group_path.starts_with(&format!("{}/", args.name))
+            if inst.group_path == args.name
+                || inst.group_path.starts_with(&format!("{}/", args.name))
             {
                 inst.group_path = String::new();
             }
@@ -183,10 +189,7 @@ async fn delete_group(profile: &str, args: GroupDeleteArgs) -> Result<()> {
 
     println!("✓ Deleted group: {}", args.name);
     if args.force && session_count > 0 {
-        println!(
-            "  Moved {} sessions to default group",
-            session_count
-        );
+        println!("  Moved {} sessions to default group", session_count);
     }
 
     Ok(())

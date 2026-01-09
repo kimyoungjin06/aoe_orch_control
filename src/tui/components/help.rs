@@ -36,27 +36,32 @@ impl HelpOverlay {
         frame.render_widget(block, dialog_area);
 
         let shortcuts = vec![
-            ("Navigation", vec![
-                ("j/↓", "Move down"),
-                ("k/↑", "Move up"),
-                ("h/←", "Collapse group"),
-                ("l/→", "Expand group"),
-                ("g", "Go to top"),
-                ("G", "Go to bottom"),
-            ]),
-            ("Actions", vec![
-                ("Enter", "Attach to session"),
-                ("n", "New session"),
-                ("d", "Delete session/group"),
-                ("r", "Refresh"),
-                ("f", "Fork session (Claude)"),
-                ("M", "MCP Manager"),
-            ]),
-            ("Other", vec![
-                ("/", "Search"),
-                ("?", "Toggle help"),
-                ("q", "Quit"),
-            ]),
+            (
+                "Navigation",
+                vec![
+                    ("j/↓", "Move down"),
+                    ("k/↑", "Move up"),
+                    ("h/←", "Collapse group"),
+                    ("l/→", "Expand group"),
+                    ("g", "Go to top"),
+                    ("G", "Go to bottom"),
+                ],
+            ),
+            (
+                "Actions",
+                vec![
+                    ("Enter", "Attach to session"),
+                    ("n", "New session"),
+                    ("d", "Delete session/group"),
+                    ("r", "Refresh"),
+                    ("f", "Fork session (Claude)"),
+                    ("M", "MCP Manager"),
+                ],
+            ),
+            (
+                "Other",
+                vec![("/", "Search"), ("?", "Toggle help"), ("q", "Quit")],
+            ),
         ];
 
         let mut lines: Vec<Line> = Vec::new();

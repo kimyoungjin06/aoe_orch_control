@@ -23,7 +23,11 @@ struct SessionCache {
 
 pub fn refresh_session_cache() {
     let output = Command::new("tmux")
-        .args(["list-sessions", "-F", "#{session_name}\t#{session_activity}"])
+        .args([
+            "list-sessions",
+            "-F",
+            "#{session_name}\t#{session_activity}",
+        ])
         .output();
 
     let new_data = match output {
@@ -51,7 +55,11 @@ pub fn session_exists_from_cache(name: &str) -> Option<bool> {
     let cache = SESSION_CACHE.read().ok()?;
 
     // Cache valid for 2 seconds
-    if cache.time.map(|t| t.elapsed() > Duration::from_secs(2)).unwrap_or(true) {
+    if cache
+        .time
+        .map(|t| t.elapsed() > Duration::from_secs(2))
+        .unwrap_or(true)
+    {
         return None;
     }
 
@@ -65,9 +73,7 @@ pub fn get_current_session_name() -> Option<String> {
         .ok()?;
 
     if output.status.success() {
-        let name = String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .to_string();
+        let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if !name.is_empty() {
             return Some(name);
         }

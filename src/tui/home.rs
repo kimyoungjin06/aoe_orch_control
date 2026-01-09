@@ -101,9 +101,7 @@ impl HomeView {
     }
 
     pub fn has_dialog(&self) -> bool {
-        self.show_help
-            || self.new_dialog.is_some()
-            || self.confirm_dialog.is_some()
+        self.show_help || self.new_dialog.is_some() || self.confirm_dialog.is_some()
     }
 
     pub fn get_instance(&self, id: &str) -> Option<&Instance> {
@@ -113,7 +111,10 @@ impl HomeView {
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<Action> {
         // Handle dialog input first
         if self.show_help {
-            if matches!(key.code, KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q')) {
+            if matches!(
+                key.code,
+                KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q')
+            ) {
                 self.show_help = false;
             }
             return None;
@@ -208,9 +209,13 @@ impl HomeView {
                         "delete",
                     ));
                 } else if let Some(group_path) = &self.selected_group {
-                    let session_count = self.instances
+                    let session_count = self
+                        .instances
                         .iter()
-                        .filter(|i| i.group_path == *group_path || i.group_path.starts_with(&format!("{}/", group_path)))
+                        .filter(|i| {
+                            i.group_path == *group_path
+                                || i.group_path.starts_with(&format!("{}/", group_path))
+                        })
                         .count();
                     let message = if session_count > 0 {
                         format!(
@@ -220,11 +225,8 @@ impl HomeView {
                     } else {
                         format!("Are you sure you want to delete group '{}'?", group_path)
                     };
-                    self.confirm_dialog = Some(ConfirmDialog::new(
-                        "Delete Group",
-                        &message,
-                        "delete_group",
-                    ));
+                    self.confirm_dialog =
+                        Some(ConfirmDialog::new("Delete Group", &message, "delete_group"));
                 }
             }
             KeyCode::Char('r') | KeyCode::F(5) => {
@@ -265,7 +267,10 @@ impl HomeView {
             KeyCode::Left | KeyCode::Char('h') => {
                 // Collapse current group or go to parent
                 if let Some(item) = self.flat_items.get(self.cursor) {
-                    if let Item::Group { path, collapsed, .. } = item {
+                    if let Item::Group {
+                        path, collapsed, ..
+                    } = item
+                    {
                         if !collapsed {
                             self.group_tree.toggle_collapsed(path);
                             self.flat_items = flatten_tree(&self.group_tree, &self.instances);
@@ -276,7 +281,10 @@ impl HomeView {
             KeyCode::Right | KeyCode::Char('l') => {
                 // Expand current group
                 if let Some(item) = self.flat_items.get(self.cursor) {
-                    if let Item::Group { path, collapsed, .. } = item {
+                    if let Item::Group {
+                        path, collapsed, ..
+                    } = item
+                    {
                         if *collapsed {
                             self.group_tree.toggle_collapsed(path);
                             self.flat_items = flatten_tree(&self.group_tree, &self.instances);
@@ -355,8 +363,7 @@ impl HomeView {
                     }
                 }
                 Item::Group { name, path, .. } => {
-                    if name.to_lowercase().contains(&query)
-                        || path.to_lowercase().contains(&query)
+                    if name.to_lowercase().contains(&query) || path.to_lowercase().contains(&query)
                     {
                         matches.push(idx);
                     }
@@ -499,8 +506,7 @@ impl HomeView {
             })
             .collect();
 
-        let list = List::new(list_items)
-            .highlight_style(Style::default().bg(theme.selection));
+        let list = List::new(list_items).highlight_style(Style::default().bg(theme.selection));
 
         frame.render_widget(list, inner);
 
@@ -513,8 +519,7 @@ impl HomeView {
                 height: 1,
             };
             let search_text = format!("/{}", self.search_query);
-            let search_para = Paragraph::new(search_text)
-                .style(Style::default().fg(theme.search));
+            let search_para = Paragraph::new(search_text).style(Style::default().fg(theme.search));
             frame.render_widget(search_para, search_area);
         }
     }

@@ -48,8 +48,17 @@ pub async fn run(args: UninstallArgs) -> Result<()> {
     let mut found_items: Vec<FoundItem> = Vec::new();
 
     // Check for Homebrew installation
-    let homebrew_installed = if Command::new("brew").arg("list").arg("agent-of-empires").output().is_ok() {
-        if let Ok(output) = Command::new("brew").arg("list").arg("agent-of-empires").output() {
+    let homebrew_installed = if Command::new("brew")
+        .arg("list")
+        .arg("agent-of-empires")
+        .output()
+        .is_ok()
+    {
+        if let Ok(output) = Command::new("brew")
+            .arg("list")
+            .arg("agent-of-empires")
+            .output()
+        {
             output.status.success()
         } else {
             false
@@ -107,7 +116,10 @@ pub async fn run(args: UninstallArgs) -> Result<()> {
             path: data_dir.clone(),
         });
         println!("Found: Data directory at {}", data_dir.display());
-        println!("       {} profiles, {} sessions", profile_count, session_count);
+        println!(
+            "       {} profiles, {} sessions",
+            profile_count, session_count
+        );
     }
 
     // Check for tmux config
@@ -186,7 +198,9 @@ pub async fn run(args: UninstallArgs) -> Result<()> {
         match item.item_type.as_str() {
             "homebrew" => {
                 println!("Removing Homebrew package...");
-                let _ = Command::new("brew").args(["uninstall", "agent-of-empires"]).status();
+                let _ = Command::new("brew")
+                    .args(["uninstall", "agent-of-empires"])
+                    .status();
                 println!("✓ Homebrew package removed");
             }
             "binary" => {
@@ -221,8 +235,7 @@ pub async fn run(args: UninstallArgs) -> Result<()> {
                         (content.find(start_marker), content.find(end_marker))
                     {
                         let end = end + end_marker.len();
-                        let mut new_content =
-                            format!("{}{}", &content[..start], &content[end..]);
+                        let mut new_content = format!("{}{}", &content[..start], &content[end..]);
                         while new_content.contains("\n\n\n") {
                             new_content = new_content.replace("\n\n\n", "\n\n");
                         }

@@ -41,7 +41,8 @@ impl GroupTree {
 
         // Add existing groups
         for group in existing_groups {
-            tree.groups_by_path.insert(group.path.clone(), group.clone());
+            tree.groups_by_path
+                .insert(group.path.clone(), group.clone());
         }
 
         // Ensure all instance groups exist
@@ -106,9 +107,7 @@ impl GroupTree {
         let mut children: Vec<Group> = self
             .groups_by_path
             .values()
-            .filter(|g| {
-                g.path.starts_with(&prefix) && !g.path[prefix.len()..].contains('/')
-            })
+            .filter(|g| g.path.starts_with(&prefix) && !g.path[prefix.len()..].contains('/'))
             .cloned()
             .collect();
 
@@ -163,7 +162,6 @@ impl GroupTree {
             self.rebuild_tree();
         }
     }
-
 }
 
 /// Item represents either a group or an instance in the flattened tree view
@@ -191,10 +189,7 @@ impl Item {
     }
 }
 
-pub fn flatten_tree(
-    group_tree: &GroupTree,
-    instances: &[Instance],
-) -> Vec<Item> {
+pub fn flatten_tree(group_tree: &GroupTree, instances: &[Instance]) -> Vec<Item> {
     let mut items = Vec::new();
 
     // Add ungrouped sessions first

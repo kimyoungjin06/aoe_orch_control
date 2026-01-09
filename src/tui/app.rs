@@ -31,7 +31,10 @@ impl App {
         })
     }
 
-    pub async fn run(&mut self, terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Result<()> {
+    pub async fn run(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    ) -> Result<()> {
         // Initial render
         terminal.clear()?;
         terminal.draw(|f| self.render(f))?;

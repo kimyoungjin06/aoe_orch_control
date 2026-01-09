@@ -13,8 +13,8 @@ impl Preview {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(6),  // Info section
-                Constraint::Min(1),     // Output section
+                Constraint::Length(6), // Info section
+                Constraint::Min(1),    // Output section
             ])
             .split(area);
 
@@ -30,7 +30,10 @@ impl Preview {
             ]),
             Line::from(vec![
                 Span::styled("Path:    ", Style::default().fg(theme.dimmed)),
-                Span::styled(shorten_path(&instance.project_path), Style::default().fg(theme.text)),
+                Span::styled(
+                    shorten_path(&instance.project_path),
+                    Style::default().fg(theme.text),
+                ),
             ]),
             Line::from(vec![
                 Span::styled("Tool:    ", Style::default().fg(theme.dimmed)),

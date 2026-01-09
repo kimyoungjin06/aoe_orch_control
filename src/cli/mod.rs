@@ -14,10 +14,7 @@ pub mod update;
 use crate::session::Instance;
 use anyhow::{bail, Result};
 
-pub fn resolve_session<'a>(
-    identifier: &str,
-    instances: &'a [Instance],
-) -> Result<&'a Instance> {
+pub fn resolve_session<'a>(identifier: &str, instances: &'a [Instance]) -> Result<&'a Instance> {
     // Try exact ID match
     if let Some(inst) = instances.iter().find(|i| i.id == identifier) {
         return Ok(inst);

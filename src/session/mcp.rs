@@ -73,7 +73,9 @@ pub fn attach_global_mcp(mcp_name: &str) -> Result<()> {
     let available = get_available_mcps()?;
     if let Some(config) = available.get(mcp_name) {
         let server = mcp_config_to_server(config);
-        claude_config.mcpServers.insert(mcp_name.to_string(), server);
+        claude_config
+            .mcpServers
+            .insert(mcp_name.to_string(), server);
         save_claude_config(&claude_config_path, &claude_config)?;
     }
 
