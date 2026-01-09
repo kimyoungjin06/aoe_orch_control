@@ -66,7 +66,7 @@ impl Instance {
             group_path: String::new(),
             parent_session_id: None,
             command: String::new(),
-            tool: "shell".to_string(),
+            tool: "claude".to_string(),
             status: Status::Idle,
             created_at: Utc::now(),
             last_accessed_at: None,

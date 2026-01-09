@@ -223,6 +223,8 @@ fn detect_status_from_content(content: &str, tool: &str, fg_pid: Option<u32>) ->
 
     let effective_tool = if tool == "shell" && is_opencode_content(&last_content_lower) {
         "opencode"
+    } else if tool == "shell" && is_claude_code_content(&last_content_lower) {
+        "claude"
     } else {
         tool
     };
@@ -237,6 +239,33 @@ fn detect_status_from_content(content: &str, tool: &str, fg_pid: Option<u32>) ->
 fn is_opencode_content(content: &str) -> bool {
     let opencode_indicators = ["tab switch agent", "ctrl+p commands", "/compact", "/status"];
     opencode_indicators.iter().any(|ind| content.contains(ind))
+}
+
+fn is_claude_code_content(content: &str) -> bool {
+    let claude_indicators = [
+        "esc to interrupt",
+        "yes, allow once",
+        "yes, allow always",
+        "do you trust the files",
+        "claude code",
+        "anthropic",
+        "/ to search",
+        "? for help",
+    ];
+    if claude_indicators.iter().any(|ind| content.contains(ind)) {
+        return true;
+    }
+    let lines: Vec<&str> = content.lines().collect();
+    if let Some(last_line) = lines.iter().rev().find(|l| !l.trim().is_empty()) {
+        let trimmed = last_line.trim();
+        if trimmed == ">" || trimmed == "> " {
+            let has_box_chars = content.contains('─') || content.contains('│');
+            if has_box_chars {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn detect_claude_status(content: &str) -> Status {
@@ -427,23 +456,18 @@ fn detect_shell_status(content: &str) -> Status {
         return Status::Waiting;
     }
 
-    // Running if we see a spinner or progress indicator
-    let running_indicators = [
-        "⠋",
-        "⠙",
-        "⠹",
-        "⠸",
-        "⠼",
-        "⠴",
-        "⠦",
-        "⠧",
-        "⠇",
-        "⠏",
-        "...",
-        "───",
-    ];
-    for indicator in &running_indicators {
-        if content.contains(indicator) {
+    // Running if we see a spinner (but not box-drawing chars which are common in TUIs)
+    for spinner in SPINNER_CHARS {
+        if content.contains(spinner) {
+            return Status::Running;
+        }
+    }
+
+    // "..." can indicate progress but is also common in output, so only check last few lines
+    let lines: Vec<&str> = content.lines().collect();
+    let last_5: Vec<&str> = lines.iter().rev().take(5).copied().collect();
+    for line in &last_5 {
+        if line.trim().ends_with("...") && line.len() < 50 {
             return Status::Running;
         }
     }

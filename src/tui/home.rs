@@ -372,7 +372,7 @@ impl HomeView {
         let mut instance = Instance::new(&data.title, &data.path);
         instance.group_path = data.group;
         instance.command = data.command.clone();
-        instance.tool = if data.command.to_lowercase().contains("claude") {
+        instance.tool = if data.command.is_empty() || data.command.to_lowercase().contains("claude") {
             "claude".to_string()
         } else if data.command.to_lowercase().contains("opencode") {
             "opencode".to_string()

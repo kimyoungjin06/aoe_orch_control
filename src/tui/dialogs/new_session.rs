@@ -147,7 +147,7 @@ impl NewSessionDialog {
             let display_value = if value.is_empty() {
                 match idx {
                     0 => "(directory name)",
-                    3 => "(default: shell)",
+                    3 => "(default: claude)",
                     _ => "",
                 }
             } else {

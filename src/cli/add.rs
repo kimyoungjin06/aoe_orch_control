@@ -188,7 +188,7 @@ pub fn generate_unique_title(instances: &[Instance], base_title: &str, path: &st
 
 fn detect_tool(cmd: &str) -> String {
     let cmd_lower = cmd.to_lowercase();
-    if cmd_lower.contains("claude") {
+    if cmd_lower.is_empty() || cmd_lower.contains("claude") {
         "claude".to_string()
     } else if cmd_lower.contains("opencode") || cmd_lower.contains("open-code") {
         "opencode".to_string()

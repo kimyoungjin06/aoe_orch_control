@@ -2,6 +2,21 @@
 
 A terminal session manager for AI coding agents, written in Rust.
 
+## How It Works
+
+Agent of Empires is a wrapper around [tmux](https://github.com/tmux/tmux/wiki), the terminal multiplexer. Each AI coding session you create is actually a tmux session under the hood.
+
+Once you attach to a session, you're working directly in tmux. Basic tmux knowledge helps:
+
+| tmux Command | What It Does |
+|--------------|--------------|
+| `Ctrl+b d` | Detach from session (return to Agent of Empires) |
+| `Ctrl+b [` | Enter scroll/copy mode |
+| `Ctrl+b c` | Create new window within session |
+| `Ctrl+b n` / `Ctrl+b p` | Next/previous window |
+
+If you're new to tmux, the key thing to remember is `Ctrl+b d` to detach and return to the TUI.
+
 ## Installation
 
 ### Homebrew (macOS and Linux)
@@ -52,6 +67,7 @@ cargo build --release
 - **tmux** - Required for session management (installed automatically via Homebrew)
   - macOS: `brew install tmux`
   - Ubuntu/Debian: `sudo apt install tmux`
+  - Familiarity with basic tmux operations is recommended (see [How It Works](#how-it-works) above)
 
 ## Quick Start
 
