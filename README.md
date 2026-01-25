@@ -20,7 +20,7 @@ A coding agent and shell terminal session manager for Linux and macOS using tmux
 
 `aoe` manages cleanup of worktrees and sandboxes once you've completed your session.
 
-> If you find this project useful, please consider giving it a star on GitHub - it helps others discover the project!
+> If you find this project useful, please consider giving it a star on GitHub: it helps others discover the project!
 
 ![Agent of Empires Demo](docs/assets/demo.gif)
 
