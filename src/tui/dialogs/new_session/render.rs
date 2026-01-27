@@ -266,11 +266,11 @@ impl NewSessionDialog {
         };
 
         if let Some(error) = &self.error_message {
-            let error_line = Line::from(vec![
-                Span::styled("✗ Error: ", Style::default().fg(Color::Red).bold()),
-                Span::styled(error, Style::default().fg(Color::Red)),
-            ]);
-            frame.render_widget(Paragraph::new(error_line), chunks[hint_chunk]);
+            let error_text = format!("✗ Error: {}", error);
+            let error_paragraph = Paragraph::new(error_text)
+                .style(Style::default().fg(Color::Red))
+                .wrap(Wrap { trim: true });
+            frame.render_widget(error_paragraph, chunks[hint_chunk]);
         } else {
             let hint = if has_tool_selection {
                 Line::from(vec![

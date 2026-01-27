@@ -394,7 +394,8 @@ impl Instance {
         }
 
         let vibe_config = home.join(".vibe");
-        if vibe_config.exists() {
+        let has_vibe_host_mount = vibe_config.exists();
+        if has_vibe_host_mount {
             volumes.push(VolumeMount {
                 host_path: vibe_config.to_string_lossy().to_string(),
                 container_path: format!("{}/.vibe", CONTAINER_HOME),
@@ -402,7 +403,7 @@ impl Instance {
             });
         }
 
-        let named_volumes = vec![
+        let mut named_volumes = vec![
             (
                 CLAUDE_AUTH_VOLUME.to_string(),
                 format!("{}/.claude", CONTAINER_HOME),
@@ -412,14 +413,19 @@ impl Instance {
                 format!("{}/.local/share/opencode", CONTAINER_HOME),
             ),
             (
-                VIBE_AUTH_VOLUME.to_string(),
-                format!("{}/.vibe", CONTAINER_HOME),
-            ),
-            (
                 CODEX_AUTH_VOLUME.to_string(),
                 format!("{}/.codex", CONTAINER_HOME),
             ),
         ];
+
+        // Only add vibe auth volume if we didn't already mount the host config
+        // (can't have duplicate mount points)
+        if !has_vibe_host_mount {
+            named_volumes.push((
+                VIBE_AUTH_VOLUME.to_string(),
+                format!("{}/.vibe", CONTAINER_HOME),
+            ));
+        }
 
         let sandbox_config = super::config::Config::load()
             .ok()
