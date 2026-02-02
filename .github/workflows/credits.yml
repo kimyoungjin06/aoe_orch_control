@@ -9,6 +9,7 @@ jobs:
     if: github.event.label.name == 'helpful contribution'
     runs-on: ubuntu-latest
     permissions:
+      actions: write
       contents: write
       issues: write
     concurrency:
