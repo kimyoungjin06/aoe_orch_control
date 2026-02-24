@@ -7,9 +7,32 @@ TEAM_DIR="$PROJECT_ROOT/.aoe-team"
 ENV_FILE="$TEAM_DIR/telegram.env"
 HANDLER="$TEAM_DIR/worker_codex_handler.sh"
 GATEWAY_BIN="$PROJECT_ROOT/scripts/gateway/aoe-telegram-gateway.py"
+BOOTSTRAP_RUNTIME="$PROJECT_ROOT/scripts/team/bootstrap_runtime_templates.sh"
 
 SESS_GW="aoe_tg_gateway"
 WORKER_PREFIX="aoe_tg_worker_"
+
+prepare_runtime() {
+  if [[ -x "$BOOTSTRAP_RUNTIME" ]]; then
+    bash "$BOOTSTRAP_RUNTIME" --project-root "$PROJECT_ROOT" --team-dir "$TEAM_DIR" >/dev/null
+  fi
+}
+
+preflight() {
+  if [[ ! -f "$ENV_FILE" ]]; then
+    echo "[ERROR] missing env file: $ENV_FILE" >&2
+    echo "[HINT] create it from your secure runtime settings, then retry start." >&2
+    return 1
+  fi
+  if [[ ! -x "$HANDLER" ]]; then
+    echo "[ERROR] missing worker handler: $HANDLER" >&2
+    return 1
+  fi
+  if [[ ! -f "$GATEWAY_BIN" ]]; then
+    echo "[ERROR] missing gateway bin: $GATEWAY_BIN" >&2
+    return 1
+  fi
+}
 
 worker_roles() {
   PROJECT_ROOT="$PROJECT_ROOT" python3 - <<'PY'
@@ -56,6 +79,9 @@ stop_workers() {
 }
 
 start() {
+  prepare_runtime
+  preflight || return 1
+
   tmux kill-session -t "$SESS_GW" 2>/dev/null || true
   stop_workers
 
@@ -156,11 +182,12 @@ logs() {
 }
 
 case "${1:-}" in
+  init) prepare_runtime; echo "runtime initialized" ;;
   start) start ;;
   stop) stop ;;
   restart) stop; start ;;
   status) status ;;
   health) health ;;
   logs) logs ;;
-  *) echo "usage: $0 {start|stop|restart|status|health [--wait[=seconds]]|logs}"; exit 1 ;;
+  *) echo "usage: $0 {init|start|stop|restart|status|health [--wait[=seconds]]|logs}"; exit 1 ;;
 esac
