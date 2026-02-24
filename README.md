@@ -1,145 +1,57 @@
-<p align="center">
-  <img src="assets/logo.png" alt="Agent of Empires" width="128">
-  <h1 align="center">Agent of Empires (AoE)</h1>
-  <p align="center">
-    <a href="https://github.com/njbrake/agent-of-empires/actions/workflows/ci.yml"><img src="https://github.com/njbrake/agent-of-empires/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-    <a href="https://github.com/njbrake/agent-of-empires/releases"><img src="https://img.shields.io/github/v/release/njbrake/agent-of-empires" alt="GitHub release"></a>
-    <a href="https://formulae.brew.sh/formula/aoe"><img src="https://img.shields.io/homebrew/v/aoe" alt="Homebrew"></a>
-    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
-    <br>
-    <a href="https://www.youtube.com/@agent-of-empires"><img src="https://img.shields.io/badge/YouTube-channel-red?logo=youtube" alt="YouTube"></a>
-    <a href="https://x.com/natebrake"><img src="https://img.shields.io/badge/follow-%40natebrake-black?logo=x&logoColor=white" alt="Follow @natebrake"></a>
-  </p>
-</p>
+# aoe_orch_control
 
-A terminal session manager for AI coding agents on Linux and macOS. Built on tmux, written in Rust.
+Telegram-controlled orchestration workspace for multi-session AOE operations.
 
-Run multiple AI agents in parallel across different branches of your codebase, each in its own isolated session with optional Docker sandboxing.
+## Source Attribution
+- Base project (fork/upstream): `njbrake/agent-of-empires`
+- Upstream repository: `https://github.com/njbrake/agent-of-empires`
+- Local extensions include Telegram bot control flow, task alias/monitor UX, and orchestrator-worker automation.
 
-> If you find this project useful, please consider giving it a star on GitHub: it helps others discover the project!
+## Project Intent
+- Why: 자동 오케스트레이션으로 야간/비근무 시간에도 태스크를 안정적으로 수행한다.
+- How: Orchestrator가 계획/배정을 관리하고, 역할별 Sub-session이 실행/검증을 분리 수행한다.
+- Control Plane: 사용자는 Telegram 자연어 명령으로 프로젝트별 Orch를 원격 제어한다.
 
-![Agent of Empires Demo](docs/assets/demo.gif)
+## Governance Docs
+- Project charter: `docs/PROJECT_CHARTER.md`
+- Fork policy: `docs/FORK_POLICY.md`
+- Upstream baseline: `docs/UPSTREAM_BASELINE.md`
+- Runbook: `docs/RUNBOOK.md`
+- Daily checklist: `docs/DAILY_CHECKLIST.md`
+- Systemd user setup: `docs/SYSTEMD_USER_SETUP.md`
 
-## Features
+## Local Runtime
+- Project root: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control`
+- Team directory: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team`
+- Gateway source: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/aoe-telegram-gateway.py`
+- ACL module source: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/aoe_tg_acl.py`
+- Parse module source: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/aoe_tg_parse.py`
+- Command resolver source: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/aoe_tg_command_resolver.py`
+- Command handlers source: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/aoe_tg_command_handlers.py`
+- Management handlers source: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/aoe_tg_management_handlers.py`
+- Orch overview handlers source: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/aoe_tg_orch_overview_handlers.py`
+- Orch task handlers source: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/aoe_tg_orch_task_handlers.py`
+- Retry handlers source: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/aoe_tg_retry_handlers.py`
+- Role handlers source: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/aoe_tg_role_handlers.py`
+- Message flow source: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/aoe_tg_message_flow.py`
+- Run handlers source: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/aoe_tg_run_handlers.py`
+- Runtime link install: `bash /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/install_runtime.sh`
+- Start stack: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh start`
+- Stop stack: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh stop`
+- Systemd install: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/systemd/install_user_services.sh`
+- Telegram input policy: slash-first (`/dispatch`, `/direct`, `/mode`, `/monitor`, `/check`, `/task`, `/pick`, `/kpi`, `/cancel`, `/retry`, `/replan`, `/help`, `/whoami`, `/acl`, `/grant`, `/revoke`)
+- Access policy: deny-by-default + ACL envs (`TELEGRAM_ALLOW_CHAT_IDS`, `TELEGRAM_ADMIN_CHAT_IDS`, `TELEGRAM_READONLY_CHAT_IDS`)
+- Owner policy: set `TELEGRAM_OWNER_CHAT_ID` to enforce owner-only control for `/lockme`, `/grant`, `/revoke`
+- Chat alias mapping: short numeric aliases (`1..999`) persisted at `.aoe-team/telegram_chat_aliases.json` and usable in `/grant`/`/revoke`
+- Persistent routing mode: `/mode on|off|direct` + shortcuts `/on`, `/off` (`on/direct`면 slash-only에서도 평문 자동 라우팅)
+- Auto-run safety: high-risk plain-text auto-run requires `/ok` confirmation (`/cancel` to discard)
+- Chat guardrails: per-chat running limit + daily cap (`AOE_CHAT_MAX_RUNNING`, `AOE_CHAT_DAILY_CAP`)
+- First-time lock: send `/lockme` (resets allowlist to current chat and clears admin/readonly), verify with `/whoami`
+- Safe natural shortcuts (slash-only mode): `모니터 5`, `확인 1`, `상태 1`, `재시도 1`, `재계획 1`, `취소 1`
 
-- **Multi-agent support** -- Claude Code, OpenCode, Mistral Vibe, Codex CLI, and Gemini CLI
-- **TUI dashboard** -- visual interface to create, monitor, and manage sessions
-- **Agent + terminal views** -- toggle between your AI agents and paired shell terminals with `t`
-- **Status detection** -- see which agents are running, waiting for input, or idle
-- **Git worktrees** -- run parallel agents on different branches of the same repo
-- **Docker sandboxing** -- isolate agents in containers with shared auth volumes
-- **Diff view** -- review git changes and edit files without leaving the TUI
-- **Per-repo config** -- `.aoe/config.toml` for project-specific settings and hooks
-- **Profiles** -- separate workspaces for different projects or clients
-- **CLI and TUI** -- full functionality from both interfaces
-
-## How It Works
-
-AoE wraps [tmux](https://github.com/tmux/tmux/wiki). Each session is a tmux session, so agents keep running when you close the TUI. Reopen `aoe` and everything is still there.
-
-The key tmux shortcut to know: **`Ctrl+b d`** detaches from a session and returns to the TUI.
-
-## Installation
-
-**Prerequisites:** [tmux](https://github.com/tmux/tmux/wiki) (required), [Docker](https://www.docker.com/) (optional, for sandboxing)
-
-```bash
-# Quick install (Linux & macOS)
-curl -fsSL \
-  https://raw.githubusercontent.com/njbrake/agent-of-empires/main/scripts/install.sh \
-  | bash
-
-# Homebrew
-brew install aoe
-
-# Nix
-nix run github:njbrake/agent-of-empires
-
-# Build from source
-git clone https://github.com/njbrake/agent-of-empires
-cd agent-of-empires && cargo build --release
-```
-
-## Quick Start
-
-```bash
-# Launch the TUI
-aoe
-
-# Add a session from CLI
-aoe add /path/to/project
-
-# Add a session on a new git branch
-aoe add . -w feat/my-feature -b
-
-# Add a sandboxed session
-aoe add --sandbox .
-```
-
-In the TUI: `n` to create a session, `Enter` to attach, `t` to toggle terminal view, `D` for diff view, `d` to delete, `?` for help.
-
-## Documentation
-
-- **[Installation](https://njbrake.github.io/agent-of-empires/installation)** -- prerequisites and install methods
-- **[Quick Start](https://njbrake.github.io/agent-of-empires/quick-start)** -- first steps and basic usage
-- **[Workflow Guide](https://njbrake.github.io/agent-of-empires/guides/workflow)** -- recommended setup with bare repos and worktrees
-- **[Docker Sandbox](https://njbrake.github.io/agent-of-empires/guides/sandbox)** -- container isolation for agents
-- **[Repo Config & Hooks](https://njbrake.github.io/agent-of-empires/guides/repo-config)** -- per-project settings and automation
-- **[Configuration Reference](https://njbrake.github.io/agent-of-empires/guides/configuration)** -- all config options
-- **[CLI Reference](https://njbrake.github.io/agent-of-empires/cli/reference)** -- complete command documentation
-
-## FAQ
-
-### What happens when I close aoe?
-
-Nothing. Sessions are tmux sessions running in the background. Open and close `aoe` as often as you like. Sessions only get removed when you explicitly delete them.
-
-### Which AI tools are supported?
-
-Claude Code, OpenCode, Mistral Vibe, Codex CLI, and Gemini CLI. AoE auto-detects which are installed on your system.
-
-## Troubleshooting
-
-### Using aoe with mobile SSH clients (Termius, Blink, etc.)
-
-Run `aoe` inside a tmux session when connecting from mobile:
-
-```bash
-tmux new-session -s main
-aoe
-```
-
-Use `Ctrl+b L` to toggle back to `aoe` after attaching to an agent session.
-
-### Claude Code is flickering
-
-This is a known Claude Code issue, not an aoe problem: https://github.com/anthropics/claude-code/issues/1913
-
-## Development
-
-```bash
-cargo check          # Type-check
-cargo test           # Run tests
-cargo fmt            # Format
-cargo clippy         # Lint
-cargo build --release  # Release build
-
-# Debug logging
-AGENT_OF_EMPIRES_DEBUG=1 cargo run
-```
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=njbrake/agent-of-empires&type=date&legend=top-left)](https://www.star-history.com/#njbrake/agent-of-empires&type=date&legend=top-left)
-
-## Acknowledgments
-
-Inspired by [agent-deck](https://github.com/asheshgoplani/agent-deck) (Go + Bubble Tea).
-
-## Author
-
-Created by [Nate Brake](https://x.com/natebrake) ([@natebrake](https://x.com/natebrake))
-
-## License
-
-MIT License -- see [LICENSE](LICENSE) for details.
+## Tests
+- Pytest gateway regression: `scripts/gateway_pytest.sh`
+- Direct invoke: `uv run --with pytest pytest -q tests/gateway/test_gateway_cli.py`
+- Smoke subset wrapper: `scripts/gateway_smoke_test.sh` (runs `-m smoke`)
+- Error subset wrapper: `scripts/gateway_error_test.sh` (runs `-m error`)
+- CI workflow: `.github/workflows/gateway-tests.yml` (`smoke`/`error` 병렬 matrix job)

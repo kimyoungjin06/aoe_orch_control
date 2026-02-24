@@ -1,8 +1,0 @@
-node_modules/
-dist/
-.astro/
-
-# Auto-generated during build
-public/assets/*
-!public/assets/.gitkeep
-sitemap.xml

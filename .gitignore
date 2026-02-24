@@ -1,56 +1,25 @@
-# Claude artifacts (allow .claude/skills/ for cross-agent skills)
-.claude/*
-!.claude/skills/
-# Rust build artifacts
-/target/
-# Documentation build output
-/book/
+# Runtime secrets
+.aoe-team/telegram.env
 
-# Website build output
-/dist/
+# Runtime state
+.aoe-team/orch_manager_state.json
+.aoe-team/telegram_gateway_state.json
 
-# Binaries
-*.exe
-*.exe~
-*.dll
-*.so
-*.dylib
+# Runtime queues/logs
+.aoe-team/messages/
+.aoe-team/logs/
+.aoe-team/*.log
+.aoe-team/*.pid
+.aoe-team/*.lock
+.aoe-team/_*.log
+.aoe-team/_*.pid
 
-# IDE
-.idea/
-.vscode/
+# Editor/OS noise
+.DS_Store
 *.swp
 *.swo
-*~
 
-# OS
-.DS_Store
-Thumbs.db
-
-# Local config
-.env
-.env.local
-
-# Agent of Empires data (for development)
-.agent-of-empires/
-
-# VS Code extensions data
-.serena/
-
-# AI coding tools
-.opencode/
-.sisyphus/
-
-# Per-repo aoe config (created by `aoe init`, should be committed per-repo by users)
-# Ignored here since this is the aoe tool repo itself
-.aoe/
-
-# Spec Kit
-.genreleases/
-sdd-*/
-
-# Personal/local files
-*.screenstudio/
-
-debug.log
-website/.next/
+# Python cache
+__pycache__/
+*.pyc
+.pytest_cache/

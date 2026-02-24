@@ -1,0 +1,17 @@
+[Unit]
+Description=AOE Telegram TMUX Stack
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=__PROJECT_ROOT__
+ExecStart=__PROJECT_ROOT__/.aoe-team/telegram_tmux.sh start
+ExecStop=__PROJECT_ROOT__/.aoe-team/telegram_tmux.sh stop
+ExecReload=__PROJECT_ROOT__/.aoe-team/telegram_tmux.sh restart
+TimeoutStartSec=60
+TimeoutStopSec=60
+
+[Install]
+WantedBy=default.target
