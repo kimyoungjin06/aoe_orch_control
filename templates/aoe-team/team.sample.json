@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "project_root": "__PROJECT_ROOT__",
+  "project_name": "__PROJECT_NAME__",
+  "coordinator": "Orchestrator",
+  "roles": [
+    "Orchestrator",
+    "DataEngineer",
+    "Reviewer"
+  ],
+  "created_at": "__CREATED_AT__",
+  "overview": "__OVERVIEW__"
+}

@@ -4,6 +4,10 @@
 # Runtime state
 .aoe-team/orch_manager_state.json
 .aoe-team/telegram_gateway_state.json
+.aoe-team/team.json
+.aoe-team/orchestrator.json
+.aoe-team/workers/*.json
+.aoe-team/agents/*/AGENTS.md
 
 # Runtime queues/logs
 .aoe-team/messages/
