@@ -36,6 +36,7 @@ Telegram-controlled orchestration workspace for multi-session AOE operations.
 - Message flow source: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/aoe_tg_message_flow.py`
 - Run handlers source: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/aoe_tg_run_handlers.py`
 - Runtime link install: `bash /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/install_runtime.sh`
+- Runtime init (template bootstrap): `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh init`
 - Start stack: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh start`
 - Stop stack: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh stop`
 - Systemd install: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/systemd/install_user_services.sh`

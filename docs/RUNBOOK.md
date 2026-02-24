@@ -14,6 +14,8 @@
 `aoe-orch init --project-root /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control --overview "aoe_orch_control project orchestration"`
 0. Bootstrap missing runtime files from templates (optional, non-destructive):
 `bash /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/team/bootstrap_runtime_templates.sh --project-root /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control`
+0. Equivalent shortcut:
+`/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh init`
 1. Start:
 `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh start`
 0. (Optional) refresh runtime symlinks:
@@ -63,7 +65,8 @@
 ### 4.1 No Telegram response
 1. Check `TELEGRAM_BOT_TOKEN` in `.aoe-team/telegram.env`.
 2. Verify gateway session exists and is running.
-3. Restart stack with `telegram_tmux.sh restart`.
+3. Ensure preflight passes: `telegram_tmux.sh init` then `telegram_tmux.sh start`.
+4. Restart stack with `telegram_tmux.sh restart`.
 4. Re-run `/whoami`, `/help`, `/monitor` from Telegram.
 
 ### 4.5 Access denied / unauthorized
