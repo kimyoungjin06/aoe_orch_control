@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "project_root": "/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control",
+  "project_name": "aoe_orch_control",
+  "coordinator": "Orchestrator",
+  "roles": [
+    "Orchestrator",
+    "DataEngineer",
+    "Reviewer"
+  ],
+  "created_at": "2026-02-21T10:11:05+09:00",
+  "overview": "데이터 파이프라인 품질 검증 프로젝트"
+}

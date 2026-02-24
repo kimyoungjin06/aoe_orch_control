@@ -1,0 +1,9 @@
+[Unit]
+Description=AOE Telegram Stack Health Self-Heal
+After=aoe-telegram-stack.service
+Wants=aoe-telegram-stack.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=__PROJECT_ROOT__
+ExecStart=__PROJECT_ROOT__/scripts/systemd/aoe-systemd-heal.sh

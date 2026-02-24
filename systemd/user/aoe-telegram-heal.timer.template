@@ -1,0 +1,12 @@
+[Unit]
+Description=AOE Telegram Stack Health Check Timer
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=60s
+Unit=aoe-telegram-heal.service
+AccuracySec=10s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

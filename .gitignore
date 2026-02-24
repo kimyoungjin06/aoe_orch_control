@@ -1,0 +1,25 @@
+# Runtime secrets
+.aoe-team/telegram.env
+
+# Runtime state
+.aoe-team/orch_manager_state.json
+.aoe-team/telegram_gateway_state.json
+
+# Runtime queues/logs
+.aoe-team/messages/
+.aoe-team/logs/
+.aoe-team/*.log
+.aoe-team/*.pid
+.aoe-team/*.lock
+.aoe-team/_*.log
+.aoe-team/_*.pid
+
+# Editor/OS noise
+.DS_Store
+*.swp
+*.swo
+
+# Python cache
+__pycache__/
+*.pyc
+.pytest_cache/

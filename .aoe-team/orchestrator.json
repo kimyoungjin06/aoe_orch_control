@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "created_at": "2026-02-21T10:11:05+09:00",
+  "project_root": "/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control",
+  "team_dir": "/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team",
+  "overview": "데이터 파이프라인 품질 검증 프로젝트",
+  "provider_commands": {
+    "codex": "codex",
+    "claude": "claude",
+    "shell": "bash -l"
+  },
+  "coordinator": {
+    "role": "Orchestrator",
+    "provider": "codex",
+    "launch": "codex",
+    "session": "aoe_Orchestrator_4183d5b9"
+  },
+  "agents": [
+    {
+      "role": "DataEngineer",
+      "provider": "codex",
+      "launch": "codex",
+      "session": "aoe_DataEngineer_d8ec4214"
+    },
+    {
+      "role": "Reviewer",
+      "provider": "codex",
+      "launch": "codex",
+      "session": "aoe_Reviewer_a03ad538"
+    }
+  ]
+}
