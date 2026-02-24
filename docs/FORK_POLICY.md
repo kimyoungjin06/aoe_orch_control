@@ -23,6 +23,12 @@
 ## 5. Security and Secrets
 - Runtime secrets (e.g., bot token) must never be committed.
 - `.aoe-team/telegram.env` and runtime state/log/message artifacts are excluded by `.gitignore`.
+- Runtime mutable team files are also local-only and excluded:
+- `.aoe-team/team.json`
+- `.aoe-team/orchestrator.json`
+- `.aoe-team/workers/*.json`
+- `.aoe-team/agents/*/AGENTS.md`
+- Reproducible defaults for those files are kept under `templates/aoe-team/`.
 - If secret leakage occurs, rotate token immediately and document incident handling.
 
 ## 6. Traceability

@@ -49,6 +49,18 @@ Telegram-controlled orchestration workspace for multi-session AOE operations.
 - First-time lock: send `/lockme` (resets allowlist to current chat and clears admin/readonly), verify with `/whoami`
 - Safe natural shortcuts (slash-only mode): `모니터 5`, `확인 1`, `상태 1`, `재시도 1`, `재계획 1`, `취소 1`
 
+## Runtime Boundary
+- `.aoe-team` is an active runtime directory.
+- The following mutable runtime files are intentionally untracked:
+- `.aoe-team/team.json`
+- `.aoe-team/orchestrator.json`
+- `.aoe-team/workers/*.json`
+- `.aoe-team/agents/*/AGENTS.md`
+- Versioned defaults are stored in `templates/aoe-team/`.
+- Bootstrap missing runtime files from templates:
+- `bash scripts/team/bootstrap_runtime_templates.sh --project-root /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control`
+- Keep service code/docs in repository paths (`scripts/`, `docs/`, `.github/`) and treat `.aoe-team` state as environment-local.
+
 ## Tests
 - Pytest gateway regression: `scripts/gateway_pytest.sh`
 - Direct invoke: `uv run --with pytest pytest -q tests/gateway/test_gateway_cli.py`

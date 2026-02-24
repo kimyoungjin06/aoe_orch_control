@@ -7,8 +7,13 @@
 - Team dir: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team`
 - Gateway source: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/aoe-telegram-gateway.py`
 - Parse/Resolver/Handlers/Flow/ACL modules: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/aoe_tg_parse.py`, `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/aoe_tg_command_resolver.py`, `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/aoe_tg_command_handlers.py`, `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/aoe_tg_management_handlers.py`, `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/aoe_tg_orch_overview_handlers.py`, `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/aoe_tg_orch_task_handlers.py`, `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/aoe_tg_retry_handlers.py`, `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/aoe_tg_role_handlers.py`, `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/aoe_tg_message_flow.py`, `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/aoe_tg_run_handlers.py`, `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/aoe_tg_acl.py`
+- Runtime boundary: `.aoe-team` is mutable runtime state. `team.json`, `orchestrator.json`, `workers/*.json`, `agents/*/AGENTS.md` are local-only and not versioned.
 
 ## 2. Standard Operations
+0. First-time runtime init (if `.aoe-team/orchestrator.json` is missing):
+`aoe-orch init --project-root /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control --overview "aoe_orch_control project orchestration"`
+0. Bootstrap missing runtime files from templates (optional, non-destructive):
+`bash /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/team/bootstrap_runtime_templates.sh --project-root /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control`
 1. Start:
 `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh start`
 0. (Optional) refresh runtime symlinks:

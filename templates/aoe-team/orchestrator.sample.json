@@ -1,9 +1,9 @@
 {
   "version": 1,
-  "created_at": "2026-02-21T10:11:05+09:00",
-  "project_root": "/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control",
-  "team_dir": "/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team",
-  "overview": "데이터 파이프라인 품질 검증 프로젝트",
+  "created_at": "__CREATED_AT__",
+  "project_root": "__PROJECT_ROOT__",
+  "team_dir": "__TEAM_DIR__",
+  "overview": "__OVERVIEW__",
   "provider_commands": {
     "codex": "codex",
     "claude": "claude",
@@ -13,20 +13,20 @@
     "role": "Orchestrator",
     "provider": "codex",
     "launch": "codex",
-    "session": "aoe_Orchestrator_4183d5b9"
+    "session": ""
   },
   "agents": [
     {
       "role": "DataEngineer",
       "provider": "codex",
       "launch": "codex",
-      "session": "aoe_DataEngineer_d8ec4214"
+      "session": ""
     },
     {
       "role": "Reviewer",
       "provider": "codex",
       "launch": "codex",
-      "session": "aoe_Reviewer_a03ad538"
+      "session": ""
     }
   ]
 }
