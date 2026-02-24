@@ -22,6 +22,14 @@
 `bash /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/install_runtime.sh`
 2. Status:
 `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh status`
+2.1 Session overview with numeric map:
+`/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh overview`
+2.2 Apply visual/key UI (status bar hints + Alt+1..9 binding refresh):
+`/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh ui`
+2.3 Toggle right-side live session panel (inside tmux):
+`/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh panel`
+2.4 Quick switch by index:
+`/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh switch 2`
 3. Logs (tmux pane capture):
 `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh logs`
 4. Structured gateway events:
@@ -171,3 +179,8 @@
 - `재시도 1` -> `/retry 1`
 - `재계획 1` -> `/replan 1`
 - `취소 1` -> `/cancel 1`
+- tmux visualization/switch:
+- `telegram_tmux.sh overview` : numeric session map
+- `telegram_tmux.sh ui` : status bar map + `Alt+1..9` keybinding refresh
+- `telegram_tmux.sh panel` : right-side live panel toggle (in tmux)
+- `telegram_tmux.sh switch <idx|session>` : direct attach/switch
