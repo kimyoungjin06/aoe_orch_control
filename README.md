@@ -39,6 +39,10 @@ Telegram-controlled orchestration workspace for multi-session AOE operations.
 - Runtime init (template bootstrap): `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh init`
 - Start stack: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh start`
 - Stop stack: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh stop`
+- Session overview (number map): `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh overview`
+- Apply tmux visual/key UI: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh ui`
+- Toggle right-side live panel (inside tmux): `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh panel`
+- Fast switch by index/session: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh switch 2`
 - Systemd install: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/systemd/install_user_services.sh`
 - Telegram input policy: slash-first (`/dispatch`, `/direct`, `/mode`, `/monitor`, `/check`, `/task`, `/pick`, `/kpi`, `/cancel`, `/retry`, `/replan`, `/help`, `/whoami`, `/acl`, `/grant`, `/revoke`)
 - Access policy: deny-by-default + ACL envs (`TELEGRAM_ALLOW_CHAT_IDS`, `TELEGRAM_ADMIN_CHAT_IDS`, `TELEGRAM_READONLY_CHAT_IDS`)
@@ -49,6 +53,7 @@ Telegram-controlled orchestration workspace for multi-session AOE operations.
 - Chat guardrails: per-chat running limit + daily cap (`AOE_CHAT_MAX_RUNNING`, `AOE_CHAT_DAILY_CAP`)
 - First-time lock: send `/lockme` (resets allowlist to current chat and clears admin/readonly), verify with `/whoami`
 - Safe natural shortcuts (slash-only mode): `모니터 5`, `확인 1`, `상태 1`, `재시도 1`, `재계획 1`, `취소 1`
+- tmux quick switch: `Alt+1..9` (gateway/worker index map shown in status bar and `overview`)
 
 ## Runtime Boundary
 - `.aoe-team` is an active runtime directory.
