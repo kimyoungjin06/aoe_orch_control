@@ -36,6 +36,7 @@ Telegram-controlled orchestration workspace for multi-session AOE operations.
 - Message flow source: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/aoe_tg_message_flow.py`
 - Run handlers source: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/aoe_tg_run_handlers.py`
 - Runtime link install: `bash /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/install_runtime.sh`
+- Global launcher install: `bash /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/team/install_global_cli.sh`
 - Runtime init (template bootstrap): `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh init`
 - Start stack: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh start`
 - Stop stack: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh stop`
@@ -54,6 +55,16 @@ Telegram-controlled orchestration workspace for multi-session AOE operations.
 - First-time lock: send `/lockme` (resets allowlist to current chat and clears admin/readonly), verify with `/whoami`
 - Safe natural shortcuts (slash-only mode): `모니터 5`, `확인 1`, `상태 1`, `재시도 1`, `재계획 1`, `취소 1`
 - tmux quick switch: `Alt+1..9` (gateway/worker index map shown in status bar and `overview`)
+
+## Global Commands
+- After one-time install, use from any directory:
+- `aoe-team-stack init|start|stop|restart|status`
+- `aoe-team-stack overview|ui|panel`
+- `aoe-team-stack switch <idx|session>`
+- alias: `aoe-team-tmux ...` (same launcher)
+- multi-project mode: `aoe-team-stack --project-root /path/to/project start`
+- uninstall: `bash scripts/team/uninstall_global_cli.sh`
+- note: `aoe-team` itself remains the upstream message-queue CLI; stack control is `aoe-team-stack`.
 
 ## Runtime Boundary
 - `.aoe-team` is an active runtime directory.

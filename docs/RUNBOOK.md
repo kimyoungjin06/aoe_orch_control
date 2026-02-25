@@ -10,6 +10,8 @@
 - Runtime boundary: `.aoe-team` is mutable runtime state. `team.json`, `orchestrator.json`, `workers/*.json`, `agents/*/AGENTS.md` are local-only and not versioned.
 
 ## 2. Standard Operations
+0. Install global launcher (one-time):
+`bash /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/team/install_global_cli.sh`
 0. First-time runtime init (if `.aoe-team/orchestrator.json` is missing):
 `aoe-orch init --project-root /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control --overview "aoe_orch_control project orchestration"`
 0. Bootstrap missing runtime files from templates (optional, non-destructive):
@@ -30,6 +32,13 @@
 `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh panel`
 2.4 Quick switch by index:
 `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh switch 2`
+2.5 Same operations via global command (from anywhere):
+`aoe-team-stack start`
+`aoe-team-stack ui`
+`aoe-team-stack panel`
+`aoe-team-stack switch 2`
+2.6 Remove global launcher:
+`bash /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/team/uninstall_global_cli.sh`
 3. Logs (tmux pane capture):
 `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh logs`
 4. Structured gateway events:
@@ -184,3 +193,6 @@
 - `telegram_tmux.sh ui` : status bar map + `Alt+1..9` keybinding refresh
 - `telegram_tmux.sh panel` : right-side live panel toggle (in tmux)
 - `telegram_tmux.sh switch <idx|session>` : direct attach/switch
+- global aliases:
+- `aoe-team-stack ...`
+- `aoe-team-tmux ...`

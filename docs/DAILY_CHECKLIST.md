@@ -1,6 +1,7 @@
 # DAILY_CHECKLIST
 
 ## Daily Start (5 min)
+1. (최초 1회) `scripts/team/install_global_cli.sh` 실행
 1. `telegram_tmux.sh status` 확인
 1. `telegram_tmux.sh ui` 실행 (Alt+1..9 전환/상단 세션맵 갱신)
 1. 필요 시 `telegram_tmux.sh panel`로 우측 라이브 세션 패널 토글
