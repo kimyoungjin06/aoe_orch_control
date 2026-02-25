@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, Optional
 
@@ -13,6 +14,10 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 GW = ROOT / "scripts/gateway/aoe-telegram-gateway.py"
+
+
+def _now_utc_compact() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+0000")
 
 
 def _run_gateway(
@@ -191,7 +196,7 @@ def test_risk_confirm_ok(tmp_path: Path) -> None:
                 "mode": "dispatch",
                 "prompt": "rm -rf /tmp/demo",
                 "risk": "destructive_delete",
-                "requested_at": "2026-02-24T00:00:00+0000",
+                "requested_at": _now_utc_compact(),
             }
         },
     )
