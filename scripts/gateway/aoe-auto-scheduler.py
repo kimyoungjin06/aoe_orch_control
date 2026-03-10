@@ -1,0 +1,614 @@
+#!/usr/bin/env python3
+"""Non-blocking Mother-Orch auto scheduler (tmux sidecar).
+
+This process runs outside the Telegram polling gateway so long-running TF runs
+do not block message intake. It reuses gateway logic by importing
+`scripts/gateway/aoe-telegram-gateway.py` dynamically and calling
+`handle_text_message()` with `/next` (or `/fanout`) periodically.
+
+Runtime control is via a small JSON file under `.aoe-team/` (default:
+`auto_scheduler.json`) which is updated by the Telegram command `/auto`.
+"""
+
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+import os
+import sys
+import time
+from pathlib import Path
+from typing import Any, Dict, Tuple
+
+
+DEFAULT_INTERVAL_SEC = 2.0
+DEFAULT_IDLE_SEC = 20.0
+DEFAULT_PREFETCH_MIN_INTERVAL_SEC = 60.0
+DEFAULT_PREFETCH_SINCE = "12h"
+DEFAULT_MAX_FAILURES = 3
+
+
+def _now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+
+def _load_json(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_json(path: Path, data: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = dict(data)
+    payload["updated_at"] = _now_iso()
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _auto_enabled(auto_state: Dict[str, Any]) -> bool:
+    return bool(auto_state.get("enabled", False))
+
+
+def _auto_chat_id(auto_state: Dict[str, Any], fallback: str) -> str:
+    token = str(auto_state.get("chat_id", "")).strip()
+    return token or str(fallback or "").strip()
+
+
+def _auto_force(auto_state: Dict[str, Any], fallback: bool) -> bool:
+    if "force" in auto_state:
+        return bool(auto_state.get("force", False))
+    return bool(fallback)
+
+
+def _auto_command(auto_state: Dict[str, Any], fallback: str) -> str:
+    token = str(auto_state.get("command", "")).strip().lower()
+    if token in {"next", "fanout"}:
+        return token
+    fb = str(fallback or "").strip().lower()
+    return fb if fb in {"next", "fanout"} else "next"
+
+
+def _auto_prefetch(auto_state: Dict[str, Any]) -> str:
+    token = str(auto_state.get("prefetch", "")).strip().lower()
+    if token in {"recent", "recent_docs", "sync-recent"}:
+        token = "sync_recent"
+    return token if token in {"sync_recent"} else ""
+
+
+def _auto_prefetch_replace_sync(auto_state: Dict[str, Any]) -> bool:
+    return bool(auto_state.get("prefetch_replace_sync", False))
+
+
+def _auto_prefetch_min_interval(auto_state: Dict[str, Any], fallback: float) -> float:
+    raw = auto_state.get("prefetch_min_interval_sec")
+    try:
+        val = float(raw)
+    except Exception:
+        val = float(fallback)
+    return max(5.0, min(3600.0, val))
+
+
+def _auto_prefetch_since(auto_state: Dict[str, Any], fallback: str) -> str:
+    token = str(auto_state.get("prefetch_since", "")).strip()
+    if token:
+        return token
+    env = str(os.environ.get("AOE_AUTO_PREFETCH_SINCE", "")).strip()
+    return env or str(fallback or "").strip()
+
+
+def _prefetch_plan(prefetch: str, prefetch_since: str, replace_sync: bool) -> Tuple[str, list[Tuple[str, str]]]:
+    if prefetch != "sync_recent":
+        return "", []
+    if replace_sync:
+        return "sync_recent+replace (full-scope; since ignored)", [("/sync replace all quiet", "replace")]
+    since_arg = f" since {prefetch_since}" if prefetch_since else ""
+    since_disp = prefetch_since or "-"
+    return (
+        f"sync files+salvage all since={since_disp} quiet",
+        [
+            (f"/sync files all{since_arg} quiet", "files"),
+            (f"/sync salvage all{since_arg} quiet", "salvage"),
+        ],
+    )
+
+
+def _auto_interval(auto_state: Dict[str, Any], fallback: float) -> float:
+    raw = auto_state.get("interval_sec")
+    try:
+        val = float(raw)
+    except Exception:
+        val = float(fallback)
+    return max(0.5, min(300.0, val))
+
+
+def _auto_idle(auto_state: Dict[str, Any], fallback: float) -> float:
+    raw = auto_state.get("idle_sec")
+    try:
+        val = float(raw)
+    except Exception:
+        val = float(fallback)
+    return max(1.0, min(3600.0, val))
+
+
+def _auto_max_failures(auto_state: Dict[str, Any], fallback: int) -> int:
+    raw = auto_state.get("max_failures")
+    try:
+        val = int(raw)
+    except Exception:
+        env = str(os.environ.get("AOE_AUTO_MAX_FAILURES", "") or "").strip()
+        try:
+            val = int(env)
+        except Exception:
+            val = int(fallback)
+    return max(1, min(50, int(val)))
+
+
+def _load_gateway_module(gateway_path: Path) -> Any:
+    sys.path.insert(0, str(gateway_path.parent.resolve()))
+    spec = importlib.util.spec_from_file_location("aoe_telegram_gateway", str(gateway_path))
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"failed to load gateway spec: {gateway_path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _build_gateway_args(gw: Any, project_root: Path, team_dir: Path, verbose: bool) -> argparse.Namespace:
+    # Reuse the gateway parser so env-based defaults are consistent.
+    parser = gw.build_parser()
+    argv = [
+        "--project-root",
+        str(project_root),
+        "--team-dir",
+        str(team_dir),
+    ]
+    if verbose:
+        argv.append("--verbose")
+    args = parser.parse_args(argv)
+
+    # Apply the same normalization steps as gateway.main(), but skip instance lock / run_loop.
+    args.project_root = gw.resolve_project_root(args.project_root)
+    args.team_dir = gw.resolve_team_dir(args.project_root, args.team_dir)
+    args.state_file = gw.resolve_state_file(args.project_root, getattr(args, "state_file", None))
+    args.manager_state_file = gw.resolve_manager_state_file(args.team_dir, getattr(args, "manager_state_file", ""))
+    args.chat_aliases_file = gw.resolve_chat_aliases_file(args.team_dir, getattr(args, "chat_aliases_file", ""))
+    if str(getattr(args, "instance_lock_file", "") or "").strip():
+        args.instance_lock_file = Path(str(args.instance_lock_file)).expanduser().resolve()
+    else:
+        args.instance_lock_file = (args.team_dir / ".gateway.instance.lock").resolve()
+
+    args.workspace_root = gw.resolve_workspace_root(getattr(args, "workspace_root", ""))
+    args.owner_chat_id = gw.normalize_owner_chat_id(getattr(args, "owner_chat_id", ""))
+    args.default_lang = gw.normalize_chat_lang_token(args.default_lang, gw.DEFAULT_UI_LANG) or gw.DEFAULT_UI_LANG
+    args.default_reply_lang = gw.normalize_chat_lang_token(args.default_reply_lang, gw.DEFAULT_REPLY_LANG) or gw.DEFAULT_REPLY_LANG
+    raw_default_report = gw.normalize_report_token(str(getattr(args, "default_report_level", "") or "").strip())
+    args.default_report_level = raw_default_report if raw_default_report in {"short", "normal", "long"} else gw.DEFAULT_REPORT_LEVEL
+
+    args.allow_chat_ids = gw.parse_csv_set(getattr(args, "allow_chat_ids", ""))
+    args.admin_chat_ids = gw.parse_csv_set(getattr(args, "admin_chat_ids", ""))
+    args.readonly_chat_ids = gw.parse_csv_set(getattr(args, "readonly_chat_ids", ""))
+    args.readonly_chat_ids = {x for x in args.readonly_chat_ids if x not in args.admin_chat_ids}
+    args.chat_alias_cache = gw.load_chat_aliases(args.chat_aliases_file)
+
+    return args
+
+
+def _peek_next(gw: Any, args: argparse.Namespace, chat_id: str, force: bool) -> Tuple[str, str, str]:
+    state = gw.load_manager_state(args.manager_state_file, args.project_root, args.team_dir)
+    try:
+        return gw._drain_peek_next_todo(state, chat_id, force=force)
+    except Exception:
+        return "", "", "peek_error"
+
+
+def _is_confirm_pending(gw: Any, args: argparse.Namespace, chat_id: str) -> bool:
+    try:
+        state = gw.load_manager_state(args.manager_state_file, args.project_root, args.team_dir)
+    except Exception:
+        return False
+    try:
+        return bool(gw.get_confirm_action(state, chat_id))
+    except Exception:
+        return False
+
+
+def _did_candidate_make_progress(gw: Any, args: argparse.Namespace, chat_id: str, project_key: str, todo_id: str) -> bool:
+    """Best-effort loop guard.
+
+    Progress is when:
+    - pending_todo cleared, or
+    - todo status moved away from 'open', or
+    - a task got linked to this todo_id.
+    """
+
+    try:
+        state = gw.load_manager_state(args.manager_state_file, args.project_root, args.team_dir)
+    except Exception:
+        return True
+
+    projects = state.get("projects") if isinstance(state, dict) else {}
+    entry = projects.get(project_key) if isinstance(projects, dict) and isinstance(projects.get(project_key), dict) else {}
+    if not isinstance(entry, dict):
+        return True
+
+    pending = entry.get("pending_todo")
+    if not (
+        isinstance(pending, dict)
+        and str(pending.get("chat_id", "")).strip() == str(chat_id or "").strip()
+        and str(pending.get("todo_id", "")).strip() == str(todo_id or "").strip()
+    ):
+        return True
+
+    todos = entry.get("todos")
+    if isinstance(todos, list):
+        for row in todos:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("id", "")).strip() != str(todo_id or "").strip():
+                continue
+            st = str(row.get("status", "open")).strip().lower() or "open"
+            if st != "open":
+                return True
+
+    tasks = entry.get("tasks")
+    if isinstance(tasks, dict):
+        for t in tasks.values():
+            if not isinstance(t, dict):
+                continue
+            if str(t.get("todo_id", "")).strip() != str(todo_id or "").strip():
+                continue
+            return True
+
+    return False
+
+
+def _candidate_todo_status(gw: Any, args: argparse.Namespace, project_key: str, todo_id: str) -> Tuple[str, str]:
+    """Return (status, blocked_reason) for the todo row, best-effort."""
+
+    try:
+        state = gw.load_manager_state(args.manager_state_file, args.project_root, args.team_dir)
+    except Exception:
+        return "", ""
+
+    projects = state.get("projects") if isinstance(state, dict) else {}
+    entry = projects.get(project_key) if isinstance(projects, dict) and isinstance(projects.get(project_key), dict) else {}
+    if not isinstance(entry, dict):
+        return "", ""
+
+    todo_token = str(todo_id or "").strip()
+    if not todo_token:
+        return "", ""
+
+    raw_todos = entry.get("todos")
+    todos = [r for r in raw_todos if isinstance(r, dict)] if isinstance(raw_todos, list) else []
+    for row in todos:
+        if str(row.get("id", "")).strip() != todo_token:
+            continue
+        status = str(row.get("status", "")).strip().lower()
+        blocked_reason = str(row.get("blocked_reason", "")).strip()
+        return status, blocked_reason
+
+    return "", ""
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(prog="aoe-auto-scheduler", description="AOE Mother-Orch auto scheduler (tmux sidecar)")
+    p.add_argument("--project-root", default=".")
+    p.add_argument("--team-dir", default="")
+    p.add_argument("--auto-state-file", default="")
+    p.add_argument("--chat-id", default=os.environ.get("TELEGRAM_OWNER_CHAT_ID", os.environ.get("AOE_OWNER_CHAT_ID", "")))
+    p.add_argument("--force", action="store_true", help="ignore busy checks (same as /next force)")
+    p.add_argument("--interval-sec", type=float, default=DEFAULT_INTERVAL_SEC)
+    p.add_argument("--idle-sec", type=float, default=DEFAULT_IDLE_SEC)
+    p.add_argument("--once", action="store_true", help="run a single scheduling attempt then exit")
+    p.add_argument("--verbose", action="store_true")
+    args0 = p.parse_args()
+
+    project_root = Path(args0.project_root).expanduser().resolve()
+    team_dir = Path(args0.team_dir).expanduser().resolve() if str(args0.team_dir).strip() else (project_root / ".aoe-team")
+    auto_state_path = (
+        Path(args0.auto_state_file).expanduser().resolve()
+        if str(args0.auto_state_file).strip()
+        else (team_dir / "auto_scheduler.json").resolve()
+    )
+    chat_id_fallback = str(args0.chat_id or "").strip()
+
+    gateway_path = (project_root / "scripts" / "gateway" / "aoe-telegram-gateway.py").resolve()
+    if not gateway_path.exists():
+        raise SystemExit(f"[ERROR] gateway not found: {gateway_path}")
+
+    token = (os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
+    if not token:
+        raise SystemExit("[ERROR] missing TELEGRAM_BOT_TOKEN (source .aoe-team/telegram.env)")
+
+    gw = _load_gateway_module(gateway_path)
+    gw_args = _build_gateway_args(gw, project_root, team_dir, verbose=bool(args0.verbose))
+    gw_args.dry_run = False
+    # Mark this process as auto invocation (used for history suppression and loop guards).
+    gw_args._aoe_invocation = "auto"
+
+    if not chat_id_fallback:
+        raise SystemExit("[ERROR] missing chat id (set TELEGRAM_OWNER_CHAT_ID or pass --chat-id)")
+
+    last_idle_reason = ""
+    while True:
+        auto_state = _load_json(auto_state_path)
+        enabled = _auto_enabled(auto_state)
+        chat_id = _auto_chat_id(auto_state, chat_id_fallback)
+        force = _auto_force(auto_state, bool(args0.force))
+        command = _auto_command(auto_state, "next")
+        prefetch = _auto_prefetch(auto_state)
+        replace_sync = _auto_prefetch_replace_sync(auto_state)
+        prefetch_min_interval = _auto_prefetch_min_interval(auto_state, DEFAULT_PREFETCH_MIN_INTERVAL_SEC)
+        prefetch_since = _auto_prefetch_since(auto_state, DEFAULT_PREFETCH_SINCE)
+        interval_sec = _auto_interval(auto_state, float(args0.interval_sec))
+        idle_sec = _auto_idle(auto_state, float(args0.idle_sec))
+
+        try:
+            manager_state = gw.load_manager_state(gw_args.manager_state_file, gw_args.project_root, gw_args.team_dir)
+            lock_key = str(gw.get_project_lock_key(manager_state)).strip() if hasattr(gw, "get_project_lock_key") else ""
+        except Exception:
+            lock_key = ""
+        if lock_key and command == "fanout":
+            command = "next"
+            auto_state["command"] = "next"
+            auto_state["last_reason"] = f"project_lock:{lock_key}:forced_next"
+            _save_json(auto_state_path, auto_state)
+
+        if not enabled:
+            last_idle_reason = "disabled"
+            if args0.once:
+                return 0
+            time.sleep(2.0)
+            continue
+
+        # Stop the auto loop when a manual confirm is pending, otherwise /next may spam forever.
+        if _is_confirm_pending(gw, gw_args, chat_id):
+            last_idle_reason = "confirm_pending"
+            try:
+                auto_state["enabled"] = False
+                auto_state["stopped_at"] = _now_iso()
+                auto_state["stopped_reason"] = last_idle_reason
+                auto_state["last_reason"] = last_idle_reason
+                _save_json(auto_state_path, auto_state)
+            except Exception:
+                pass
+            try:
+                gw.safe_tg_send_text(
+                    token,
+                    chat_id,
+                    "AUTO stopped: confirm pending.\n"
+                    "- resolve: /ok or /cancel\n"
+                    "- then: /auto on\n",
+                    max_chars=3800,
+                    timeout_sec=60,
+                    dry_run=False,
+                    verbose=bool(args0.verbose),
+                    context="auto-confirm-pending",
+                )
+            except Exception:
+                pass
+            if args0.once:
+                return 0
+            time.sleep(max(2.0, float(idle_sec)))
+            continue
+
+        project_key, todo_id, reason = _peek_next(gw, gw_args, chat_id, force=force)
+        if not project_key or not todo_id:
+            # Optional prefetch: when idle (no runnable todo), try to seed queue from recent docs.
+            if prefetch == "sync_recent" and (reason or "") == "no_runnable_open_todo":
+                now = time.time()
+                last_ts = 0.0
+                try:
+                    last_ts = float(auto_state.get("last_prefetch_ts") or 0.0)
+                except Exception:
+                    last_ts = 0.0
+                if (now - last_ts) >= float(prefetch_min_interval):
+                    trace_id = f"auto-{int(now * 1000)}"
+                    prefetch_desc, prefetch_commands = _prefetch_plan(prefetch, prefetch_since, replace_sync)
+                    if args0.verbose:
+                        print(
+                            f"[AUTO] prefetch: {prefetch_desc or '-'} (min_interval={prefetch_min_interval}s)",
+                            flush=True,
+                        )
+                    try:
+                        auto_state["last_prefetch_at"] = _now_iso()
+                        auto_state["last_prefetch_ts"] = int(now)
+                        auto_state["last_prefetch_reason"] = str(reason or "").strip() or "idle"
+                        auto_state["last_prefetch_mode"] = "replace_sync" if replace_sync else "sync_recent"
+                        _save_json(auto_state_path, auto_state)
+                    except Exception:
+                        pass
+                    try:
+                        for cmd_text, label in prefetch_commands:
+                            gw.handle_text_message(
+                                gw_args,
+                                token,
+                                chat_id,
+                                cmd_text,
+                                trace_id=f"{trace_id}/prefetch/{label}",
+                            )
+                    except Exception as exc:
+                        if args0.verbose:
+                            print(f"[AUTO] prefetch failed: {exc}", flush=True)
+                    project_key, todo_id, reason = _peek_next(gw, gw_args, chat_id, force=force)
+
+            if not project_key or not todo_id:
+                last_idle_reason = reason or "idle"
+                if args0.verbose:
+                    print(f"[AUTO] idle: reason={last_idle_reason} sleep={idle_sec}s", flush=True)
+                # write last reason for status visibility (best-effort)
+                try:
+                    auto_state["last_reason"] = last_idle_reason
+                    auto_state["last_checked_at"] = _now_iso()
+                    _save_json(auto_state_path, auto_state)
+                except Exception:
+                    pass
+                if args0.once:
+                    return 0
+                time.sleep(idle_sec)
+                continue
+
+        if args0.verbose:
+            print(
+                f"[AUTO] run: /{command}{' force' if force else ''} (candidate={project_key}:{todo_id})",
+                flush=True,
+            )
+        try:
+            auto_state["last_reason"] = reason or "run"
+            auto_state["last_run_at"] = _now_iso()
+            auto_state["last_candidate"] = f"{project_key}:{todo_id}"
+            auto_state["last_command"] = command
+            _save_json(auto_state_path, auto_state)
+        except Exception:
+            pass
+
+        trace_id = f"auto-{int(time.time() * 1000)}"
+        gw.handle_text_message(
+            gw_args,
+            token,
+            chat_id,
+            f"/{command}{' force' if force else ''}",
+            trace_id=trace_id,
+        )
+
+        # Loop guard: if the same pending todo survives after a run attempt, stop to avoid infinite spam.
+        progressed = True
+        try:
+            progressed = _did_candidate_make_progress(gw, gw_args, chat_id, project_key, todo_id)
+        except Exception:
+            progressed = True
+
+        try:
+            auto_state2 = _load_json(auto_state_path)
+        except Exception:
+            auto_state2 = dict(auto_state)
+
+        try:
+            if progressed:
+                auto_state2.pop("stuck_candidate", None)
+                auto_state2.pop("stuck_count", None)
+                auto_state2.pop("stuck_since", None)
+                _save_json(auto_state_path, auto_state2)
+            else:
+                candidate = f"{project_key}:{todo_id}"
+                if str(auto_state2.get("stuck_candidate", "")).strip() == candidate:
+                    auto_state2["stuck_count"] = int(auto_state2.get("stuck_count") or 0) + 1
+                else:
+                    auto_state2["stuck_candidate"] = candidate
+                    auto_state2["stuck_count"] = 1
+                    auto_state2["stuck_since"] = _now_iso()
+                auto_state2["last_reason"] = "stuck_no_progress"
+                if int(auto_state2.get("stuck_count") or 0) >= 5:
+                    auto_state2["enabled"] = False
+                    auto_state2["stopped_at"] = _now_iso()
+                    auto_state2["stopped_reason"] = "stuck_no_progress"
+                    _save_json(auto_state_path, auto_state2)
+                    try:
+                        gw.safe_tg_send_text(
+                            token,
+                            chat_id,
+                            "AUTO stopped: stuck (no progress after /next).\n"
+                            f"- candidate: {candidate}\n"
+                            "next:\n"
+                            "- /queue\n"
+                            f"- /todo {project_key}\n"
+                            "- /next force\n"
+                            "- /panic\n",
+                            max_chars=3800,
+                            timeout_sec=60,
+                            dry_run=False,
+                            verbose=bool(args0.verbose),
+                            context="auto-stuck",
+                        )
+                    except Exception:
+                        pass
+                else:
+                    _save_json(auto_state_path, auto_state2)
+
+            # Failure budget: if repeated runs keep blocking/failing, stop auto to avoid spamming.
+            if bool(auto_state2.get("enabled", True)):
+                max_failures = _auto_max_failures(auto_state2, DEFAULT_MAX_FAILURES)
+                status, blocked_reason = _candidate_todo_status(gw, gw_args, project_key, todo_id)
+                status = str(status or "").strip().lower()
+
+                fail_count = 0
+                try:
+                    fail_count = int(auto_state2.get("fail_count") or 0)
+                except Exception:
+                    fail_count = 0
+
+                if status in {"done", "running"}:
+                    fail_count = 0
+                    auto_state2.pop("fail_count", None)
+                    auto_state2.pop("fail_candidate", None)
+                    auto_state2.pop("fail_status", None)
+                    auto_state2.pop("fail_reason", None)
+                elif status in {"blocked", "failed"}:
+                    fail_count += 1
+                    auto_state2["fail_count"] = fail_count
+                    auto_state2["fail_candidate"] = f"{project_key}:{todo_id}"
+                    auto_state2["fail_status"] = status
+                    if blocked_reason:
+                        auto_state2["fail_reason"] = blocked_reason[:240]
+                    else:
+                        auto_state2.pop("fail_reason", None)
+                elif status == "open" and progressed:
+                    # We ran something, but the todo is still open: treat as failure-like.
+                    fail_count += 1
+                    auto_state2["fail_count"] = fail_count
+                    auto_state2["fail_candidate"] = f"{project_key}:{todo_id}"
+                    auto_state2["fail_status"] = "open"
+                    auto_state2["fail_reason"] = "no_effect_after_run"
+
+                if fail_count and int(fail_count) >= int(max_failures):
+                    candidate = f"{project_key}:{todo_id}"
+                    auto_state2["enabled"] = False
+                    auto_state2["stopped_at"] = _now_iso()
+                    auto_state2["stopped_reason"] = "too_many_failures"
+                    auto_state2["last_reason"] = "too_many_failures"
+                    _save_json(auto_state_path, auto_state2)
+                    try:
+                        reason_line = f"- reason: {auto_state2.get('fail_reason','-')}" if auto_state2.get("fail_reason") else ""
+                        gw.safe_tg_send_text(
+                            token,
+                            chat_id,
+                            "AUTO stopped: too many failures.\n"
+                            f"- candidate: {candidate}\n"
+                            f"- fail_count: {fail_count}/{max_failures}\n"
+                            + (reason_line + "\n" if reason_line else "")
+                            + "next:\n"
+                            "- /queue\n"
+                            "- /auto off\n"
+                            "- /auto on\n"
+                            "- /panic\n",
+                            max_chars=3800,
+                            timeout_sec=60,
+                            dry_run=False,
+                            verbose=bool(args0.verbose),
+                            context="auto-too-many-failures",
+                        )
+                    except Exception:
+                        pass
+                else:
+                    _save_json(auto_state_path, auto_state2)
+        except Exception:
+            pass
+
+        if args0.once:
+            return 0
+        time.sleep(interval_sec)
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        raise SystemExit(0)

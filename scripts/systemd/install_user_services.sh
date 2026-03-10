@@ -36,7 +36,9 @@ render_unit "$UNIT_SRC_DIR/$STACK_UNIT.template" "$UNIT_DST_DIR/$STACK_UNIT"
 render_unit "$UNIT_SRC_DIR/$HEAL_UNIT.template" "$UNIT_DST_DIR/$HEAL_UNIT"
 render_unit "$UNIT_SRC_DIR/$HEAL_TIMER.template" "$UNIT_DST_DIR/$HEAL_TIMER"
 
-chmod +x "$PROJECT_ROOT/.aoe-team/telegram_tmux.sh"
+chmod +x "$PROJECT_ROOT/scripts/team/aoe-team-stack.sh"
+chmod +x "$PROJECT_ROOT/scripts/team/runtime/telegram_tmux.sh"
+chmod +x "$PROJECT_ROOT/scripts/team/runtime/worker_codex_handler.sh"
 chmod +x "$PROJECT_ROOT/scripts/systemd/aoe-systemd-heal.sh"
 
 echo "[STEP] daemon-reload"

@@ -11,6 +11,9 @@
 - `Orchestrator`
 - `DataEngineer`
 - `Reviewer`
+- `Local-Dev`
+- `Local-Writer`
+- `Local-Analyst`
 
 ## Communication Protocol
 - Use `aoe-team send` for every assignment.

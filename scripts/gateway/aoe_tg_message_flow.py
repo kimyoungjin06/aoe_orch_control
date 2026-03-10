@@ -63,6 +63,7 @@ def apply_retry_transition_to_resolved(
         resolved.run_force_mode = next_force_mode.strip()
 
     resolved.run_no_wait_override = transition.get("run_no_wait_override")
+    resolved.run_auto_source = str(transition.get("run_auto_source", resolved.run_auto_source)).strip() or resolved.run_auto_source
     run_transition.run_control_mode = str(transition.get("run_control_mode", "")).strip() or run_transition.run_control_mode
     run_transition.run_source_request_id = (
         str(transition.get("run_source_request_id", "")).strip() or run_transition.run_source_request_id
@@ -86,17 +87,21 @@ def enforce_command_auth(
     error_auth_code: str,
 ) -> bool:
     if chat_role == "unknown":
-        if cmd_key not in {"start", "help", "whoami", "lockme"}:
+        if cmd_key not in {"start", "help", "tutorial", "whoami", "lockme", "onlyme"}:
             send("permission denied: unauthorized chat.", context="auth-deny", with_menu=True)
             log_event(event="auth_denied", stage="intake", status="rejected", error_code=error_auth_code, detail=f"role=unknown cmd={cmd_key}")
             return True
-    elif cmd_key == "lockme":
+    elif cmd_key in {"lockme", "onlyme"}:
         if args.allow_chat_ids and chat_role not in {"admin", "owner"}:
-            send("permission denied: /lockme is admin-only after initial claim.", context="auth-deny", with_menu=True)
-            log_event(event="auth_denied", stage="intake", status="rejected", error_code=error_auth_code, detail=f"role={chat_role} cmd=lockme")
+            send(
+                "permission denied: /lockme and /onlyme are admin-only after initial claim.",
+                context="auth-deny",
+                with_menu=True,
+            )
+            log_event(event="auth_denied", stage="intake", status="rejected", error_code=error_auth_code, detail=f"role={chat_role} cmd={cmd_key}")
             return True
 
-    if cmd_key in {"lockme", "grant", "revoke"} and str(args.owner_chat_id or "").strip():
+    if cmd_key in {"lockme", "onlyme", "grant", "revoke"} and str(args.owner_chat_id or "").strip():
         if not is_owner_chat(chat_id, args):
             send(
                 f"permission denied: /{cmd_key} is owner-only.\n"
@@ -110,7 +115,7 @@ def enforce_command_auth(
         if cmd_key not in readonly_allowed_commands:
             send(
                 "permission denied: readonly chat.\n"
-                "allowed: /status /check /task /monitor /pick /kpi /help /whoami /mode /acl",
+                "allowed: /status /check /task /monitor /pick /kpi /queue /todo /auto /help /whoami /mode /lang /report /acl /replay list|show",
                 context="auth-deny",
                 with_menu=True,
             )

@@ -11,7 +11,7 @@ usage() {
 usage: aoe-team-stack.sh [--project-root PATH] <command> [args...]
 
 commands are forwarded to:
-  .aoe-team/telegram_tmux.sh
+  scripts/team/runtime/telegram_tmux.sh
 
 examples:
   aoe-team-stack.sh start
@@ -32,11 +32,12 @@ if [[ $# -eq 0 ]]; then
   exit 2
 fi
 
-TEAM_SCRIPT="$PROJECT_ROOT/.aoe-team/telegram_tmux.sh"
+TEAM_DIR="$PROJECT_ROOT/.aoe-team"
+TEAM_SCRIPT="$DEFAULT_PROJECT_ROOT/scripts/team/runtime/telegram_tmux.sh"
 if [[ ! -x "$TEAM_SCRIPT" ]]; then
   echo "[ERROR] stack script not found/executable: $TEAM_SCRIPT" >&2
   echo "[HINT] run from a valid project root or pass --project-root." >&2
   exit 1
 fi
 
-exec "$TEAM_SCRIPT" "$@"
+exec env AOE_PROJECT_ROOT="$PROJECT_ROOT" AOE_TEAM_DIR="$TEAM_DIR" "$TEAM_SCRIPT" "$@"

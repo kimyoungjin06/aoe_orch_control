@@ -7,9 +7,9 @@ Wants=network-online.target
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=__PROJECT_ROOT__
-ExecStart=__PROJECT_ROOT__/.aoe-team/telegram_tmux.sh start
-ExecStop=__PROJECT_ROOT__/.aoe-team/telegram_tmux.sh stop
-ExecReload=__PROJECT_ROOT__/.aoe-team/telegram_tmux.sh restart
+ExecStart=__PROJECT_ROOT__/scripts/team/aoe-team-stack.sh --project-root __PROJECT_ROOT__ start
+ExecStop=__PROJECT_ROOT__/scripts/team/aoe-team-stack.sh --project-root __PROJECT_ROOT__ stop
+ExecReload=__PROJECT_ROOT__/scripts/team/aoe-team-stack.sh --project-root __PROJECT_ROOT__ restart
 TimeoutStartSec=60
 TimeoutStopSec=60
 

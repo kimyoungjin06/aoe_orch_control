@@ -4,14 +4,27 @@
 # Runtime state
 .aoe-team/orch_manager_state.json
 .aoe-team/telegram_gateway_state.json
+.aoe-team/telegram_chat_aliases.json
+.aoe-team/tf_exec_map.json
+.aoe-team/auto_scheduler.json
+.aoe-team/offdesk_state.json
 .aoe-team/team.json
 .aoe-team/orchestrator.json
+.aoe-team/AOE_TODO.md
+.aoe-team/TODO_SNAPSHOT_*.md
+.aoe-team/telegram.env.sample
+.aoe-team/sync_policy.sample.json
+.aoe-team/telegram_tmux.sh
+.aoe-team/telegram_stack.sh
+.aoe-team/worker_codex_handler.sh
+.aoe-team/*.bak*
 .aoe-team/workers/*.json
 .aoe-team/agents/*/AGENTS.md
 
 # Runtime queues/logs
 .aoe-team/messages/
 .aoe-team/logs/
+.aoe-team/tf_runs/
 .aoe-team/*.log
 .aoe-team/*.pid
 .aoe-team/*.lock
@@ -27,3 +40,11 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Generated investigations docs (runtime)
+docs/investigations_mo/
+
+# Local test fixtures
+tmp_preview_root/
+tmp_sync_stamp_case2/
+tmp_sync_stamp_case3/

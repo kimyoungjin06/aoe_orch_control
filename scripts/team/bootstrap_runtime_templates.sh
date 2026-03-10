@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+PACKAGE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PROJECT_ROOT="${AOE_PROJECT_ROOT:-$PACKAGE_ROOT}"
 TEAM_DIR=""
 OVERVIEW=""
 FORCE=0
@@ -50,7 +52,7 @@ if [[ -z "$TEAM_DIR" ]]; then
   TEAM_DIR="$PROJECT_ROOT/.aoe-team"
 fi
 
-TEMPLATE_DIR="$PROJECT_ROOT/templates/aoe-team"
+TEMPLATE_DIR="$PACKAGE_ROOT/templates/aoe-team"
 if [[ ! -d "$TEMPLATE_DIR" ]]; then
   echo "[ERROR] template directory not found: $TEMPLATE_DIR" >&2
   exit 1
@@ -68,6 +70,19 @@ copy_file_if_needed() {
   mkdir -p "$(dirname "$dst")"
   cp "$src" "$dst"
   echo "[COPY] $dst"
+}
+
+write_runtime_wrapper() {
+  local dst="$1"
+  local target="$2"
+  mkdir -p "$(dirname "$dst")"
+  cat >"$dst" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+exec env AOE_PROJECT_ROOT="$(printf '%s' "$PROJECT_ROOT")" AOE_TEAM_DIR="$(printf '%s' "$TEAM_DIR")" "$target" "\$@"
+EOF
+  chmod 755 "$dst"
+  echo "[WRITE] $dst"
 }
 
 escape_sed() {
@@ -99,11 +114,23 @@ render_json_template() {
 render_json_template "$TEMPLATE_DIR/team.sample.json" "$TEAM_DIR/team.json"
 render_json_template "$TEMPLATE_DIR/orchestrator.sample.json" "$TEAM_DIR/orchestrator.json"
 
+if [[ -f "$TEMPLATE_DIR/AOE_TODO.md" ]]; then
+  copy_file_if_needed "$TEMPLATE_DIR/AOE_TODO.md" "$TEAM_DIR/AOE_TODO.md"
+fi
+
+if [[ -f "$TEMPLATE_DIR/telegram.env.sample" ]]; then
+  copy_file_if_needed "$TEMPLATE_DIR/telegram.env.sample" "$TEAM_DIR/telegram.env.sample"
+fi
+
+if [[ -f "$TEMPLATE_DIR/sync_policy.sample.json" ]]; then
+  copy_file_if_needed "$TEMPLATE_DIR/sync_policy.sample.json" "$TEAM_DIR/sync_policy.sample.json"
+fi
+
 for f in "$TEMPLATE_DIR"/workers/*.json; do
   copy_file_if_needed "$f" "$TEAM_DIR/workers/$(basename "$f")"
 done
 
-for role in Orchestrator DataEngineer Reviewer; do
+for role in Orchestrator DataEngineer Reviewer Local-Dev Local-Writer Local-Analyst; do
   src="$TEMPLATE_DIR/agents/$role/AGENTS.md"
   dst="$TEAM_DIR/agents/$role/AGENTS.md"
   if [[ -f "$src" ]]; then
@@ -111,6 +138,11 @@ for role in Orchestrator DataEngineer Reviewer; do
   fi
 done
 
+write_runtime_wrapper "$TEAM_DIR/telegram_tmux.sh" "$PACKAGE_ROOT/scripts/team/runtime/telegram_tmux.sh"
+write_runtime_wrapper "$TEAM_DIR/worker_codex_handler.sh" "$PACKAGE_ROOT/scripts/team/runtime/worker_codex_handler.sh"
+write_runtime_wrapper "$TEAM_DIR/telegram_stack.sh" "$PACKAGE_ROOT/scripts/team/legacy/telegram_stack.sh"
+
 echo "[OK] runtime template bootstrap complete"
+echo " - package_root: $PACKAGE_ROOT"
 echo " - project_root: $PROJECT_ROOT"
 echo " - team_dir: $TEAM_DIR"

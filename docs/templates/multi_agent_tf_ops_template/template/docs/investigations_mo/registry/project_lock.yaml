@@ -1,0 +1,24 @@
+active_project: __ACTIVE_PROJECT__
+active_tf: __ACTIVE_TF__
+effective_date: __TAG__
+owner: mother-orch
+rationale: "__ACTIVE_PROJECT__ / __ACTIVE_TF__ is current highest-priority execution focus."
+
+runtime_source_of_truth:
+  - .aoe-team/orch_manager_state.json
+
+doc_source_of_truth:
+  - docs/investigations_mo/registry/project_lock.yaml
+
+active_paths:
+  project_ongoing: docs/investigations_mo/projects/__ACTIVE_PROJECT__/ongoing.md
+  project_note: docs/investigations_mo/projects/__ACTIVE_PROJECT__/note.md
+  tf_report: docs/investigations_mo/projects/__ACTIVE_PROJECT__/tfs/__ACTIVE_TF__/report.md
+
+entry_conditions:
+  - "project objective is written"
+  - "TF objective is explicitly stated in report.md"
+
+exit_conditions:
+  - "critic accepted and integration completed"
+  - "or escalated with unblock conditions"

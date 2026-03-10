@@ -1,0 +1,19 @@
+version: 1
+updated_at: __TAG__
+module: __MODULE_NAME__
+purpose: "minimal context startup for mother-orch/project-orch/TF agents"
+
+read_order:
+  - AGENTS.md
+  - docs/CONSTITUTION.md
+  - docs/investigations_mo/registry/project_lock.yaml
+  - docs/investigations_mo/registry/project_flow_branching.md
+  - "<active_paths.project_ongoing>"
+  - "<active_paths.tf_ongoing>"
+
+first_10min:
+  must_check:
+    - "project objective and tf objective are present"
+    - "next action owner is assigned"
+  optional:
+    - "sync with gateway status /monitor /check"

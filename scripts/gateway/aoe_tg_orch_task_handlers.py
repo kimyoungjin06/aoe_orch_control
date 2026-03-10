@@ -1,7 +1,190 @@
 #!/usr/bin/env python3
 """Orchestrator task lifecycle handlers for Telegram gateway."""
 
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+
+from aoe_tg_package_paths import package_root
+
+from aoe_tg_project_runtime import project_hidden_from_ops, project_runtime_issue
+
+
+_SCENARIO_FILENAME = "AOE_TODO.md"
+_DEFAULT_SCENARIO_TEMPLATE = """# AOE_TODO.md
+
+Project scenario (per-project, runtime file).
+
+This file is imported into the Mother-Orch todo queue via `/sync`.
+Only task lines are parsed; everything else is ignored.
+
+## Tasks
+
+# Optional: keep your canonical todo in `<project_root>/TODO.md` and include it here.
+@include ../TODO.md
+
+# Supported formats (parsed by /sync):
+# - [ ] summary        (open; default priority: P2)
+# - summary            (open; default priority: P2)
+# - 1. summary         (open; default priority: P2)
+# - [ ] P1: summary
+# - [x] P2: summary
+# - P3: summary
+#
+# Notes:
+# - You can include an explicit TODO id to update an existing item:
+#   - [ ] TODO-123 P2: Adjust thresholds
+# - Done lines ([x]) only mark done when the matching TODO already exists.
+
+# - [ ] P2: (write your task here)
+
+## Examples (ignored by /sync)
+
+```text
+- [ ] P1: First task
+- [ ] P2: Second task
+```
+"""
+
+
+def _project_alias(entry: Dict[str, Any], fallback: str) -> str:
+    token = str(entry.get("project_alias", "")).strip().upper()
+    return token or str(fallback or "").strip() or "-"
+
+
+def _project_sort_key(key: str, entry: Dict[str, Any]) -> tuple[int, str, str]:
+    alias = _project_alias(entry, key)
+    token = alias[1:] if alias.startswith("O") else alias
+    idx = int(token) if token.isdigit() else 10**9
+    return idx, alias, str(key)
+
+
+def _resolve_registered_project(manager_state: Dict[str, Any], target: Optional[str]) -> tuple[str, Dict[str, Any]]:
+    projects = manager_state.get("projects") if isinstance(manager_state, dict) else {}
+    if not isinstance(projects, dict) or not projects:
+        raise RuntimeError("no orch projects registered")
+
+    raw = str(target or manager_state.get("active", "default")).strip() or "default"
+    raw_key = raw.lower()
+    raw_alias = raw.upper()
+
+    direct = projects.get(raw_key)
+    if isinstance(direct, dict):
+        return raw_key, direct
+
+    for key, entry in projects.items():
+        if not isinstance(entry, dict):
+            continue
+        if raw_key == str(key).strip().lower():
+            return str(key), entry
+        alias = str(entry.get("project_alias", "")).strip().upper()
+        if alias and alias == raw_alias:
+            return str(key), entry
+        display = str(entry.get("display_name", "") or entry.get("name", "")).strip().lower()
+        if display and display == raw_key:
+            return str(key), entry
+
+    known = ", ".join(sorted(str(k) for k in projects.keys()))
+    raise RuntimeError(f"unknown orch project: {raw} (known: {known})")
+
+
+def _repair_registered_project(
+    *,
+    args: Any,
+    entry: Dict[str, Any],
+    key: str,
+    resolve_project_root: Callable[[str], Any],
+    run_aoe_init: Callable[..., str],
+    now_iso: Callable[[], str],
+) -> Dict[str, Any]:
+    project_root = resolve_project_root(str(entry.get("project_root", "") or ""))
+    team_dir = Path(str(entry.get("team_dir", "") or project_root / ".aoe-team")).expanduser().resolve()
+    entry["project_root"] = str(project_root)
+    entry["team_dir"] = str(team_dir)
+    alias = _project_alias(entry, key)
+    before_issue = project_runtime_issue(entry)
+    overview = str(entry.get("overview", "")).strip() or f"{entry.get('display_name') or alias} project orchestration"
+
+    logs: List[str] = []
+    logs.append(
+        ensure_scenario_file(
+            template_root=package_root(),
+            team_dir=team_dir,
+            dry_run=bool(args.dry_run),
+        )
+    )
+    logs.append(run_aoe_init(args, project_root=project_root, team_dir=team_dir, overview=overview))
+
+    entry["updated_at"] = now_iso()
+    after_issue = project_runtime_issue(entry)
+    return {
+        "key": key,
+        "alias": alias,
+        "project_root": str(project_root),
+        "team_dir": str(team_dir),
+        "before": before_issue or "ready",
+        "after": after_issue or "ready",
+        "logs": logs,
+        "ready": not bool(after_issue),
+    }
+
+
+def _orch_status_reply_markup(manager_state: Dict[str, Any], key: str, entry: Dict[str, Any]) -> Dict[str, Any]:
+    alias = _project_alias(entry, key)
+    raw_lock = manager_state.get("project_lock") if isinstance(manager_state, dict) else {}
+    lock_key = ""
+    if isinstance(raw_lock, dict) and bool(raw_lock.get("enabled", False)):
+        lock_key = str(raw_lock.get("project_key", "")).strip().lower()
+
+    focus_button = "/focus off" if lock_key == str(key).strip().lower() else f"/focus {alias}"
+    hide_button = f"/orch {'unhide' if project_hidden_from_ops(entry) else 'hide'} {alias}"
+    issue = project_runtime_issue(entry)
+    if issue:
+        keyboard: List[List[Dict[str, str]]] = [
+            [{"text": f"/orch repair {alias}"}, {"text": f"/sync preview {alias} 1h"}],
+            [{"text": f"/use {alias}"}, {"text": focus_button}, {"text": hide_button}],
+            [{"text": "/map"}, {"text": "/help"}],
+        ]
+    else:
+        keyboard = [
+            [{"text": f"/todo {alias}"}, {"text": f"/todo {alias} followup"}, {"text": f"/orch monitor {alias}"}],
+            [{"text": f"/sync preview {alias} 1h"}],
+            [{"text": f"/sync {alias} 1h"}, {"text": f"/use {alias}"}, {"text": focus_button}],
+            [{"text": hide_button}],
+            [{"text": "/queue"}, {"text": "/next"}, {"text": "/map"}],
+        ]
+    return {
+        "keyboard": keyboard,
+        "resize_keyboard": True,
+        "one_time_keyboard": False,
+        "input_field_placeholder": f"예: /todo {alias} 또는 /orch monitor {alias}",
+    }
+
+
+def ensure_scenario_file(*, template_root: Path, team_dir: Path, dry_run: bool) -> str:
+    """Ensure `.aoe-team/AOE_TODO.md` exists for a project.
+
+    The scheduler (`/sync`) imports this file into the Mother-Orch todo queue.
+    """
+
+    dst = (team_dir / _SCENARIO_FILENAME).resolve()
+    if dst.exists():
+        return f"[SKIP] scenario exists ({dst})"
+    if dry_run:
+        return f"[DRY-RUN] scenario create ({dst})"
+
+    team_dir.mkdir(parents=True, exist_ok=True)
+
+    template_path = (template_root / "templates" / "aoe-team" / _SCENARIO_FILENAME).resolve()
+    text = _DEFAULT_SCENARIO_TEMPLATE
+    try:
+        if template_path.exists():
+            text = template_path.read_text(encoding="utf-8")
+    except Exception:
+        # Keep the default template.
+        pass
+
+    dst.write_text(text, encoding="utf-8")
+    return f"[OK] scenario created ({dst})"
 
 def handle_orch_task_command(
     *,
@@ -24,6 +207,8 @@ def handle_orch_task_command(
     send: Callable[..., bool],
     log_event: Callable[..., None],
     get_context: Callable[[Optional[str]], tuple[str, Dict[str, Any], Any]],
+    latest_task_request_refs: Callable[..., list[str]],
+    set_chat_recent_task_refs: Callable[..., None],
     save_manager_state: Callable[..., None],
     resolve_project_root: Callable[[str], Any],
     is_path_within: Callable[[Any, Any], bool],
@@ -74,6 +259,7 @@ def handle_orch_task_command(
                 f"- name: {orch_add_name}\n"
                 f"- path: {project_root}\n"
                 f"- team: {team_dir}\n"
+                f"- scenario: {team_dir / _SCENARIO_FILENAME} (create_if_missing: yes)\n"
                 f"- init: {'yes' if orch_add_init else 'no'}\n"
                 f"- spawn: {'yes' if orch_add_spawn else 'no'}\n"
                 f"- set_active: {'yes' if orch_add_set_active else 'no'}",
@@ -82,6 +268,15 @@ def handle_orch_task_command(
             return True
 
         project_root.mkdir(parents=True, exist_ok=True)
+        scenario_log = ""
+        try:
+            scenario_log = ensure_scenario_file(
+                template_root=package_root(),
+                team_dir=team_dir,
+                dry_run=bool(args.dry_run),
+            )
+        except Exception as exc:
+            scenario_log = f"[WARN] scenario create failed ({team_dir / _SCENARIO_FILENAME}): {exc}"
         key, entry = register_orch_project(
             manager_state,
             name=orch_add_name,
@@ -92,6 +287,8 @@ def handle_orch_task_command(
         )
 
         init_logs: List[str] = []
+        if scenario_log:
+            init_logs.append(scenario_log)
         cfg_exists = (team_dir / "orchestrator.json").exists()
         should_init = orch_add_init or (not cfg_exists)
         if should_init:
@@ -117,12 +314,176 @@ def handle_orch_task_command(
         send("\n".join(lines), context="orch-add")
         return True
 
-    if cmd in {"status", "orch-status"}:
-        key, entry, p_args = get_context(orch_target)
-        status = run_aoe_status(p_args)
+    if cmd == "orch-repair":
+        target_token = str(orch_target or "").strip().lower()
+        if target_token in {"all", "*", "global"}:
+            projects = manager_state.get("projects") if isinstance(manager_state, dict) else {}
+            rows: List[tuple[str, Dict[str, Any]]] = []
+            if isinstance(projects, dict):
+                for key, entry in projects.items():
+                    if isinstance(entry, dict):
+                        rows.append((str(key), entry))
+            rows.sort(key=lambda item: _project_sort_key(item[0], item[1]))
+            if not rows:
+                send("no orch projects registered", context="orch-repair-all empty", with_menu=True)
+                return True
+            results: List[Dict[str, Any]] = []
+            for key, entry in rows:
+                try:
+                    results.append(
+                        _repair_registered_project(
+                            args=args,
+                            entry=entry,
+                            key=key,
+                            resolve_project_root=resolve_project_root,
+                            run_aoe_init=run_aoe_init,
+                            now_iso=now_iso,
+                        )
+                    )
+                except Exception as exc:
+                    results.append(
+                        {
+                            "key": key,
+                            "alias": _project_alias(entry, key),
+                            "project_root": str(entry.get("project_root", "") or ""),
+                            "team_dir": str(entry.get("team_dir", "") or ""),
+                            "before": project_runtime_issue(entry) or "ready",
+                            "after": f"failed:{exc}",
+                            "logs": [f"[ERROR] {exc}"],
+                            "ready": False,
+                        }
+                    )
+            if not args.dry_run:
+                save_manager_state(args.manager_state_file, manager_state)
+            ready_count = sum(1 for row in results if bool(row.get("ready")))
+            lines = [
+                "orch repair all finished",
+                f"- projects: {len(results)}",
+                f"- ready: {ready_count}",
+                f"- failed: {len(results) - ready_count}",
+                "results:",
+            ]
+            for row in results:
+                lines.append(
+                    f"- {row.get('alias')} {row.get('key')}: {row.get('before')} -> {row.get('after')}"
+                )
+            lines.extend(
+                [
+                    "next:",
+                    "- /map",
+                    "- /sync preview all 1h",
+                ]
+            )
+            send("\n".join(lines), context="orch-repair-all", with_menu=True)
+            return True
+
+        key, entry = _resolve_registered_project(manager_state, orch_target)
+        try:
+            result = _repair_registered_project(
+                args=args,
+                entry=entry,
+                key=key,
+                resolve_project_root=resolve_project_root,
+                run_aoe_init=run_aoe_init,
+                now_iso=now_iso,
+            )
+        except Exception as exc:
+            send(f"orch repair failed\n- orch: {key}\n- error: {exc}", context="orch-repair failed", with_menu=True)
+            return True
+        if not args.dry_run:
+            save_manager_state(args.manager_state_file, manager_state)
+        lines = [
+            "orch repair finished",
+            f"- orch: {result.get('key')} ({result.get('alias')})",
+            f"- root: {result.get('project_root')}",
+            f"- team: {result.get('team_dir')}",
+            f"- before: {result.get('before')}",
+            f"- after: {result.get('after')}",
+        ]
+        logs = result.get("logs") or []
+        if isinstance(logs, list) and logs:
+            lines.append("logs:")
+            for row in logs:
+                short = row.strip().splitlines()
+                lines.append(f"- {short[-1] if short else '(empty)'}")
+        lines.extend(
+            [
+                "next:",
+                f"- /orch status {result.get('alias')}",
+                f"- /sync preview {result.get('alias')} 1h",
+            ]
+        )
+        if bool(result.get("ready")):
+            lines.append(f"- /todo {result.get('alias')}")
         send(
-            f"orch: {key}\nroot: {entry.get('project_root')}\nteam: {entry.get('team_dir')}\nlast_request: {entry.get('last_request_id') or '-'}\n\n{status}",
+            "\n".join(lines),
+            context="orch-repair",
+            with_menu=True,
+            reply_markup=_orch_status_reply_markup(manager_state, key, entry),
+        )
+        return True
+
+    if cmd in {"status", "orch-status"}:
+        try:
+            key, entry, p_args = get_context(orch_target)
+        except Exception as exc:
+            text = str(exc)
+            if "project lock active:" in text.lower():
+                send(
+                    "orch status blocked by project lock\n"
+                    f"- {text}\n"
+                    "next:\n"
+                    "- /focus off\n"
+                    "- /map",
+                    context="orch-status blocked",
+                    with_menu=True,
+                )
+                return True
+            raise
+        lock = manager_state.get("project_lock") if isinstance(manager_state, dict) else {}
+        lock_key = str((lock or {}).get("project_key", "")).strip().lower() if isinstance(lock, dict) and bool(lock.get("enabled", False)) else ""
+        lock_line = ""
+        if lock_key:
+            projects = manager_state.get("projects") if isinstance(manager_state, dict) else {}
+            lock_entry = projects.get(lock_key) if isinstance(projects, dict) else {}
+            lock_alias = str((lock_entry or {}).get("project_alias", "")).strip() or lock_key
+            lock_line = f"project_lock: {lock_alias} ({lock_key})\n"
+        active_tf_count = 0
+        pending_tf = 0
+        running_tf = 0
+        tasks = entry.get("tasks")
+        if isinstance(tasks, dict):
+            for task in tasks.values():
+                if not isinstance(task, dict):
+                    continue
+                status = str(task.get("status", "pending")).strip().lower() or "pending"
+                if status == "running":
+                    running_tf += 1
+                elif status == "pending":
+                    pending_tf += 1
+                else:
+                    continue
+        active_tf_count = pending_tf + running_tf
+        status = ""
+        try:
+            team_dir = Path(str(entry.get("team_dir", "") or "")).expanduser()
+            cfg = (team_dir / "orchestrator.json").resolve() if str(team_dir) else None
+            if cfg and not cfg.exists():
+                status = (
+                    "[WARN] orch config missing (orchestrator.json)\n"
+                    f"missing: {cfg}\n"
+                    f"fix: /orch repair {str(entry.get('project_alias', '')).strip() or key}"
+                )
+            else:
+                status = run_aoe_status(p_args)
+        except Exception as exc:
+            status = f"[WARN] status unavailable: {exc}"
+        send(
+            f"orch: {key}\nroot: {entry.get('project_root')}\nteam: {entry.get('team_dir')}\n{lock_line}last_request: {entry.get('last_request_id') or '-'}\n"
+            f"active_tf_count: {active_tf_count} (pending={pending_tf} running={running_tf})\n\n{status}",
             context="status",
+            with_menu=False,
+            reply_markup=_orch_status_reply_markup(manager_state, key, entry),
         )
         return True
 
@@ -234,10 +595,61 @@ def handle_orch_task_command(
         key, entry, _p_args = get_context(orch_target)
         req_ref = str(orch_pick_request_id or "").strip()
         if not req_ref:
+            limit = 9
+            recent_refs = latest_task_request_refs(entry, limit=limit)
+            set_chat_recent_task_refs(manager_state, chat_id, key, recent_refs)
+            current_sel = get_chat_selected_task_ref(manager_state, chat_id, key)
+            if (not current_sel) and recent_refs:
+                set_chat_selected_task_ref(manager_state, chat_id, key, recent_refs[0])
+            if not args.dry_run:
+                save_manager_state(args.manager_state_file, manager_state)
+
+            if not recent_refs:
+                send(
+                    f"orch: {key}\n"
+                    "최근 작업이 없습니다.\n\n"
+                    "start: /dispatch <요청>",
+                    context="orch-pick empty",
+                    with_menu=True,
+                )
+                return True
+
+            lines = [
+                f"orch: {key}",
+                "pick: 최근 작업 선택",
+                "",
+                "recent:",
+            ]
+            for idx, rid in enumerate(recent_refs, start=1):
+                task = get_task_record(entry, rid) or {}
+                label = task_display_label(task, fallback_request_id=rid)
+                lines.append(f"- {idx}. {label}")
+            lines.append("")
+            lines.append("tap: /pick 1..9  (또는 /pick <T-xxx|alias>)")
+
+            keyboard = []
+            row = []
+            for idx in range(1, len(recent_refs) + 1):
+                row.append({"text": f"/pick {idx}"})
+                if len(row) >= 3:
+                    keyboard.append(row)
+                    row = []
+            if row:
+                keyboard.append(row)
+            keyboard.append([{"text": "/task"}, {"text": "/check"}, {"text": "/monitor 9"}])
+            keyboard.append([{"text": "/status"}, {"text": "/map"}, {"text": "/help"}])
+            reply_markup = {
+                "keyboard": keyboard,
+                "resize_keyboard": True,
+                "one_time_keyboard": True,
+                "input_field_placeholder": "예: /pick 3 또는 /pick T-005",
+            }
+
             send(
-                "usage: /pick <number|request_or_alias> | aoe pick <number|request_or_alias>",
-                context="orch-pick usage",
-                with_menu=True,
+                "\n".join(lines),
+                context="orch-pick menu",
+                with_menu=False,
+                reply_markup=reply_markup,
             )
             return True
         req_ref = resolve_chat_task_ref(manager_state, chat_id, key, req_ref)
@@ -333,5 +745,3 @@ def handle_orch_task_command(
         return True
 
     return False
-
-
