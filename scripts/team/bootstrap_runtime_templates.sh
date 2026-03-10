@@ -99,11 +99,23 @@ render_json_template() {
 render_json_template "$TEMPLATE_DIR/team.sample.json" "$TEAM_DIR/team.json"
 render_json_template "$TEMPLATE_DIR/orchestrator.sample.json" "$TEAM_DIR/orchestrator.json"
 
+if [[ -f "$TEMPLATE_DIR/AOE_TODO.md" ]]; then
+  copy_file_if_needed "$TEMPLATE_DIR/AOE_TODO.md" "$TEAM_DIR/AOE_TODO.md"
+fi
+
+if [[ -f "$TEMPLATE_DIR/telegram.env.sample" ]]; then
+  copy_file_if_needed "$TEMPLATE_DIR/telegram.env.sample" "$TEAM_DIR/telegram.env.sample"
+fi
+
+if [[ -f "$TEMPLATE_DIR/sync_policy.sample.json" ]]; then
+  copy_file_if_needed "$TEMPLATE_DIR/sync_policy.sample.json" "$TEAM_DIR/sync_policy.sample.json"
+fi
+
 for f in "$TEMPLATE_DIR"/workers/*.json; do
   copy_file_if_needed "$f" "$TEAM_DIR/workers/$(basename "$f")"
 done
 
-for role in Orchestrator DataEngineer Reviewer; do
+for role in Orchestrator DataEngineer Reviewer Local-Dev Local-Writer Local-Analyst; do
   src="$TEMPLATE_DIR/agents/$role/AGENTS.md"
   dst="$TEAM_DIR/agents/$role/AGENTS.md"
   if [[ -f "$src" ]]; then

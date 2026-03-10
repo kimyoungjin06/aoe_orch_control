@@ -2,14 +2,24 @@
 """Command pipeline orchestration for Telegram gateway."""
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from aoe_tg_command_resolver import ResolvedCommand
 from aoe_tg_management_handlers import handle_management_command
+from aoe_tg_orch_discovery import (
+    discover_workspace_projects_from_aoe,
+    seed_team_dir_from_template,
+    unique_project_key,
+)
 from aoe_tg_orch_overview_handlers import handle_orch_overview_command
 from aoe_tg_orch_task_handlers import handle_orch_task_command
+from aoe_tg_room_handlers import RoomDeps, handle_room_command
 from aoe_tg_retry_handlers import resolve_retry_replan_transition
 from aoe_tg_role_handlers import handle_add_role_command
+from aoe_tg_scheduler_handlers import handle_scheduler_command
+from aoe_tg_tf_handlers import handle_tf_command
+from aoe_tg_todo_handlers import handle_todo_command
 
 
 @dataclass
@@ -37,11 +47,18 @@ class NonRunDeps:
     help_text: Callable[[], str]
     get_default_mode: Callable[[Dict[str, Any], str], str]
     get_pending_mode: Callable[[Dict[str, Any], str], str]
+    get_chat_lang: Callable[[Dict[str, Any], str, str], str]
+    get_chat_report_level: Callable[[Dict[str, Any], str, str], str]
+    get_chat_room: Callable[[Dict[str, Any], str, str], str]
     set_default_mode: Callable[[Dict[str, Any], str, str], None]
     set_pending_mode: Callable[[Dict[str, Any], str, str], None]
+    set_chat_lang: Callable[[Dict[str, Any], str, str], None]
+    set_chat_report_level: Callable[[Dict[str, Any], str, str], None]
+    set_chat_room: Callable[[Dict[str, Any], str, str], None]
     clear_default_mode: Callable[[Dict[str, Any], str], bool]
     clear_pending_mode: Callable[[Dict[str, Any], str], bool]
     clear_confirm_action: Callable[[Dict[str, Any], str], bool]
+    clear_chat_report_level: Callable[[Dict[str, Any], str], bool]
     resolve_chat_role: Callable[[str, Any], str]
     is_owner_chat: Callable[[str, Any], bool]
     ensure_chat_aliases: Callable[..., Dict[str, str]]
@@ -84,6 +101,100 @@ class NonRunDeps:
     run_aoe_add_role: Callable[..., str]
 
 
+_ORCH_DISCOVERY_TRIGGER_CMDS = {
+    # Registry views/actions
+    "orch-list",
+    "orch-use",
+    "orch-pause",
+    "orch-resume",
+    "orch-hide",
+    "orch-unhide",
+    "orch-repair",
+    "orch-status",
+    "orch-monitor",
+    "orch-kpi",
+    # Global orchestration (needs full registry)
+    "sync",
+    "queue",
+    "next",
+    "fanout",
+    "auto",
+    "offdesk",
+}
+
+
+def _auto_discover_orchs_if_enabled(*, cmd: str, args: Any, manager_state: Dict[str, Any], deps: NonRunDeps) -> None:
+    if cmd not in _ORCH_DISCOVERY_TRIGGER_CMDS:
+        return
+    if not bool(getattr(args, "orch_auto_discover", False)):
+        return
+
+    projects = manager_state.get("projects")
+    if not isinstance(projects, dict):
+        return
+
+    ws_raw = getattr(args, "workspace_root", None)
+    if not ws_raw:
+        return
+    try:
+        workspace_root = Path(str(ws_raw)).expanduser().resolve()
+    except Exception:
+        return
+    if not workspace_root.exists() or not workspace_root.is_dir():
+        return
+
+    existing_roots: set[Path] = set()
+    existing_keys: set[str] = set(str(k) for k in projects.keys())
+    for _k, entry in projects.items():
+        if not isinstance(entry, dict):
+            continue
+        pr = str(entry.get("project_root", "")).strip()
+        if not pr:
+            continue
+        try:
+            existing_roots.add(Path(pr).expanduser().resolve())
+        except Exception:
+            continue
+
+    discovered = discover_workspace_projects_from_aoe(workspace_root=workspace_root)
+    if not discovered:
+        return
+
+    changed = False
+    tpl = Path(str(getattr(args, "project_root", ".") or ".")).expanduser().resolve() / "templates/aoe-team/AOE_TODO.md"
+
+    for root, meta in sorted(discovered.items(), key=lambda kv: str(kv[0])):
+        if root in existing_roots:
+            continue
+
+        display_name = str(meta.get("display_name", "")).strip() or root.name
+        key = unique_project_key(display_name or root.name, existing_keys)
+        existing_keys.add(key)
+
+        team_dir = (root / ".aoe-team").resolve()
+        deps.register_orch_project(
+            manager_state,
+            name=key,
+            project_root=root,
+            team_dir=team_dir,
+            overview="",
+            set_active=False,
+        )
+        # Keep display_name human-friendly even if key got suffixed.
+        proj = manager_state.get("projects", {}).get(key)
+        if isinstance(proj, dict):
+            proj["display_name"] = display_name
+
+        if bool(getattr(args, "orch_auto_init", False)):
+            seed_team_dir_from_template(team_dir=team_dir, template_path=tpl)
+
+        existing_roots.add(root)
+        changed = True
+
+    if changed and not bool(getattr(args, "dry_run", False)):
+        deps.save_manager_state(args.manager_state_file, manager_state)
+
+
 def build_non_run_context(
     *,
     resolved: ResolvedCommand,
@@ -112,11 +223,18 @@ def build_non_run_deps(
     help_text: Callable[[], str],
     get_default_mode: Callable[[Dict[str, Any], str], str],
     get_pending_mode: Callable[[Dict[str, Any], str], str],
+    get_chat_lang: Callable[[Dict[str, Any], str, str], str],
+    get_chat_report_level: Callable[[Dict[str, Any], str, str], str],
+    get_chat_room: Callable[[Dict[str, Any], str, str], str],
     set_default_mode: Callable[[Dict[str, Any], str, str], None],
     set_pending_mode: Callable[[Dict[str, Any], str, str], None],
+    set_chat_lang: Callable[[Dict[str, Any], str, str], None],
+    set_chat_report_level: Callable[[Dict[str, Any], str, str], None],
+    set_chat_room: Callable[[Dict[str, Any], str, str], None],
     clear_default_mode: Callable[[Dict[str, Any], str], bool],
     clear_pending_mode: Callable[[Dict[str, Any], str], bool],
     clear_confirm_action: Callable[[Dict[str, Any], str], bool],
+    clear_chat_report_level: Callable[[Dict[str, Any], str], bool],
     resolve_chat_role: Callable[[str, Any], str],
     is_owner_chat: Callable[[str, Any], bool],
     ensure_chat_aliases: Callable[..., Dict[str, str]],
@@ -166,11 +284,18 @@ def build_non_run_deps(
         help_text=help_text,
         get_default_mode=get_default_mode,
         get_pending_mode=get_pending_mode,
+        get_chat_lang=get_chat_lang,
+        get_chat_report_level=get_chat_report_level,
+        get_chat_room=get_chat_room,
         set_default_mode=set_default_mode,
         set_pending_mode=set_pending_mode,
+        set_chat_lang=set_chat_lang,
+        set_chat_report_level=set_chat_report_level,
+        set_chat_room=set_chat_room,
         clear_default_mode=clear_default_mode,
         clear_pending_mode=clear_pending_mode,
         clear_confirm_action=clear_confirm_action,
+        clear_chat_report_level=clear_chat_report_level,
         resolve_chat_role=resolve_chat_role,
         is_owner_chat=is_owner_chat,
         ensure_chat_aliases=ensure_chat_aliases,
@@ -226,6 +351,8 @@ def handle_non_run_command_pipeline(
     chat_role = ctx.chat_role
     current_chat_alias = ctx.current_chat_alias
 
+    _auto_discover_orchs_if_enabled(cmd=resolved.cmd, args=args, manager_state=manager_state, deps=deps)
+
     if handle_management_command(
         cmd=resolved.cmd,
         args=args,
@@ -234,6 +361,8 @@ def handle_non_run_command_pipeline(
         chat_role=chat_role,
         current_chat_alias=current_chat_alias,
         mode_setting=resolved.mode_setting,
+        lang_setting=resolved.lang_setting,
+        report_setting=resolved.report_setting,
         rest=resolved.rest,
         came_from_slash=resolved.came_from_slash,
         acl_grant_scope=resolved.acl_grant_scope,
@@ -245,11 +374,18 @@ def handle_non_run_command_pipeline(
         help_text=deps.help_text,
         get_default_mode=deps.get_default_mode,
         get_pending_mode=deps.get_pending_mode,
+        get_chat_lang=deps.get_chat_lang,
+        get_chat_report_level=deps.get_chat_report_level,
+        get_chat_room=deps.get_chat_room,
         set_default_mode=deps.set_default_mode,
         set_pending_mode=deps.set_pending_mode,
+        set_chat_lang=deps.set_chat_lang,
+        set_chat_report_level=deps.set_chat_report_level,
+        set_chat_room=deps.set_chat_room,
         clear_default_mode=deps.clear_default_mode,
         clear_pending_mode=deps.clear_pending_mode,
         clear_confirm_action=deps.clear_confirm_action,
+        clear_chat_report_level=deps.clear_chat_report_level,
         save_manager_state=deps.save_manager_state,
         resolve_chat_role=deps.resolve_chat_role,
         is_owner_chat=deps.is_owner_chat,
@@ -262,6 +398,23 @@ def handle_non_run_command_pipeline(
     ):
         return NonRunCommandResult(terminal=True)
 
+    if handle_room_command(
+        cmd=resolved.cmd,
+        args=args,
+        manager_state=manager_state,
+        chat_id=chat_id,
+        chat_role=chat_role,
+        rest=resolved.rest,
+        deps=RoomDeps(
+            send=deps.send,
+            now_iso=deps.now_iso,
+            get_chat_room=deps.get_chat_room,
+            set_chat_room=deps.set_chat_room,
+            save_manager_state=deps.save_manager_state,
+        ),
+    ):
+        return NonRunCommandResult(terminal=True)
+
     if handle_orch_overview_command(
         cmd=resolved.cmd,
         args=args,
@@ -270,9 +423,11 @@ def handle_non_run_command_pipeline(
         orch_target=resolved.orch_target,
         orch_monitor_limit=resolved.orch_monitor_limit,
         orch_kpi_hours=resolved.orch_kpi_hours,
+        rest=resolved.rest,
         send=deps.send,
         get_context=deps.get_context,
         save_manager_state=deps.save_manager_state,
+        now_iso=deps.now_iso,
         summarize_orch_registry=deps.summarize_orch_registry,
         backfill_task_aliases=deps.backfill_task_aliases,
         latest_task_request_refs=deps.latest_task_request_refs,
@@ -284,6 +439,60 @@ def handle_non_run_command_pipeline(
         get_manager_project=deps.get_manager_project,
     ):
         return NonRunCommandResult(terminal=True)
+
+    tf_transition = handle_tf_command(
+        cmd=resolved.cmd,
+        args=args,
+        manager_state=manager_state,
+        chat_id=chat_id,
+        chat_role=chat_role,
+        rest=resolved.rest,
+        send=deps.send,
+        get_context=deps.get_context,
+    )
+    if isinstance(tf_transition, dict):
+        return NonRunCommandResult(
+            terminal=bool(tf_transition.get("terminal", True)),
+            retry_transition=tf_transition,
+        )
+
+    scheduler_transition = handle_scheduler_command(
+        cmd=resolved.cmd,
+        args=args,
+        manager_state=manager_state,
+        chat_id=chat_id,
+        chat_role=chat_role,
+        orch_target=resolved.orch_target,
+        rest=resolved.rest,
+        send=deps.send,
+        get_context=deps.get_context,
+        save_manager_state=deps.save_manager_state,
+        now_iso=deps.now_iso,
+    )
+    if isinstance(scheduler_transition, dict):
+        return NonRunCommandResult(
+            terminal=bool(scheduler_transition.get("terminal", True)),
+            retry_transition=scheduler_transition,
+        )
+
+    todo_transition = handle_todo_command(
+        cmd=resolved.cmd,
+        args=args,
+        manager_state=manager_state,
+        chat_id=chat_id,
+        chat_role=chat_role,
+        orch_target=resolved.orch_target,
+        rest=resolved.rest,
+        send=deps.send,
+        get_context=deps.get_context,
+        save_manager_state=deps.save_manager_state,
+        now_iso=deps.now_iso,
+    )
+    if isinstance(todo_transition, dict):
+        return NonRunCommandResult(
+            terminal=bool(todo_transition.get("terminal", True)),
+            retry_transition=todo_transition,
+        )
 
     if handle_orch_task_command(
         cmd=resolved.cmd,
@@ -305,6 +514,8 @@ def handle_non_run_command_pipeline(
         send=deps.send,
         log_event=deps.log_event,
         get_context=deps.get_context,
+        latest_task_request_refs=deps.latest_task_request_refs,
+        set_chat_recent_task_refs=deps.set_chat_recent_task_refs,
         save_manager_state=deps.save_manager_state,
         resolve_project_root=deps.resolve_project_root,
         is_path_within=deps.is_path_within,

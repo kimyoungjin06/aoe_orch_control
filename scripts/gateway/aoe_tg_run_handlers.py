@@ -1,9 +1,226 @@
 #!/usr/bin/env python3
 """Run and confirmation handler helpers for Telegram gateway."""
 
+import os
+import re
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
+
+from aoe_tg_blocked_state import apply_todo_execution_outcome, blocked_bucket_label
+from aoe_tg_schema import default_plan_critic_payload, normalize_plan_critic_payload, plan_critic_primary_issue
+
+
+_KNOWN_COMMANDS = [
+    "help",
+    "status",
+    "check",
+    "task",
+    "monitor",
+    "kpi",
+    "map",
+    "queue",
+    "sync",
+    "next",
+    "fanout",
+    "drain",
+    "auto",
+    "offdesk",
+    "panic",
+    "todo",
+    "room",
+    "gc",
+    "tf",
+    "use",
+    "orch",
+    "mode",
+    "lang",
+    "report",
+    "replay",
+    "ok",
+    "whoami",
+    "lockme",
+    "onlyme",
+    "acl",
+    "grant",
+    "revoke",
+    "pick",
+    "dispatch",
+    "direct",
+    "cancel",
+    "retry",
+    "replan",
+    "request",
+    "run",
+    "clear",
+]
+
+_BLOCKED_MANUAL_FOLLOWUP_THRESHOLD = 2
+
+
+def _cmd_prefix() -> str:
+    raw = str(os.environ.get("AOE_TG_COMMAND_PREFIXES", "/") or "/").strip()
+    for ch in raw:
+        if ch in {"/", "!"}:
+            return ch
+    return "/"
+
+
+def _suggest_commands(raw_cmd: str, limit: int = 5) -> List[str]:
+    token = str(raw_cmd or "").strip().lower()
+    if not token:
+        return []
+    exact = [c for c in _KNOWN_COMMANDS if c == token]
+    if exact:
+        return exact
+    starts = [c for c in _KNOWN_COMMANDS if c.startswith(token)]
+    if starts:
+        return starts[: max(1, int(limit))]
+    contains = [c for c in _KNOWN_COMMANDS if token in c]
+    return contains[: max(1, int(limit))]
+
+
+def _confirm_required_reply_markup() -> Dict[str, Any]:
+    return {
+        "keyboard": [
+            [{"text": "/ok"}, {"text": "/cancel"}, {"text": "/clear pending"}],
+            [{"text": "/monitor"}, {"text": "/status"}, {"text": "/help"}],
+        ],
+        "resize_keyboard": True,
+        "one_time_keyboard": False,
+        "input_field_placeholder": "예: /ok 또는 /cancel",
+    }
+
+
+def _rate_limit_reply_markup(entry: Optional[Dict[str, Any]] = None, key: str = "") -> Dict[str, Any]:
+    if isinstance(entry, dict):
+        alias = _project_alias(entry, key)
+        return {
+            "keyboard": [
+                [{"text": "/monitor"}, {"text": "/check"}, {"text": f"/orch status {alias}"}],
+                [{"text": f"/todo {alias}"}, {"text": "/queue"}, {"text": "/map"}],
+            ],
+            "resize_keyboard": True,
+            "one_time_keyboard": False,
+            "input_field_placeholder": f"예: /monitor 또는 /orch status {alias}",
+        }
+    return {
+        "keyboard": [
+            [{"text": "/monitor"}, {"text": "/check"}, {"text": "/queue"}],
+            [{"text": "/map"}, {"text": "/help"}],
+        ],
+        "resize_keyboard": True,
+        "one_time_keyboard": False,
+        "input_field_placeholder": "예: /monitor 또는 /queue",
+    }
+
+
+def _confirmed_result_reply_markup(entry: Dict[str, Any], key: str) -> Dict[str, Any]:
+    alias = _project_alias(entry, key)
+    return {
+        "keyboard": [
+            [{"text": f"/todo {alias}"}, {"text": f"/orch status {alias}"}, {"text": "/monitor"}],
+            [{"text": f"/sync preview {alias} 1h"}, {"text": "/queue"}, {"text": "/map"}],
+        ],
+        "resize_keyboard": True,
+        "one_time_keyboard": False,
+        "input_field_placeholder": f"예: /todo {alias} 또는 /orch status {alias}",
+    }
+
+
+def _early_gate_reply_markup(entry: Dict[str, Any], key: str) -> Dict[str, Any]:
+    alias = _project_alias(entry, key)
+    return {
+        "keyboard": [
+            [{"text": f"/orch status {alias}"}, {"text": f"/todo {alias}"}, {"text": "/monitor"}],
+            [{"text": f"/sync preview {alias} 1h"}, {"text": "/queue"}, {"text": "/map"}],
+        ],
+        "resize_keyboard": True,
+        "one_time_keyboard": False,
+        "input_field_placeholder": f"예: /orch status {alias} 또는 /todo {alias}",
+    }
+
+
+def _intervention_reply_markup(entry: Dict[str, Any], key: str, req_id: str = "") -> Dict[str, Any]:
+    alias = _project_alias(entry, key)
+    keyboard: List[List[Dict[str, str]]] = []
+    req_token = str(req_id or "").strip()
+    if req_token:
+        keyboard.append(
+            [
+                {"text": f"/task {req_token}"},
+                {"text": f"/replan {req_token}"},
+                {"text": f"/retry {req_token}"},
+            ]
+        )
+    keyboard.append([{"text": f"/todo {alias}"}, {"text": f"/orch status {alias}"}, {"text": "/monitor"}])
+    keyboard.append([{"text": "/queue"}, {"text": "/map"}, {"text": "/help"}])
+    return {
+        "keyboard": keyboard,
+        "resize_keyboard": True,
+        "one_time_keyboard": False,
+        "input_field_placeholder": f"예: /task {req_token or '-'} 또는 /todo {alias}",
+    }
+
+
+def _send_exec_critic_intervention(
+    *,
+    entry: Dict[str, Any],
+    key: str,
+    final_req_id: str,
+    verdict: str,
+    reason: str,
+    exec_attempt: int,
+    exec_max_attempts: int,
+    send: Callable[..., bool],
+) -> None:
+    send(
+        "exec critic: intervention needed\n"
+        f"- verdict: {verdict}\n"
+        f"- reason: {reason or '-'}\n"
+        f"- attempts: {exec_attempt}/{exec_max_attempts}\n"
+        f"- last_request_id: {final_req_id or '-'}\n"
+        "next:\n"
+        f"- /task {final_req_id}\n"
+        f"- /replan {final_req_id}\n"
+        f"- /retry {final_req_id}",
+        context="exec-critic",
+        with_menu=True,
+        reply_markup=_intervention_reply_markup(entry, key, final_req_id),
+    )
+
+
+def _send_dispatch_exception(
+    *,
+    entry: Dict[str, Any],
+    key: str,
+    todo_id: str,
+    reason: str,
+    send: Callable[..., bool],
+) -> None:
+    alias = _project_alias(entry, key)
+    lines = [
+        "dispatch failed before request start",
+        f"- orch: {key} ({alias})",
+        f"- reason: {reason or 'dispatch_failed'}",
+    ]
+    token = str(todo_id or "").strip()
+    if token:
+        lines.append(f"- todo: {token}")
+    lines.extend(
+        [
+            "next:",
+            f"- /orch status {alias}",
+            f"- /todo {alias}",
+            f"- /sync preview {alias} 1h",
+        ]
+    )
+    send(
+        "\n".join(lines),
+        context="dispatch-exception",
+        with_menu=True,
+        reply_markup=_early_gate_reply_markup(entry, key),
+    )
 
 
 @dataclass
@@ -16,7 +233,7 @@ class DispatchModeResult:
 class PlanMeta:
     selected_roles: List[str] = field(default_factory=list)
     plan_data: Optional[Dict[str, Any]] = None
-    plan_critic: Dict[str, Any] = field(default_factory=lambda: {"approved": True, "issues": [], "recommendations": []})
+    plan_critic: Dict[str, Any] = field(default_factory=default_plan_critic_payload)
     plan_roles: List[str] = field(default_factory=list)
     plan_replans: List[Dict[str, Any]] = field(default_factory=list)
     plan_error: str = ""
@@ -40,6 +257,7 @@ class DispatchPolicyResult:
     selected_roles: List[str] = field(default_factory=list)
     verifier_roles: List[str] = field(default_factory=list)
     verifier_added: bool = False
+    terminal_reason: str = ""
 
 
 @dataclass
@@ -87,7 +305,7 @@ class RunGuardDeps:
 
 @dataclass
 class RunPlanningDeps:
-    choose_auto_dispatch_roles: Callable[[str], List[str]]
+    choose_auto_dispatch_roles: Callable[..., List[str]]
     resolve_verifier_candidates: Callable[[Optional[str]], List[str]]
     load_orchestrator_roles: Callable[[Any], List[str]]
     parse_roles_csv: Callable[[Optional[str]], List[str]]
@@ -107,6 +325,7 @@ class RunRoutingDeps:
     get_context: Callable[[Optional[str]], tuple[str, Dict[str, Any], Any]]
     run_orchestrator_direct: Callable[[Any, str], str]
     run_aoe_orch: Callable[..., Dict[str, Any]]
+    finalize_request_reply_messages: Callable[..., Dict[str, Any]]
     touch_chat_recent_task_ref: Callable[..., None]
     set_chat_selected_task_ref: Callable[..., None]
     now_iso: Callable[[], str]
@@ -114,6 +333,9 @@ class RunRoutingDeps:
     lifecycle_set_stage: Callable[..., None]
     summarize_task_lifecycle: Callable[[str, Dict[str, Any]], str]
     synthesize_orchestrator_response: Callable[[Any, str, Dict[str, Any]], str]
+    critique_task_result: Callable[..., Dict[str, Any]]
+    extract_todo_proposals: Callable[..., List[Dict[str, Any]]]
+    merge_todo_proposals: Callable[..., Dict[str, Any]]
     render_run_response: Callable[..., str]
 
 
@@ -176,7 +398,7 @@ def build_run_deps(
     set_confirm_action: Callable[..., None],
     save_manager_state: Callable[..., None],
     get_context: Callable[[Optional[str]], tuple[str, Dict[str, Any], Any]],
-    choose_auto_dispatch_roles: Callable[[str], List[str]],
+    choose_auto_dispatch_roles: Callable[..., List[str]],
     resolve_verifier_candidates: Callable[[Optional[str]], List[str]],
     load_orchestrator_roles: Callable[[Any], List[str]],
     parse_roles_csv: Callable[[Optional[str]], List[str]],
@@ -191,6 +413,7 @@ def build_run_deps(
     build_planned_dispatch_prompt: Callable[[str, Dict[str, Any], Dict[str, Any]], str],
     run_orchestrator_direct: Callable[[Any, str], str],
     run_aoe_orch: Callable[..., Dict[str, Any]],
+    finalize_request_reply_messages: Callable[..., Dict[str, Any]],
     touch_chat_recent_task_ref: Callable[..., None],
     set_chat_selected_task_ref: Callable[..., None],
     now_iso: Callable[[], str],
@@ -198,6 +421,9 @@ def build_run_deps(
     lifecycle_set_stage: Callable[..., None],
     summarize_task_lifecycle: Callable[[str, Dict[str, Any]], str],
     synthesize_orchestrator_response: Callable[[Any, str, Dict[str, Any]], str],
+    critique_task_result: Callable[..., Dict[str, Any]],
+    extract_todo_proposals: Callable[..., List[Dict[str, Any]]],
+    merge_todo_proposals: Callable[..., Dict[str, Any]],
     render_run_response: Callable[..., str],
 ) -> RunDeps:
     return RunDeps(
@@ -231,6 +457,7 @@ def build_run_deps(
             get_context=get_context,
             run_orchestrator_direct=run_orchestrator_direct,
             run_aoe_orch=run_aoe_orch,
+            finalize_request_reply_messages=finalize_request_reply_messages,
             touch_chat_recent_task_ref=touch_chat_recent_task_ref,
             set_chat_selected_task_ref=set_chat_selected_task_ref,
             now_iso=now_iso,
@@ -238,6 +465,9 @@ def build_run_deps(
             lifecycle_set_stage=lifecycle_set_stage,
             summarize_task_lifecycle=summarize_task_lifecycle,
             synthesize_orchestrator_response=synthesize_orchestrator_response,
+            critique_task_result=critique_task_result,
+            extract_todo_proposals=extract_todo_proposals,
+            merge_todo_proposals=merge_todo_proposals,
             render_run_response=render_run_response,
         ),
     )
@@ -252,16 +482,30 @@ def _resolve_prompt_or_handle_unknown(
     send: Callable[..., bool],
     help_text: Callable[[], str],
 ) -> Optional[str]:
+    p = _cmd_prefix()
     if cmd in {"run", "orch-run"}:
         prompt = run_prompt or rest.strip()
         if not prompt:
             send(
-                "usage: /run <prompt> | /dispatch <prompt> | /direct <prompt> | aoe run [--direct|--dispatch] [--roles <csv>] [--priority P1|P2|P3] [--timeout-sec N] [--no-wait] <prompt>",
+                f"usage: {p}run <prompt> | {p}dispatch <prompt> | {p}direct <prompt> | "
+                "aoe run [--direct|--dispatch] [--roles <csv>] [--priority P1|P2|P3] "
+                "[--timeout-sec N] [--no-wait] <prompt>",
                 context="run usage",
             )
             return None
     elif cmd:
-        send(f"unknown command: /{cmd}\n\n{help_text()}", context="unknown command", with_menu=True)
+        suggestions = _suggest_commands(cmd)
+        sug = ""
+        if suggestions:
+            sug = "suggest: " + ", ".join(f"{p}{c}" for c in suggestions)
+        send(
+            "unknown command\n"
+            f"- cmd: {p}{cmd}\n"
+            + (f"- {sug}\n" if sug else "")
+            + f"hint: {p}help (or send just '{p}' for the command menu)",
+            context="unknown command",
+            with_menu=True,
+        )
         return None
     else:
         prompt = text.strip()
@@ -272,12 +516,76 @@ def _resolve_prompt_or_handle_unknown(
     return prompt
 
 
+def _apply_success_first_prompt_fallbacks(prompt: str) -> tuple[str, List[str]]:
+    text = " ".join(str(prompt or "").strip().split())
+    if not text:
+        return text, []
+
+    low = text.lower()
+    notes: List[str] = []
+
+    md_scope = any(token in low for token in (".md", "markdown", "마크다운", "문서", "파일")) or bool(
+        re.search(r"(^|[^a-z])md($|[^a-z])", low)
+    )
+    created_scope = any(
+        token in low
+        for token in (
+            "생성시각",
+            "생성 시각",
+            "생성된",
+            "최초 생성",
+            "created time",
+            "creation time",
+            "created_at",
+            "birth time",
+            "birthtime",
+        )
+    )
+    latest_scope = any(
+        token in low
+        for token in (
+            "가장 늦게",
+            "가장 최근",
+            "최신",
+            "recent",
+            "latest",
+            "newest",
+            "most recent",
+        )
+    )
+
+    if md_scope and created_scope and latest_scope:
+        notes.append(
+            "file_created_time_fallback: exact file birth time may be unavailable; use birthtime if present, else git first-seen time, else filesystem mtime."
+        )
+
+    if not notes:
+        return text, []
+
+    augmented = text
+    if "file_created_time_fallback" in " ".join(notes):
+        augmented += (
+            "\n\n[Execution Fallback Policy]\n"
+            "- Exact file creation time may be unavailable or inconsistent on local Linux filesystems.\n"
+            "- When ranking 'latest created' files, use this fallback ladder in order:\n"
+            "  1) filesystem birth time if available\n"
+            "  2) git first-seen/add time if available\n"
+            "  3) filesystem mtime\n"
+            "- Continue the task with the best available criterion instead of blocking.\n"
+            "- In the final answer, state clearly which criterion was actually used.\n"
+        )
+
+    return augmented, notes
+
+
 def _handle_run_rate_limit_and_confirm(
     *,
     cmd: str,
     args: Any,
     manager_state: Dict[str, Any],
     chat_id: str,
+    key: str,
+    entry: Optional[Dict[str, Any]],
     run_auto_source: str,
     run_force_mode: Optional[str],
     orch_target: Optional[str],
@@ -304,6 +612,7 @@ def _handle_run_rate_limit_and_confirm(
             "next: /monitor 또는 /check 로 기존 작업을 확인하세요.",
             context="rate-limit-running",
             with_menu=True,
+            reply_markup=_rate_limit_reply_markup(entry, key),
         )
         log_event(
             event="rate_limited",
@@ -322,6 +631,7 @@ def _handle_run_rate_limit_and_confirm(
             "next: 내일 다시 시도하거나 cap 설정을 조정하세요.",
             context="rate-limit-daily",
             with_menu=True,
+            reply_markup=_rate_limit_reply_markup(entry, key),
         )
         log_event(
             event="rate_limited",
@@ -358,6 +668,7 @@ def _handle_run_rate_limit_and_confirm(
         "취소: /cancel",
         context="confirm-required",
         with_menu=True,
+        reply_markup=_confirm_required_reply_markup(),
     )
     log_event(
         event="confirm_required",
@@ -368,6 +679,394 @@ def _handle_run_rate_limit_and_confirm(
     return True
 
 
+def _task_label_for_todo(task: Optional[Dict[str, Any]], fallback_request_id: str) -> str:
+    rid = str(fallback_request_id or "").strip()
+    if not isinstance(task, dict):
+        return rid or "-"
+    short_id = str(task.get("short_id", "")).strip().upper()
+    alias = str(task.get("alias", "")).strip()
+    if short_id and alias:
+        return f"{short_id} | {alias}"
+    if alias:
+        return alias
+    if short_id:
+        return short_id
+    token = str(task.get("request_id", "")).strip()
+    return token or rid or "-"
+
+
+def _find_project_todo_item(entry: Dict[str, Any], todo_id: str) -> Optional[Dict[str, Any]]:
+    token = str(todo_id or "").strip()
+    if not token:
+        return None
+    raw = entry.get("todos")
+    if not isinstance(raw, list):
+        return None
+    for row in raw:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("id", "")).strip() == token:
+            return row
+    return None
+
+
+def _attach_todo_to_task_and_entry(
+    *,
+    entry: Dict[str, Any],
+    chat_id: str,
+    todo_id: str,
+    req_id: str,
+    task: Optional[Dict[str, Any]],
+    now_iso: Callable[[], str],
+) -> None:
+    token = str(todo_id or "").strip()
+    if not token:
+        return
+    if isinstance(task, dict) and not str(task.get("todo_id", "")).strip():
+        task["todo_id"] = token
+
+    item = _find_project_todo_item(entry, token)
+    if not isinstance(item, dict):
+        return
+
+    now = now_iso()
+    item["status"] = "running"
+    item["started_at"] = str(item.get("started_at", "")).strip() or now
+    item["started_by"] = str(item.get("started_by", "")).strip() or str(item.get("queued_by", "")).strip() or f"telegram:{chat_id}"
+    item["updated_at"] = now
+    if str(req_id or "").strip():
+        item["current_request_id"] = str(req_id).strip()
+        item["current_task_label"] = _task_label_for_todo(task, req_id)
+    # Drop any queued marker once execution is actually started.
+    item.pop("queued_at", None)
+    item.pop("queued_by", None)
+
+
+def _project_alias(entry: Dict[str, Any], fallback: str) -> str:
+    token = str(entry.get("project_alias", "")).strip().upper()
+    return token or str(fallback or "").strip() or "-"
+
+
+def _effective_todo_token(
+    *,
+    entry: Dict[str, Any],
+    chat_id: str,
+    todo_id: str,
+    run_auto_source: str,
+) -> str:
+    token = str(todo_id or "").strip()
+    if token:
+        return token
+    if not str(run_auto_source or "").strip().lower().startswith("todo"):
+        return ""
+    pending = entry.get("pending_todo")
+    if isinstance(pending, dict) and str(pending.get("chat_id", "")).strip() == str(chat_id):
+        return str(pending.get("todo_id", "")).strip()
+    return ""
+
+
+def _maybe_send_manual_followup_alert(
+    *,
+    entry: Dict[str, Any],
+    todo_id: str,
+    project_key: str,
+    send: Callable[..., bool],
+    now_iso: Callable[[], str],
+) -> bool:
+    token = str(todo_id or "").strip()
+    if not token:
+        return False
+    item = _find_project_todo_item(entry, token)
+    if not isinstance(item, dict):
+        return False
+    if str(item.get("status", "")).strip().lower() != "blocked":
+        return False
+    if blocked_bucket_label(item.get("blocked_bucket", "")) != "manual_followup":
+        return False
+    if str(item.get("blocked_alerted_at", "")).strip():
+        return False
+    try:
+        blocked_count = max(1, int(item.get("blocked_count", 0) or 0))
+    except Exception:
+        blocked_count = 1
+    alias = _project_alias(entry, project_key)
+    summary = " ".join(str(item.get("summary", "")).strip().split())
+    if len(summary) > 120:
+        summary = summary[:117].rstrip() + "..."
+    reason = " ".join(str(item.get("blocked_reason", "")).strip().split())
+    if len(reason) > 180:
+        reason = reason[:177].rstrip() + "..."
+    item["blocked_alerted_at"] = now_iso()
+    item["updated_at"] = now_iso()
+    lines = [
+        "manual follow-up needed",
+        f"- orch: {project_key} ({alias})",
+        f"- id: {token}",
+        f"- blocked_count: {blocked_count}",
+    ]
+    if summary:
+        lines.append(f"- summary: {summary}")
+    if reason:
+        lines.append(f"- reason: {reason}")
+    lines.extend(
+        [
+            "next:",
+            f"- /todo {alias}",
+            f"- /todo {alias} followup",
+            "- /queue followup",
+            f"- /orch status {alias}",
+            "- /focus off   (if you need global switch)",
+        ]
+    )
+    reply_markup = {
+        "keyboard": [
+            [{"text": f"/todo {alias} followup"}, {"text": f"/todo {alias}"}, {"text": f"/orch status {alias}"}],
+            [{"text": "/queue followup"}, {"text": "/focus off"}],
+        ],
+        "resize_keyboard": True,
+        "one_time_keyboard": False,
+        "input_field_placeholder": f"예: /todo {alias} followup",
+    }
+    send("\n".join(lines), context="manual-followup-alert", with_menu=True, reply_markup=reply_markup)
+    return True
+
+
+def _find_todo_proposal_row(entry: Dict[str, Any], proposal_id: str) -> Optional[Dict[str, Any]]:
+    token = str(proposal_id or "").strip().upper()
+    if not token:
+        return None
+    rows = entry.get("todo_proposals")
+    if not isinstance(rows, list):
+        return None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("id", "")).strip().upper() == token:
+            return row
+    return None
+
+
+def _maybe_capture_todo_proposals(
+    *,
+    args: Any,
+    entry: Dict[str, Any],
+    key: str,
+    p_args: Any,
+    prompt: str,
+    state: Dict[str, Any],
+    req_id: str,
+    task: Optional[Dict[str, Any]],
+    todo_id: str,
+    send: Callable[..., bool],
+    log_event: Callable[..., None],
+    now_iso: Callable[[], str],
+    extract_todo_proposals: Callable[..., List[Dict[str, Any]]],
+    merge_todo_proposals: Callable[..., Dict[str, Any]],
+) -> Dict[str, Any]:
+    if not req_id:
+        return {"created_count": 0, "created_ids": [], "duplicate_count": 0, "skipped_count": 0}
+    replies = state.get("replies") or []
+    if not isinstance(replies, list) or not replies:
+        return {"created_count": 0, "created_ids": [], "duplicate_count": 0, "skipped_count": 0}
+
+    try:
+        proposals_data = extract_todo_proposals(
+            p_args,
+            prompt,
+            state,
+            task=task,
+        )
+    except Exception as exc:
+        log_event(
+            event="todo_proposals_extract_failed",
+            project=key,
+            request_id=req_id,
+            task=task,
+            stage=str((task or {}).get("stage", "close")),
+            status="failed",
+            error_code="E_TODO_PROPOSALS",
+            detail=str(exc)[:240],
+        )
+        return {"created_count": 0, "created_ids": [], "duplicate_count": 0, "skipped_count": 0}
+
+    if not isinstance(proposals_data, list) or not proposals_data:
+        return {"created_count": 0, "created_ids": [], "duplicate_count": 0, "skipped_count": 0}
+
+    source_todo_id = str(todo_id or "").strip()
+    if not source_todo_id and isinstance(task, dict):
+        source_todo_id = str(task.get("todo_id", "")).strip()
+
+    try:
+        merged = merge_todo_proposals(
+            entry=entry,
+            request_id=req_id,
+            task=task,
+            source_todo_id=source_todo_id,
+            proposals_data=proposals_data,
+            now_iso=now_iso,
+        )
+    except Exception as exc:
+        log_event(
+            event="todo_proposals_merge_failed",
+            project=key,
+            request_id=req_id,
+            task=task,
+            stage=str((task or {}).get("stage", "close")),
+            status="failed",
+            error_code="E_TODO_PROPOSALS",
+            detail=str(exc)[:240],
+        )
+        return {"created_count": 0, "created_ids": [], "duplicate_count": 0, "skipped_count": 0}
+
+    created_ids = [str(item or "").strip() for item in (merged.get("created_ids") or []) if str(item or "").strip()]
+    created_count = int(merged.get("created_count", 0) or 0)
+    if created_count <= 0:
+        return merged
+
+    alias = _project_alias(entry, key)
+    lines = [
+        "new todo proposals",
+        f"- orch: {key} ({alias})",
+        f"- source_request: {req_id}",
+        f"- created: {created_count}",
+    ]
+    if source_todo_id:
+        lines.append(f"- source_todo: {source_todo_id}")
+    for proposal_id in created_ids[:3]:
+        row = _find_todo_proposal_row(entry, proposal_id)
+        if not isinstance(row, dict):
+            lines.append(f"- {proposal_id}")
+            continue
+        summary = " ".join(str(row.get("summary", "")).strip().split())
+        if len(summary) > 120:
+            summary = summary[:117].rstrip() + "..."
+        priority = str(row.get("priority", "P2")).strip().upper() or "P2"
+        kind = str(row.get("kind", "followup")).strip().lower() or "followup"
+        lines.append(f"- {proposal_id} [{kind}] {priority} | {summary or '-'}")
+    lines.extend(
+        [
+            "next:",
+            "- /todo proposals",
+            f"- /todo {alias}",
+            f"- /orch status {alias}",
+        ]
+    )
+    keyboard: List[List[Dict[str, str]]] = [
+        [{"text": "/todo proposals"}, {"text": f"/todo {alias}"}, {"text": f"/orch status {alias}"}],
+        [{"text": "/queue"}, {"text": "/map"}],
+    ]
+    accept_row: List[Dict[str, str]] = []
+    reject_row: List[Dict[str, str]] = []
+    for proposal_id in created_ids[:2]:
+        accept_row.append({"text": f"/todo accept {proposal_id}"})
+        reject_row.append({"text": f"/todo reject {proposal_id}"})
+    if accept_row:
+        keyboard.insert(1, accept_row)
+    if reject_row:
+        keyboard.insert(2, reject_row)
+    send(
+        "\n".join(lines),
+        context="todo-proposals-alert",
+        with_menu=True,
+        reply_markup={
+            "keyboard": keyboard,
+            "resize_keyboard": True,
+            "one_time_keyboard": False,
+            "input_field_placeholder": "예: /todo proposals 또는 /todo accept PROP-001",
+        },
+    )
+    log_event(
+        event="todo_proposals_created",
+        project=key,
+        request_id=req_id,
+        task=task,
+        stage=str((task or {}).get("stage", "close")),
+        status="completed",
+        detail=f"created={created_count} duplicate={int(merged.get('duplicate_count', 0) or 0)} skipped={int(merged.get('skipped_count', 0) or 0)}",
+    )
+    return merged
+
+
+def _finalize_todo_after_run(
+    *,
+    entry: Dict[str, Any],
+    todo_id: str,
+    status: str,
+    exec_verdict: str,
+    exec_reason: str,
+    req_id: str,
+    task: Optional[Dict[str, Any]],
+    now_iso: Callable[[], str],
+) -> None:
+    token = str(todo_id or "").strip()
+    if not token:
+        return
+    item = _find_project_todo_item(entry, token)
+    if not isinstance(item, dict):
+        return
+
+    now = now_iso()
+    task_status = str(status or "").strip().lower()
+    verdict = str(exec_verdict or "").strip().lower()
+    reason = str(exec_reason or "").strip()
+
+    # "success" is when the TF is completed, and exec critic (if present) did not block it.
+    apply_todo_execution_outcome(
+        item,
+        task_status=task_status,
+        exec_verdict=verdict,
+        exec_reason=reason,
+        req_id=str(req_id or "").strip(),
+        now=now,
+        task_label=_task_label_for_todo(task, str(req_id or "").strip()),
+        manual_followup_threshold=_BLOCKED_MANUAL_FOLLOWUP_THRESHOLD,
+    )
+
+
+def _cleanup_terminal_todo_gate(
+    *,
+    entry: Dict[str, Any],
+    chat_id: str,
+    todo_id: str,
+    pending_todo_used: bool,
+    run_auto_source: str,
+    reason: str,
+    now_iso: Callable[[], str],
+) -> bool:
+    token = _effective_todo_token(
+        entry=entry,
+        chat_id=chat_id,
+        todo_id=todo_id,
+        run_auto_source=run_auto_source,
+    )
+    if token and not str(todo_id or "").strip():
+        pending_todo_used = True
+
+    if token:
+        _finalize_todo_after_run(
+            entry=entry,
+            todo_id=token,
+            status="failed",
+            exec_verdict="fail",
+            exec_reason=str(reason or "dispatch policy blocked").strip()[:240],
+            req_id="",
+            task=None,
+            now_iso=now_iso,
+        )
+
+    pending = entry.get("pending_todo")
+    if isinstance(pending, dict) and str(pending.get("chat_id", "")).strip() == str(chat_id):
+        pending_id = str(pending.get("todo_id", "")).strip()
+        if (not token) or pending_id == token or pending_todo_used:
+            entry.pop("pending_todo", None)
+            entry["updated_at"] = now_iso()
+            return True
+
+    if token:
+        entry["updated_at"] = now_iso()
+    return False
+
+
 def _resolve_dispatch_mode_and_roles(
     *,
     run_force_mode: Optional[str],
@@ -375,10 +1074,17 @@ def _resolve_dispatch_mode_and_roles(
     project_roles_csv: Optional[str],
     auto_dispatch_enabled: bool,
     prompt: str,
-    choose_auto_dispatch_roles: Callable[[str], List[str]],
+    choose_auto_dispatch_roles: Callable[..., List[str]],
+    available_roles: List[str],
+    team_dir: Any,
 ) -> DispatchModeResult:
     explicit_roles = (run_roles_override if run_roles_override is not None else (project_roles_csv or "")).strip()
-    auto_roles = choose_auto_dispatch_roles(prompt) if auto_dispatch_enabled else []
+    auto_roles: List[str] = []
+    if auto_dispatch_enabled:
+        try:
+            auto_roles = choose_auto_dispatch_roles(prompt, available_roles=available_roles, team_dir=team_dir)
+        except TypeError:
+            auto_roles = choose_auto_dispatch_roles(prompt)
     dispatch_mode = False
     dispatch_roles = explicit_roles
 
@@ -418,9 +1124,10 @@ def _compute_dispatch_plan(
     critic_has_blockers: Callable[[Dict[str, Any]], bool],
     repair_task_execution_plan: Callable[..., Dict[str, Any]],
     plan_roles_from_subtasks: Callable[[Optional[Dict[str, Any]]], List[str]],
+    report_progress: Optional[Callable[..., None]] = None,
 ) -> PlanMeta:
     plan_data: Optional[Dict[str, Any]] = None
-    plan_critic: Dict[str, Any] = {"approved": True, "issues": [], "recommendations": []}
+    plan_critic: Dict[str, Any] = default_plan_critic_payload()
     plan_roles: List[str] = []
     plan_replans: List[Dict[str, Any]] = []
     plan_error = ""
@@ -436,6 +1143,8 @@ def _compute_dispatch_plan(
     if dispatch_mode and (planning_enabled or reuse_source_plan) and not args.dry_run:
         try:
             if reuse_source_plan and isinstance(run_source_task, dict):
+                if callable(report_progress):
+                    report_progress(phase="reuse", detail="using stored plan from previous attempt")
                 source_plan = run_source_task.get("plan")
                 plan_data = normalize_task_plan_payload(
                     source_plan if isinstance(source_plan, dict) else None,
@@ -444,24 +1153,19 @@ def _compute_dispatch_plan(
                     max_subtasks=max(1, int(args.plan_max_subtasks)),
                 )
                 raw_critic = run_source_task.get("plan_critic")
-                if isinstance(raw_critic, dict):
-                    raw_issues = raw_critic.get("issues") or []
-                    raw_rec = raw_critic.get("recommendations") or []
-                    plan_critic = {
-                        "approved": bool(raw_critic.get("approved", True)),
-                        "issues": [str(x).strip() for x in raw_issues if str(x).strip()][:8],
-                        "recommendations": [str(x).strip() for x in raw_rec if str(x).strip()][:8],
-                    }
-                else:
-                    plan_critic = {"approved": True, "issues": [], "recommendations": []}
+                plan_critic = normalize_plan_critic_payload(raw_critic, max_items=8)
 
             if (plan_data is None) and planning_enabled:
+                if callable(report_progress):
+                    report_progress(phase="planner", detail="building execution plan")
                 plan_data = build_task_execution_plan(
                     p_args,
                     user_prompt=prompt,
                     available_roles=available_roles,
                     max_subtasks=max(1, int(args.plan_max_subtasks)),
                 )
+                if callable(report_progress):
+                    report_progress(phase="critic", detail="reviewing generated plan")
                 plan_critic = critique_task_execution_plan(p_args, prompt, plan_data)
 
                 if bool(args.plan_auto_replan):
@@ -469,6 +1173,13 @@ def _compute_dispatch_plan(
                     for attempt in range(1, max_replans + 1):
                         if not isinstance(plan_data, dict) or not critic_has_blockers(plan_critic):
                             break
+                        if callable(report_progress):
+                            report_progress(
+                                phase="repair",
+                                detail="critic issues found; auto-replanning",
+                                attempt=attempt,
+                                total=max_replans,
+                            )
                         plan_data = repair_task_execution_plan(
                             p_args,
                             user_prompt=prompt,
@@ -478,6 +1189,13 @@ def _compute_dispatch_plan(
                             max_subtasks=max(1, int(args.plan_max_subtasks)),
                             attempt_no=attempt,
                         )
+                        if callable(report_progress):
+                            report_progress(
+                                phase="critic",
+                                detail="rechecking repaired plan",
+                                attempt=attempt,
+                                total=max_replans,
+                            )
                         plan_critic = critique_task_execution_plan(p_args, prompt, plan_data)
                         plan_replans.append(
                             {
@@ -492,16 +1210,25 @@ def _compute_dispatch_plan(
                 selected_roles = plan_roles
 
             if bool(args.plan_block_on_critic) and isinstance(plan_data, dict) and critic_has_blockers(plan_critic):
-                issues = plan_critic.get("issues") or []
-                lead_issue = str(issues[0]).strip() if issues else "critic unresolved after auto-replan"
+                lead_issue = plan_critic_primary_issue(plan_critic, limit=240) or "critic unresolved after auto-replan"
                 plan_gate_blocked = True
-                plan_gate_reason = lead_issue[:240]
+                plan_gate_reason = lead_issue
+                if callable(report_progress):
+                    report_progress(phase="blocked", detail=plan_gate_reason)
+            elif isinstance(plan_data, dict) and callable(report_progress):
+                critic_state = "issues" if critic_has_blockers(plan_critic) else "ok"
+                report_progress(
+                    phase="ready",
+                    detail=f"subtasks={len(plan_data.get('subtasks') or [])} critic={critic_state} replans={len(plan_replans)}",
+                )
         except Exception as e:
             plan_data = None
-            plan_critic = {"approved": True, "issues": [], "recommendations": []}
+            plan_critic = default_plan_critic_payload()
             plan_roles = []
             plan_replans = []
             plan_error = str(e).strip()[:260]
+            if callable(report_progress):
+                report_progress(phase="fallback", detail=plan_error or "planning failed; dispatching original prompt")
 
     return PlanMeta(
         selected_roles=selected_roles,
@@ -515,6 +1242,57 @@ def _compute_dispatch_plan(
         planning_enabled=planning_enabled,
         reuse_source_plan=reuse_source_plan,
     )
+
+
+def _emit_planning_progress(
+    *,
+    phase: str,
+    key: str,
+    send: Callable[..., bool],
+    log_event: Callable[..., None],
+    emit_chat: bool,
+    detail: str = "",
+    attempt: int = 0,
+    total: int = 0,
+) -> None:
+    phase_token = str(phase or "").strip().lower() or "planning"
+    suffix = f" attempt={attempt}/{total}" if int(attempt or 0) > 0 and int(total or 0) > 0 else ""
+    detail_text = str(detail or "").strip()
+    log_status = "running"
+    if phase_token in {"ready", "reuse"}:
+        log_status = "completed"
+    elif phase_token in {"blocked", "fallback"}:
+        log_status = "failed"
+    log_event(
+        event=f"planning_{phase_token}",
+        project=key,
+        stage="planning",
+        status=log_status,
+        detail=f"{detail_text}{suffix}".strip(),
+    )
+    if not emit_chat:
+        return
+
+    heading_map = {
+        "planner": "planning: planner",
+        "critic": "planning: critic",
+        "repair": "planning: auto-replan",
+        "reuse": "planning: reuse previous plan",
+        "ready": "planning: ready",
+        "fallback": "planning: fallback",
+        "blocked": "planning: blocked",
+    }
+    lines = [heading_map.get(phase_token, f"planning: {phase_token}")]
+    lines.append(f"- orch: {key}")
+    if detail_text:
+        lines.append(f"- detail: {detail_text}")
+    if suffix:
+        lines.append(f"- progress: {attempt}/{total}")
+    if phase_token == "ready":
+        lines.append("- dispatch: starting")
+    elif phase_token == "fallback":
+        lines.append("- dispatch: original request fallback")
+    send("\n".join(lines), context="planning-progress", with_menu=False)
 
 
 def _dispatch_and_sync_task(
@@ -603,6 +1381,7 @@ def _apply_plan_and_lineage(
         task["plan_roles"] = plan_roles
         task["plan_replans"] = plan_replans
         task["plan_gate_passed"] = (not critic_has_blockers(plan_critic))
+        task["plan_gate_reason"] = plan_critic_primary_issue(plan_critic, limit=240)
         lifecycle_set_stage(
             task,
             "planning",
@@ -622,6 +1401,12 @@ def _apply_plan_and_lineage(
     lineage_ts = now_iso()
     task["source_request_id"] = run_source_request_id
     task["control_mode"] = run_control_mode
+    context = task.get("context")
+    if not isinstance(context, dict):
+        context = {}
+        task["context"] = context
+    context["source_request_id"] = run_source_request_id
+    context["control_mode"] = run_control_mode
     if run_control_mode == "retry":
         task["retry_of"] = run_source_request_id
         child_field = "retry_children"
@@ -650,6 +1435,7 @@ def _send_dispatch_result(
     *,
     args: Any,
     key: str,
+    entry: Dict[str, Any],
     p_args: Any,
     prompt: str,
     state: Dict[str, Any],
@@ -657,16 +1443,23 @@ def _send_dispatch_result(
     task: Optional[Dict[str, Any]],
     run_control_mode: str,
     run_source_request_id: str,
+    run_auto_source: str,
     send: Callable[..., bool],
     log_event: Callable[..., None],
     summarize_task_lifecycle: Callable[[str, Dict[str, Any]], str],
     synthesize_orchestrator_response: Callable[[Any, str, Dict[str, Any]], str],
     render_run_response: Callable[..., str],
+    finalize_request_reply_messages: Callable[..., Dict[str, Any]],
 ) -> bool:
+    reply_markup = _confirmed_result_reply_markup(entry, key) if str(run_auto_source or "").strip().lower() == "confirmed" else None
     if task is not None:
         ver_status = str((task.get("stages") or {}).get("verification", "pending"))
         if bool(args.require_verifier) and ver_status == "failed":
-            send(summarize_task_lifecycle(key, task), context="verifier-gate failed")
+            send(
+                summarize_task_lifecycle(key, task),
+                context="verifier-gate failed",
+                reply_markup=_intervention_reply_markup(entry, key, req_id),
+            )
             log_event(
                 event="dispatch_failed",
                 project=key,
@@ -681,7 +1474,12 @@ def _send_dispatch_result(
 
     if bool(state.get("complete", False)) and (state.get("replies") or []):
         try:
-            send(synthesize_orchestrator_response(p_args, prompt, state), context="synth")
+            send(synthesize_orchestrator_response(p_args, prompt, state), context="synth", reply_markup=reply_markup)
+            if req_id:
+                try:
+                    finalize_request_reply_messages(args, req_id)
+                except Exception:
+                    pass
             log_event(
                 event="dispatch_completed",
                 project=key,
@@ -695,7 +1493,12 @@ def _send_dispatch_result(
         except Exception:
             pass
 
-    send(render_run_response(state, task=task), context="result")
+    send(render_run_response(state, task=task), context="result", reply_markup=reply_markup)
+    if bool(state.get("complete", False)) and req_id:
+        try:
+            finalize_request_reply_messages(args, req_id)
+        except Exception:
+            pass
     log_event(
         event="dispatch_result",
         project=key,
@@ -712,6 +1515,8 @@ def _enforce_dispatch_policies(
     *,
     dispatch_mode: bool,
     args: Any,
+    key: str,
+    entry: Dict[str, Any],
     selected_roles: List[str],
     available_roles: List[str],
     verifier_candidates: List[str],
@@ -748,8 +1553,13 @@ def _enforce_dispatch_policies(
             f"project_roles={', '.join(available_roles) or '-'}\n"
             "hint: add a verifier role (e.g. Reviewer) or disable gate with --no-require-verifier",
             context="verifier-gate setup",
+            with_menu=True,
+            reply_markup=_early_gate_reply_markup(entry, key),
         )
-        return DispatchPolicyResult(terminal=True)
+        return DispatchPolicyResult(
+            terminal=True,
+            terminal_reason="verifier gate: no verifier role is available",
+        )
 
     if plan_gate_blocked:
         send(
@@ -758,8 +1568,13 @@ def _enforce_dispatch_policies(
             "hint: 요청을 더 구체화하거나 역할/범위를 줄여 다시 실행하세요.\n"
             f"replan_attempts: {len(plan_replans)}",
             context="planning-gate",
+            with_menu=True,
+            reply_markup=_early_gate_reply_markup(entry, key),
         )
-        return DispatchPolicyResult(terminal=True)
+        return DispatchPolicyResult(
+            terminal=True,
+            terminal_reason=f"plan gate: {plan_gate_reason or 'unresolved issues'}",
+        )
 
     return DispatchPolicyResult(
         terminal=False,
@@ -959,6 +1774,9 @@ def handle_run_or_unknown_command(
     lifecycle_set_stage = deps.routing.lifecycle_set_stage
     summarize_task_lifecycle = deps.routing.summarize_task_lifecycle
     synthesize_orchestrator_response = deps.routing.synthesize_orchestrator_response
+    critique_task_result = deps.routing.critique_task_result
+    extract_todo_proposals = deps.routing.extract_todo_proposals
+    merge_todo_proposals = deps.routing.merge_todo_proposals
     render_run_response = deps.routing.render_run_response
 
     prompt = _resolve_prompt_or_handle_unknown(
@@ -972,11 +1790,30 @@ def handle_run_or_unknown_command(
     if prompt is None:
         return True
 
+    # Resolve project context early to allow todo linkage (and future policies).
+    key, entry, p_args = get_context(orch_target)
+    setattr(p_args, "_aoe_control_mode", str(run_control_mode or "").strip().lower())
+    setattr(p_args, "_aoe_source_request_id", str(run_source_request_id or "").strip())
+
+    prompt, fallback_notes = _apply_success_first_prompt_fallbacks(prompt)
+    if fallback_notes:
+        log_event(
+            event="run_fallback_applied",
+            project=key,
+            request_id=str(run_source_request_id or "").strip(),
+            task=run_source_task if isinstance(run_source_task, dict) else None,
+            stage="intake",
+            status="adjusted",
+            detail="; ".join(str(note).strip() for note in fallback_notes if str(note).strip())[:280],
+        )
+
     if _handle_run_rate_limit_and_confirm(
         cmd=cmd,
         args=args,
         manager_state=manager_state,
         chat_id=chat_id,
+        key=key,
+        entry=entry,
         run_auto_source=run_auto_source,
         run_force_mode=run_force_mode,
         orch_target=orch_target,
@@ -990,8 +1827,19 @@ def handle_run_or_unknown_command(
     ):
         return True
 
-    key, entry, p_args = get_context(orch_target)
+    todo_id = ""
+    pending_todo_used = False
+    if isinstance(run_source_task, dict):
+        todo_id = str(run_source_task.get("todo_id", "")).strip()
+    if (not todo_id) and str(run_auto_source or "").strip().lower().startswith("todo"):
+        pending = entry.get("pending_todo")
+        if isinstance(pending, dict):
+            token = str(pending.get("todo_id", "")).strip()
+            if token and str(pending.get("chat_id", "")).strip() == str(chat_id):
+                todo_id = token
+                pending_todo_used = True
 
+    available_roles = load_orchestrator_roles(p_args.team_dir)
     dispatch_meta = _resolve_dispatch_mode_and_roles(
         run_force_mode=run_force_mode,
         run_roles_override=run_roles_override,
@@ -999,60 +1847,13 @@ def handle_run_or_unknown_command(
         auto_dispatch_enabled=bool(args.auto_dispatch),
         prompt=prompt,
         choose_auto_dispatch_roles=choose_auto_dispatch_roles,
+        available_roles=available_roles,
+        team_dir=p_args.team_dir,
     )
     dispatch_mode = bool(dispatch_meta.dispatch_mode)
     dispatch_roles = str(dispatch_meta.dispatch_roles).strip()
 
     verifier_candidates = resolve_verifier_candidates(args.verifier_roles)
-    available_roles = load_orchestrator_roles(p_args.team_dir)
-    selected_roles = parse_roles_csv(dispatch_roles)
-    plan_meta = _compute_dispatch_plan(
-        args=args,
-        p_args=p_args,
-        prompt=prompt,
-        dispatch_mode=dispatch_mode,
-        run_control_mode=run_control_mode,
-        run_source_task=run_source_task,
-        selected_roles=selected_roles,
-        available_roles=available_roles,
-        available_worker_roles=available_worker_roles,
-        normalize_task_plan_payload=normalize_task_plan_payload,
-        build_task_execution_plan=build_task_execution_plan,
-        critique_task_execution_plan=critique_task_execution_plan,
-        critic_has_blockers=critic_has_blockers,
-        repair_task_execution_plan=repair_task_execution_plan,
-        plan_roles_from_subtasks=plan_roles_from_subtasks,
-    )
-    selected_roles = list(plan_meta.selected_roles or selected_roles)
-    plan_data = plan_meta.plan_data
-    plan_critic = plan_meta.plan_critic or {"approved": True, "issues": [], "recommendations": []}
-    plan_roles = list(plan_meta.plan_roles or [])
-    plan_replans = list(plan_meta.plan_replans or [])
-    plan_error = str(plan_meta.plan_error or "")
-    plan_gate_blocked = bool(plan_meta.plan_gate_blocked)
-    plan_gate_reason = str(plan_meta.plan_gate_reason or "")
-    planning_enabled = bool(plan_meta.planning_enabled)
-    reuse_source_plan = bool(plan_meta.reuse_source_plan)
-
-    policy = _enforce_dispatch_policies(
-        dispatch_mode=dispatch_mode,
-        args=args,
-        selected_roles=selected_roles,
-        available_roles=available_roles,
-        verifier_candidates=verifier_candidates,
-        plan_gate_blocked=plan_gate_blocked,
-        plan_gate_reason=plan_gate_reason,
-        plan_replans=plan_replans,
-        ensure_verifier_roles=ensure_verifier_roles,
-        dispatch_roles=dispatch_roles,
-        send=send,
-    )
-    if bool(policy.terminal):
-        return True
-    dispatch_roles = str(policy.dispatch_roles or dispatch_roles).strip()
-    selected_roles = list(policy.selected_roles or selected_roles)
-    verifier_roles = list(policy.verifier_roles or [])
-    verifier_added = bool(policy.verifier_added)
 
     effective = _resolve_effective_run_options(
         p_args=p_args,
@@ -1065,11 +1866,84 @@ def handle_run_or_unknown_command(
     effective_no_wait = bool(effective.no_wait)
 
     if args.dry_run:
+        selected_roles = parse_roles_csv(dispatch_roles)
+        plan_meta = _compute_dispatch_plan(
+            args=args,
+            p_args=p_args,
+            prompt=prompt,
+            dispatch_mode=dispatch_mode,
+            run_control_mode=run_control_mode,
+            run_source_task=run_source_task,
+            selected_roles=selected_roles,
+            available_roles=available_roles,
+            available_worker_roles=available_worker_roles,
+            normalize_task_plan_payload=normalize_task_plan_payload,
+            build_task_execution_plan=build_task_execution_plan,
+            critique_task_execution_plan=critique_task_execution_plan,
+            critic_has_blockers=critic_has_blockers,
+            repair_task_execution_plan=repair_task_execution_plan,
+            plan_roles_from_subtasks=plan_roles_from_subtasks,
+            report_progress=None,
+        )
+        selected_roles = list(plan_meta.selected_roles or selected_roles)
+        plan_data = plan_meta.plan_data
+        plan_critic = plan_meta.plan_critic or {"approved": True, "issues": [], "recommendations": []}
+        plan_replans = list(plan_meta.plan_replans or [])
+        plan_error = str(plan_meta.plan_error or "")
+        plan_gate_blocked = bool(plan_meta.plan_gate_blocked)
+        planning_enabled = bool(plan_meta.planning_enabled)
+        reuse_source_plan = bool(plan_meta.reuse_source_plan)
+
+        policy = _enforce_dispatch_policies(
+            dispatch_mode=dispatch_mode,
+            args=args,
+            key=key,
+            entry=entry,
+            selected_roles=selected_roles,
+            available_roles=available_roles,
+            verifier_candidates=verifier_candidates,
+            plan_gate_blocked=plan_gate_blocked,
+            plan_gate_reason=str(plan_meta.plan_gate_reason or ""),
+            plan_replans=plan_replans,
+            ensure_verifier_roles=ensure_verifier_roles,
+            dispatch_roles=dispatch_roles,
+            send=send,
+        )
+        if bool(policy.terminal):
+            if not args.dry_run:
+                effective_todo_id = _effective_todo_token(
+                    entry=entry,
+                    chat_id=chat_id,
+                    todo_id=todo_id,
+                    run_auto_source=run_auto_source,
+                )
+                _cleanup_terminal_todo_gate(
+                    entry=entry,
+                    chat_id=chat_id,
+                    todo_id=todo_id,
+                    pending_todo_used=pending_todo_used,
+                    run_auto_source=run_auto_source,
+                    reason=str(policy.terminal_reason or "dispatch policy blocked").strip(),
+                    now_iso=now_iso,
+                )
+                _maybe_send_manual_followup_alert(
+                    entry=entry,
+                    todo_id=effective_todo_id,
+                    project_key=key,
+                    send=send,
+                    now_iso=now_iso,
+                )
+                save_manager_state(args.manager_state_file, manager_state)
+            return True
+        dry_dispatch_roles = str(policy.dispatch_roles or dispatch_roles).strip()
+        verifier_roles = list(policy.verifier_roles or [])
+        verifier_added = bool(policy.verifier_added)
+
         preview = _build_dry_run_preview(
             key=key,
             dispatch_mode=dispatch_mode,
             prompt=prompt,
-            dispatch_roles=dispatch_roles,
+            dispatch_roles=dry_dispatch_roles,
             require_verifier=bool(args.require_verifier),
             verifier_roles=verifier_roles,
             verifier_added=verifier_added,
@@ -1094,68 +1968,424 @@ def handle_run_or_unknown_command(
         log_event(event="direct_reply", project=key, stage="close", status="completed")
         return True
 
-    dispatch_prompt = prompt
-    if isinstance(plan_data, dict):
-        dispatch_prompt = build_planned_dispatch_prompt(prompt, plan_data, plan_critic)
+    exec_enabled = bool(getattr(args, "exec_critic", False))
+    exec_max_attempts = max(1, int(getattr(args, "exec_critic_retry_max", 3)))
+    exec_attempt = 1
+    exec_feedback = ""
+    last_exec_critic: Dict[str, Any] = {}
 
-    dispatch_result = _dispatch_and_sync_task(
-        p_args=p_args,
-        dispatch_prompt=dispatch_prompt,
-        chat_id=chat_id,
-        dispatch_roles=dispatch_roles,
-        run_priority_override=run_priority_override,
-        run_timeout_override=run_timeout_override,
-        run_no_wait_override=run_no_wait_override,
-        key=key,
+    final_state: Dict[str, Any] = {}
+    final_req_id = ""
+    final_task: Optional[Dict[str, Any]] = None
+    final_control_mode = run_control_mode
+    final_source_request_id = run_source_request_id
+    emit_planning_chat = str(run_auto_source or "").strip().lower().startswith("todo")
+
+    def _report_plan_progress(*, phase: str, detail: str = "", attempt: int = 0, total: int = 0) -> None:
+        _emit_planning_progress(
+            phase=phase,
+            key=key,
+            send=send,
+            log_event=log_event,
+            emit_chat=emit_planning_chat,
+            detail=detail,
+            attempt=attempt,
+            total=total,
+        )
+
+    while True:
+        attempt_prompt = prompt
+        if exec_feedback:
+            attempt_prompt = f"{prompt}\n\n[Exec Critic Feedback]\n{exec_feedback}"
+
+        selected_roles = parse_roles_csv(dispatch_roles)
+        plan_meta = _compute_dispatch_plan(
+            args=args,
+            p_args=p_args,
+            prompt=attempt_prompt,
+            dispatch_mode=dispatch_mode,
+            run_control_mode=run_control_mode,
+            run_source_task=run_source_task,
+            selected_roles=selected_roles,
+            available_roles=available_roles,
+            available_worker_roles=available_worker_roles,
+            normalize_task_plan_payload=normalize_task_plan_payload,
+            build_task_execution_plan=build_task_execution_plan,
+            critique_task_execution_plan=critique_task_execution_plan,
+            critic_has_blockers=critic_has_blockers,
+            repair_task_execution_plan=repair_task_execution_plan,
+            plan_roles_from_subtasks=plan_roles_from_subtasks,
+            report_progress=_report_plan_progress,
+        )
+        selected_roles = list(plan_meta.selected_roles or selected_roles)
+        plan_data = plan_meta.plan_data
+        plan_critic = plan_meta.plan_critic or {"approved": True, "issues": [], "recommendations": []}
+        plan_roles = list(plan_meta.plan_roles or [])
+        plan_replans = list(plan_meta.plan_replans or [])
+        plan_error = str(plan_meta.plan_error or "")
+        plan_gate_blocked = bool(plan_meta.plan_gate_blocked)
+        plan_gate_reason = str(plan_meta.plan_gate_reason or "")
+        planning_enabled = bool(plan_meta.planning_enabled)
+        reuse_source_plan = bool(plan_meta.reuse_source_plan)
+
+        policy = _enforce_dispatch_policies(
+            dispatch_mode=dispatch_mode,
+            args=args,
+            key=key,
+            entry=entry,
+            selected_roles=selected_roles,
+            available_roles=available_roles,
+            verifier_candidates=verifier_candidates,
+            plan_gate_blocked=plan_gate_blocked,
+            plan_gate_reason=plan_gate_reason,
+            plan_replans=plan_replans,
+            ensure_verifier_roles=ensure_verifier_roles,
+            dispatch_roles=dispatch_roles,
+            send=send,
+        )
+        if bool(policy.terminal):
+            effective_todo_id = _effective_todo_token(
+                entry=entry,
+                chat_id=chat_id,
+                todo_id=todo_id,
+                run_auto_source=run_auto_source,
+            )
+            _cleanup_terminal_todo_gate(
+                entry=entry,
+                chat_id=chat_id,
+                todo_id=todo_id,
+                pending_todo_used=pending_todo_used,
+                run_auto_source=run_auto_source,
+                reason=str(policy.terminal_reason or "dispatch policy blocked").strip(),
+                now_iso=now_iso,
+            )
+            _maybe_send_manual_followup_alert(
+                entry=entry,
+                todo_id=effective_todo_id,
+                project_key=key,
+                send=send,
+                now_iso=now_iso,
+            )
+            if not args.dry_run:
+                save_manager_state(args.manager_state_file, manager_state)
+            return True
+        dispatch_roles_effective = str(policy.dispatch_roles or dispatch_roles).strip()
+        selected_roles = list(policy.selected_roles or selected_roles)
+        verifier_roles = list(policy.verifier_roles or [])
+
+        dispatch_prompt = attempt_prompt
+        if isinstance(plan_data, dict):
+            dispatch_prompt = build_planned_dispatch_prompt(attempt_prompt, plan_data, plan_critic)
+
+        try:
+            dispatch_result = _dispatch_and_sync_task(
+                p_args=p_args,
+                dispatch_prompt=dispatch_prompt,
+                chat_id=chat_id,
+                dispatch_roles=dispatch_roles_effective,
+                run_priority_override=run_priority_override,
+                run_timeout_override=run_timeout_override,
+                run_no_wait_override=run_no_wait_override,
+                key=key,
+                entry=entry,
+                manager_state=manager_state,
+                prompt=prompt,
+                selected_roles=selected_roles,
+                verifier_roles=verifier_roles,
+                require_verifier=bool(args.require_verifier),
+                verifier_candidates=verifier_candidates,
+                run_aoe_orch=run_aoe_orch,
+                touch_chat_recent_task_ref=touch_chat_recent_task_ref,
+                set_chat_selected_task_ref=set_chat_selected_task_ref,
+                now_iso=now_iso,
+                sync_task_lifecycle=sync_task_lifecycle,
+            )
+        except Exception as exc:
+            # If this run originated from `/todo next` or `/next`, the scheduler will have set
+            # `pending_todo` before dispatch. When dispatch fails (ex: missing orchestrator.json),
+            # leaving `pending_todo` behind causes the auto-scheduler to loop forever resuming it.
+            reason = str(exc).strip().splitlines()[0] if str(exc).strip() else "dispatch_failed"
+            if (not todo_id) and str(run_auto_source or "").strip().lower().startswith("todo"):
+                pending = entry.get("pending_todo")
+                if isinstance(pending, dict):
+                    token = str(pending.get("todo_id", "")).strip()
+                    if token and str(pending.get("chat_id", "")).strip() == str(chat_id):
+                        todo_id = token
+                        pending_todo_used = True
+
+            if todo_id:
+                _finalize_todo_after_run(
+                    entry=entry,
+                    todo_id=todo_id,
+                    status="failed",
+                    exec_verdict="fail",
+                    exec_reason=f"dispatch_failed: {reason}"[:260],
+                    req_id="",
+                    task=None,
+                    now_iso=now_iso,
+                )
+                pending = entry.get("pending_todo")
+                if (
+                    isinstance(pending, dict)
+                    and str(pending.get("todo_id", "")).strip() == todo_id
+                    and str(pending.get("chat_id", "")).strip() == str(chat_id)
+                ):
+                    entry.pop("pending_todo", None)
+                    pending_todo_used = False
+                _maybe_send_manual_followup_alert(
+                    entry=entry,
+                    todo_id=todo_id,
+                    project_key=key,
+                    send=send,
+                    now_iso=now_iso,
+                )
+
+            if pending_todo_used:
+                entry.pop("pending_todo", None)
+                pending_todo_used = False
+
+            entry["updated_at"] = now_iso()
+            if not args.dry_run:
+                save_manager_state(args.manager_state_file, manager_state)
+            _send_dispatch_exception(
+                entry=entry,
+                key=key,
+                todo_id=todo_id,
+                reason=reason,
+                send=send,
+            )
+            log_event(
+                event="dispatch_failed",
+                project=key,
+                request_id="",
+                task=None,
+                stage="dispatch",
+                status="failed",
+                error_code="E_DISPATCH",
+                detail=reason,
+            )
+            return True
+        state = dispatch_result.state
+        req_id = str(dispatch_result.request_id)
+        task = dispatch_result.task if isinstance(dispatch_result.task, dict) else None
+
+        _apply_plan_and_lineage(
+            task=task,
+            plan_data=plan_data if isinstance(plan_data, dict) else None,
+            plan_critic=plan_critic,
+            plan_roles=plan_roles,
+            plan_replans=plan_replans,
+            plan_error=plan_error,
+            critic_has_blockers=critic_has_blockers,
+            lifecycle_set_stage=lifecycle_set_stage,
+            run_control_mode=run_control_mode,
+            run_source_request_id=run_source_request_id,
+            run_source_task=run_source_task,
+            req_id=req_id,
+            now_iso=now_iso,
+        )
+
+        if todo_id:
+            _attach_todo_to_task_and_entry(
+                entry=entry,
+                chat_id=chat_id,
+                todo_id=todo_id,
+                req_id=req_id,
+                task=task,
+                now_iso=now_iso,
+            )
+            if pending_todo_used:
+                entry.pop("pending_todo", None)
+                pending_todo_used = False
+
+        final_state = state
+        final_req_id = req_id
+        final_task = task
+        final_control_mode = run_control_mode
+        final_source_request_id = run_source_request_id
+
+        if not args.dry_run:
+            save_manager_state(args.manager_state_file, manager_state)
+
+        ver_status = ""
+        if isinstance(task, dict):
+            ver_status = str((task.get("stages") or {}).get("verification", "pending"))
+
+        if (not exec_enabled) or (not bool(state.get("complete", False))) or (not (state.get("replies") or [])):
+            break
+        if bool(args.require_verifier) and ver_status == "failed":
+            break
+
+        try:
+            critic = critique_task_result(
+                p_args,
+                prompt,
+                state,
+                task,
+                exec_attempt,
+                exec_max_attempts,
+            )
+        except Exception as e:
+            critic = {
+                "verdict": "fail",
+                "action": "escalate",
+                "reason": f"critic_error: {str(e)[:120]}",
+                "fix": "",
+                "attempt": exec_attempt,
+                "max_attempts": exec_max_attempts,
+            }
+
+        last_exec_critic = critic if isinstance(critic, dict) else {}
+        if isinstance(task, dict):
+            task["exec_critic"] = dict(last_exec_critic)
+            task["updated_at"] = now_iso()
+        if not args.dry_run:
+            save_manager_state(args.manager_state_file, manager_state)
+
+        verdict = str(last_exec_critic.get("verdict", "")).strip().lower()
+        action = str(last_exec_critic.get("action", "")).strip().lower()
+        if verdict == "success":
+            break
+
+        if exec_attempt >= exec_max_attempts:
+            break
+
+        if verdict != "retry":
+            break
+
+        # Apply critic guidance for the next attempt.
+        exec_feedback = str(last_exec_critic.get("fix", "")).strip() or str(last_exec_critic.get("reason", "")).strip()
+        exec_feedback = exec_feedback[:800]
+
+        run_control_mode = "replan" if action == "replan" else "retry"
+        run_source_request_id = req_id
+        run_source_task = task
+        exec_attempt += 1
+        log_event(
+            event="exec_critic_retry",
+            project=key,
+            request_id=req_id,
+            task=task,
+            stage="integration",
+            status="running",
+            detail=f"attempt={exec_attempt}/{exec_max_attempts} mode={run_control_mode}",
+        )
+        continue
+
+    verdict = str(last_exec_critic.get("verdict", "")).strip().lower()
+    if exec_enabled and last_exec_critic and verdict in {"retry", "fail"}:
+        reason = str(last_exec_critic.get("reason", "")).strip()
+        proposal_result = _maybe_capture_todo_proposals(
+            args=args,
+            entry=entry,
+            key=key,
+            p_args=p_args,
+            prompt=prompt,
+            state=final_state,
+            req_id=final_req_id,
+            task=final_task,
+            todo_id=todo_id,
+            send=send,
+            log_event=log_event,
+            now_iso=now_iso,
+            extract_todo_proposals=extract_todo_proposals,
+            merge_todo_proposals=merge_todo_proposals,
+        )
+        if todo_id:
+            _finalize_todo_after_run(
+                entry=entry,
+                todo_id=todo_id,
+                status=str((final_task or {}).get("status", "")).strip(),
+                exec_verdict=verdict,
+                exec_reason=reason,
+                req_id=final_req_id,
+                task=final_task,
+                now_iso=now_iso,
+            )
+            _maybe_send_manual_followup_alert(
+                entry=entry,
+                todo_id=todo_id,
+                project_key=key,
+                send=send,
+                now_iso=now_iso,
+            )
+        if (todo_id or int(proposal_result.get("created_count", 0) or 0) > 0) and (not args.dry_run):
+            save_manager_state(args.manager_state_file, manager_state)
+        _send_exec_critic_intervention(
+            entry=entry,
+            key=key,
+            final_req_id=final_req_id,
+            verdict=verdict,
+            reason=reason,
+            exec_attempt=exec_attempt,
+            exec_max_attempts=exec_max_attempts,
+            send=send,
+        )
+        log_event(
+            event="exec_critic_blocked",
+            project=key,
+            request_id=final_req_id,
+            task=final_task,
+            stage="integration",
+            status="failed",
+            error_code="E_GATE",
+            detail=f"verdict={verdict} attempts={exec_attempt}/{exec_max_attempts}",
+        )
+        return True
+
+    proposal_result = _maybe_capture_todo_proposals(
+        args=args,
         entry=entry,
-        manager_state=manager_state,
+        key=key,
+        p_args=p_args,
         prompt=prompt,
-        selected_roles=selected_roles,
-        verifier_roles=verifier_roles,
-        require_verifier=bool(args.require_verifier),
-        verifier_candidates=verifier_candidates,
-        run_aoe_orch=run_aoe_orch,
-        touch_chat_recent_task_ref=touch_chat_recent_task_ref,
-        set_chat_selected_task_ref=set_chat_selected_task_ref,
+        state=final_state,
+        req_id=final_req_id,
+        task=final_task,
+        todo_id=todo_id,
+        send=send,
+        log_event=log_event,
         now_iso=now_iso,
-        sync_task_lifecycle=sync_task_lifecycle,
+        extract_todo_proposals=extract_todo_proposals,
+        merge_todo_proposals=merge_todo_proposals,
     )
-    state = dispatch_result.state
-    req_id = str(dispatch_result.request_id)
-    task = dispatch_result.task if isinstance(dispatch_result.task, dict) else None
-
-    _apply_plan_and_lineage(
-        task=task,
-        plan_data=plan_data if isinstance(plan_data, dict) else None,
-        plan_critic=plan_critic,
-        plan_roles=plan_roles,
-        plan_replans=plan_replans,
-        plan_error=plan_error,
-        critic_has_blockers=critic_has_blockers,
-        lifecycle_set_stage=lifecycle_set_stage,
-        run_control_mode=run_control_mode,
-        run_source_request_id=run_source_request_id,
-        run_source_task=run_source_task,
-        req_id=req_id,
-        now_iso=now_iso,
-    )
-
-    if not args.dry_run:
+    if todo_id:
+        _finalize_todo_after_run(
+            entry=entry,
+            todo_id=todo_id,
+            status=str((final_task or {}).get("status", "")).strip(),
+            exec_verdict=str(last_exec_critic.get("verdict", "")).strip(),
+            exec_reason=str(last_exec_critic.get("reason", "")).strip(),
+            req_id=final_req_id,
+            task=final_task,
+            now_iso=now_iso,
+        )
+        _maybe_send_manual_followup_alert(
+            entry=entry,
+            todo_id=todo_id,
+            project_key=key,
+            send=send,
+            now_iso=now_iso,
+        )
+    if (todo_id or int(proposal_result.get("created_count", 0) or 0) > 0) and (not args.dry_run):
         save_manager_state(args.manager_state_file, manager_state)
 
     return _send_dispatch_result(
         args=args,
         key=key,
+        entry=entry,
         p_args=p_args,
         prompt=prompt,
-        state=state,
-        req_id=req_id,
-        task=task,
-        run_control_mode=run_control_mode,
-        run_source_request_id=run_source_request_id,
+        state=final_state,
+        req_id=final_req_id,
+        task=final_task,
+        run_control_mode=final_control_mode,
+        run_source_request_id=final_source_request_id,
+        run_auto_source=run_auto_source,
         send=send,
         log_event=log_event,
         summarize_task_lifecycle=summarize_task_lifecycle,
         synthesize_orchestrator_response=synthesize_orchestrator_response,
         render_run_response=render_run_response,
+        finalize_request_reply_messages=deps.routing.finalize_request_reply_messages,
     )

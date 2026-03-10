@@ -13,6 +13,11 @@ Telegram-controlled orchestration workspace for multi-session AOE operations.
 - Control Plane: 사용자는 Telegram 자연어 명령으로 프로젝트별 Orch를 원격 제어한다.
 
 ## Governance Docs
+- Constitution (highest level): `docs/CONSTITUTION.md`
+- Constitution trace roadmap: `docs/ROADMAP.md`
+- Command reference: `docs/COMMANDS.md`
+- Multi-agent investigations workspace: `docs/investigations_mo/README.md`
+- Multi-agent investigations template: `docs/templates/multi_agent_tf_ops_template/README.md`
 - Project charter: `docs/PROJECT_CHARTER.md`
 - Fork policy: `docs/FORK_POLICY.md`
 - Upstream baseline: `docs/UPSTREAM_BASELINE.md`
@@ -42,29 +47,39 @@ Telegram-controlled orchestration workspace for multi-session AOE operations.
 - Stop stack: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh stop`
 - Session overview (number map): `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh overview`
 - Apply tmux visual/key UI: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh ui`
-- Toggle right-side live panel (inside tmux): `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh panel`
+- tmux page size env: `AOE_TMUX_PAGE_SIZE=<N>` (range: `1..9`, default: `9`)
+- tmux hint name width env: `AOE_TMUX_HINT_NAME_MAX=<N>` (default: `7`)
+- tmux compact display name width env (overview): `AOE_TMUX_COMPACT_NAME_MAX=<N>` (default: `20`)
+- Session naming envs (default + legacy compatibility):
+- `AOE_TMUX_GATEWAY_SESSION=aoe_mo_gateway` (legacy auto-detect: `aoe_tg_gateway`)
+- `AOE_TMUX_WORKER_PREFIX=aoe_tf_worker_` (legacy auto-detect: `aoe_tg_worker_`)
 - Fast switch by index/session: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh switch 2`
+- tmux page control: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh page next|prev|set <N>|status|reset`
 - Systemd install: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/systemd/install_user_services.sh`
-- Telegram input policy: slash-first (`/dispatch`, `/direct`, `/mode`, `/monitor`, `/check`, `/task`, `/pick`, `/kpi`, `/cancel`, `/retry`, `/replan`, `/help`, `/whoami`, `/acl`, `/grant`, `/revoke`)
+- Telegram input policy: slash-first (`/dispatch`, `/direct`, `/mode`, `/monitor`, `/check`, `/task`, `/pick`, `/kpi`, `/map`, `/cancel`, `/retry`, `/replan`, `/replay`, `/help`, `/whoami`, `/acl`, `/grant`, `/revoke`)
 - Access policy: deny-by-default + ACL envs (`TELEGRAM_ALLOW_CHAT_IDS`, `TELEGRAM_ADMIN_CHAT_IDS`, `TELEGRAM_READONLY_CHAT_IDS`)
 - Owner policy: set `TELEGRAM_OWNER_CHAT_ID` to enforce owner-only control for `/lockme`, `/grant`, `/revoke`
 - Chat alias mapping: short numeric aliases (`1..999`) persisted at `.aoe-team/telegram_chat_aliases.json` and usable in `/grant`/`/revoke`
+- Orch alias mapping: project aliases (`O1..O999`) auto-assigned in `.aoe-team/orch_manager_state.json`, visible via `/map`, usable as orch target (`/monitor O1`)
 - Persistent routing mode: `/mode on|off|direct` + shortcuts `/on`, `/off` (`on/direct`면 slash-only에서도 평문 자동 라우팅)
 - Auto-run safety: high-risk plain-text auto-run requires `/ok` confirmation (`/cancel` to discard)
 - Chat guardrails: per-chat running limit + daily cap (`AOE_CHAT_MAX_RUNNING`, `AOE_CHAT_DAILY_CAP`)
+- Handler error replay queue: `/replay [list|latest|<idx>|<id>|show <idx|id|latest>|purge]` and keep-limit env `AOE_GATEWAY_FAILED_KEEP`
+- Replay queue TTL env: `AOE_GATEWAY_FAILED_TTL_HOURS` (default `168`, `0` disables expiry)
 - First-time lock: send `/lockme` (resets allowlist to current chat and clears admin/readonly), verify with `/whoami`
 - Safe natural shortcuts (slash-only mode): `모니터 5`, `확인 1`, `상태 1`, `재시도 1`, `재계획 1`, `취소 1`
-- tmux quick switch: `Alt+1..9` (gateway/worker index map shown in status bar and `overview`)
+- tmux quick switch: `Alt+1..9` or `Ctrl+b` then `1..9`, page move `Alt+,`/`Alt+.` (status bar and `overview` show `Pn/N`)
 
 ## Global Commands
 - After one-time install, use from any directory:
 - `aoe-team-stack init|start|stop|restart|status`
-- `aoe-team-stack overview|ui|panel`
+- `aoe-team-stack overview|ui|page`
 - `aoe-team-stack switch <idx|session>`
+- `aoe-team-stack page next|prev|set <N>|status|reset`
 - alias: `aoe-team-tmux ...` (same launcher)
 - multi-project mode: `aoe-team-stack --project-root /path/to/project start`
 - uninstall: `bash scripts/team/uninstall_global_cli.sh`
-- note: `aoe-team` itself remains the upstream message-queue CLI; stack control is `aoe-team-stack`.
+- note: `aoe` core behavior remains upstream. `aoe-team` is upstream team-protocol CLI; stack UI control is `aoe-team-stack`.
 
 ## Runtime Boundary
 - `.aoe-team` is an active runtime directory.

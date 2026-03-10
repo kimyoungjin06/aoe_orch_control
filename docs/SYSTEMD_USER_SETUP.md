@@ -28,5 +28,6 @@
 - `~/.config/systemd/user/aoe-telegram-heal.timer`
 
 ## 6. Notes
-- stack 서비스는 `tmux` 세션(`aoe_tg_gateway`, `aoe_tg_worker_*`)을 관리한다.
+- stack 서비스는 `tmux` 세션(`aoe_mo_gateway`, `aoe_tf_worker_*`)을 관리한다.
+- 구버전 세션명(`aoe_tg_gateway`, `aoe_tg_worker_*`)도 호환 인식한다.
 - heal timer는 60초 주기로 health check를 수행하고, 비정상 시 `aoe-telegram-stack.service`를 재시작한다.

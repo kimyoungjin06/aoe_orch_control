@@ -25,5 +25,4 @@ echo
 echo "examples:"
 echo "  aoe-team-stack start"
 echo "  aoe-team-stack ui"
-echo "  aoe-team-stack panel"
 echo "  aoe-team-stack switch 2"

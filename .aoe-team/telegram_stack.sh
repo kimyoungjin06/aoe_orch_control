@@ -8,11 +8,42 @@ ENV_FILE="$TEAM_DIR/telegram.env"
 GW_PID_FILE="$TEAM_DIR/telegram_gateway.pid"
 DE_PID_FILE="$TEAM_DIR/worker_dataengineer.pid"
 RV_PID_FILE="$TEAM_DIR/worker_reviewer.pid"
+LOCK_FILE="$TEAM_DIR/.gateway.instance.lock"
+
+find_pids() {
+  local pattern="$1"
+  pgrep -f "$pattern" 2>/dev/null || true
+}
+
+kill_pid_list() {
+  local pids=("$@")
+  local pid
+  for pid in "${pids[@]}"; do
+    [[ -n "${pid:-}" ]] || continue
+    if ps -p "$pid" >/dev/null 2>&1; then
+      kill "$pid" >/dev/null 2>&1 || true
+    fi
+  done
+}
+
+stop_by_pattern() {
+  local pattern="$1"
+  mapfile -t pids < <(find_pids "$pattern")
+  if [[ "${#pids[@]}" -gt 0 ]]; then
+    kill_pid_list "${pids[@]}"
+  fi
+}
 
 start() {
   set -a
   . "$ENV_FILE"
   set +a
+
+  # Avoid duplicate processes if pid files got out-of-sync (ex: stale pid files + live lock).
+  if [[ -n "$(find_pids "aoe-telegram-gateway.*--project-root $PROJECT_ROOT")" ]]; then
+    echo "already running (gateway)"
+    return 0
+  fi
 
   nohup /home/kimyoungjin06/.local/bin/aoe-orch worker --project-root "$PROJECT_ROOT" --for DataEngineer --handler-cmd 'printf "[%s] %s" "$AOE_WORKER_ACTOR" "$AOE_MSG_TITLE"' --interval-sec 1 --quiet > "$TEAM_DIR/worker_dataengineer.log" 2>&1 &
   echo $! > "$DE_PID_FILE"
@@ -42,6 +73,11 @@ stop() {
   stop_one "$GW_PID_FILE"
   stop_one "$DE_PID_FILE"
   stop_one "$RV_PID_FILE"
+  # Best-effort cleanup for cases where pid files got stale.
+  stop_by_pattern "aoe-telegram-gateway.*--project-root $PROJECT_ROOT"
+  stop_by_pattern "aoe-orch worker.*--project-root $PROJECT_ROOT.*--for DataEngineer"
+  stop_by_pattern "aoe-orch worker.*--project-root $PROJECT_ROOT.*--for Reviewer"
+  rm -f "$LOCK_FILE" >/dev/null 2>&1 || true
   echo "stopped"
 }
 

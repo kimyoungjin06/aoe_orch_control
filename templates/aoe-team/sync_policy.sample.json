@@ -1,0 +1,19 @@
+{
+  "exclude_globs": [
+    "docs/research/00_ops/current/todo-*.md"
+  ],
+  "include_globs": [
+    "docs/research/02_results/00_integrated/*todo*.md"
+  ],
+  "class_confidence": {
+    "ops_todo": 0.45,
+    "recent_doc": 0.74,
+    "todo_file": 0.92
+  },
+  "group_overrides": {
+    "ops_todo": "ops",
+    "todo_file": "todo_files",
+    "recent_doc": "recent_docs"
+  },
+  "min_confidence": 0.7
+}

@@ -6,7 +6,10 @@
   "roles": [
     "Orchestrator",
     "DataEngineer",
-    "Reviewer"
+    "Reviewer",
+    "Local-Dev",
+    "Local-Writer",
+    "Local-Analyst"
   ],
   "created_at": "__CREATED_AT__",
   "overview": "__OVERVIEW__"

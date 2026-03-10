@@ -1,5 +1,8 @@
 # PROJECT_CHARTER
 
+## 0. Authority
+- 본 문서는 `docs/CONSTITUTION.md`의 하위 문서이며, 헌법 원칙을 구현 가능한 운영 목표로 구체화한다.
+
 ## 1. Purpose
 - 이 프로젝트의 목적은 `AOE 기반 멀티 에이전트 팀 운영`을 실무형 워크플로로 고도화하는 것이다.
 - 사용자는 오직 Orchestrator와만 대화하고, 실행/검증은 역할별 Sub-session이 분담한다.
@@ -37,3 +40,4 @@
 ## 7. Decision Records
 - 주요 구조 변경은 `docs/` 아래 ADR 또는 changelog 형태로 남긴다.
 - 포크 추적/라이선스/업스트림 기준은 `FORK_POLICY`, `UPSTREAM_BASELINE`에서 관리한다.
+- 헌법 조항별 구현 추적은 `docs/ROADMAP.md`에서 관리한다.

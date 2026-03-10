@@ -27,6 +27,24 @@
       "provider": "codex",
       "launch": "codex",
       "session": ""
+    },
+    {
+      "role": "Local-Dev",
+      "provider": "codex",
+      "launch": "codex",
+      "session": ""
+    },
+    {
+      "role": "Local-Writer",
+      "provider": "codex",
+      "launch": "codex",
+      "session": ""
+    },
+    {
+      "role": "Local-Analyst",
+      "provider": "codex",
+      "launch": "codex",
+      "session": ""
     }
   ]
 }
