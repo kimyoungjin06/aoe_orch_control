@@ -43,6 +43,13 @@ from aoe_tg_ops_policy import (
     sorted_open_todos as ops_sorted_open_todos,
 )
 from aoe_tg_project_runtime import project_hidden_from_ops, project_runtime_issue, project_runtime_label
+from aoe_tg_queue_engine import (
+    count_todo_statuses as queue_count_todo_statuses,
+    find_todo_item as queue_find_todo_item,
+    has_task_linked_to_todo as queue_has_task_linked_to_todo,
+    pick_global_next_candidate as queue_pick_global_next_candidate,
+    sorted_active_todos as queue_sorted_active_todos,
+)
 from aoe_tg_sync_merge import apply_scenario_items_to_entry as _apply_scenario_items_to_entry
 from aoe_tg_sync_merge import stamp_sync_meta as _stamp_sync_meta
 from aoe_tg_todo_state import merge_todo_proposals
@@ -432,52 +439,11 @@ def _sorted_open_todos(todos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def _sorted_active_todos(todos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    for row in todos:
-        if not isinstance(row, dict):
-            continue
-        status = str(row.get("status", _STATUS_OPEN)).strip().lower() or _STATUS_OPEN
-        if status in {_STATUS_DONE, _STATUS_CANCELED}:
-            continue
-        rows.append(row)
-    # running/blocked should be considered "busy" first.
-    def _status_rank(st: str) -> int:
-        token = str(st or "").strip().lower()
-        if token == _STATUS_RUNNING:
-            return 0
-        if token == _STATUS_BLOCKED:
-            return 1
-        if token == _STATUS_OPEN:
-            return 2
-        return 8
-
-    rows.sort(
-        key=lambda r: (
-            _status_rank(str(r.get("status", _STATUS_OPEN))),
-            _priority_rank(str(r.get("priority", "P2"))),
-            str(r.get("created_at", "")),
-            str(r.get("id", "")),
-        )
-    )
-    return rows
+    return queue_sorted_active_todos(todos)
 
 
 def _count_todo_statuses(todos: List[Dict[str, Any]]) -> Dict[str, int]:
-    counts = {
-        _STATUS_OPEN: 0,
-        _STATUS_RUNNING: 0,
-        _STATUS_BLOCKED: 0,
-        _STATUS_DONE: 0,
-        _STATUS_CANCELED: 0,
-    }
-    for row in todos:
-        if not isinstance(row, dict):
-            continue
-        status = str(row.get("status", _STATUS_OPEN)).strip().lower() or _STATUS_OPEN
-        if status not in counts:
-            status = _STATUS_OPEN
-        counts[status] += 1
-    return counts
+    return queue_count_todo_statuses(todos)
 
 
 def _blocked_reason_preview(raw: Any, limit: int = 72) -> str:
@@ -562,36 +528,11 @@ def _find_pending_todo_for_chat(
 
 
 def _find_todo_item(entry: Dict[str, Any], todo_id: str) -> Optional[Dict[str, Any]]:
-    token = str(todo_id or "").strip()
-    if not token:
-        return None
-    raw = entry.get("todos")
-    if not isinstance(raw, list):
-        return None
-    for row in raw:
-        if not isinstance(row, dict):
-            continue
-        if str(row.get("id", "")).strip() == token:
-            return row
-    return None
+    return queue_find_todo_item(entry, todo_id)
 
 
 def _has_task_linked_to_todo(entry: Dict[str, Any], todo_id: str) -> bool:
-    token = str(todo_id or "").strip()
-    if not token:
-        return False
-    tasks = entry.get("tasks")
-    if not isinstance(tasks, dict):
-        return False
-    for task in tasks.values():
-        if not isinstance(task, dict):
-            continue
-        if str(task.get("todo_id", "")).strip() != token:
-            continue
-        status = str(task.get("status", "")).strip().lower()
-        if status in {"pending", "running"}:
-            return True
-    return False
+    return queue_has_task_linked_to_todo(entry, todo_id)
 
 
 def _pick_global_next_candidate(
@@ -600,35 +541,11 @@ def _pick_global_next_candidate(
     ignore_busy: bool = False,
     skip_paused: bool = False,
 ) -> Optional[Dict[str, Any]]:
-    candidates: List[Dict[str, Any]] = []
-    for key, entry in list_ops_projects(projects, skip_paused=skip_paused, require_ready=True):
-        snap = project_queue_snapshot(entry)
-        if not ignore_busy and snap["has_running"]:
-            continue
-        item = snap["best_open"]
-        if not isinstance(item, dict):
-            continue
-        candidates.append(
-            {
-                "project_key": str(key),
-                "project_alias": _project_alias(entry, str(key)),
-                "todo": item,
-                "priority_rank": _priority_rank(str(item.get("priority", "P2"))),
-                "created_at": str(item.get("created_at", "")),
-                "todo_id": str(item.get("id", "")).strip(),
-            }
-        )
-    if not candidates:
-        return None
-    candidates.sort(
-        key=lambda c: (
-            int(c.get("priority_rank", 9) or 9),
-            str(c.get("created_at", "")),
-            str(c.get("project_alias", "")),
-            str(c.get("todo_id", "")),
-        )
+    return queue_pick_global_next_candidate(
+        projects,
+        ignore_busy=ignore_busy,
+        skip_paused=skip_paused,
     )
-    return candidates[0]
 
 
 def handle_scheduler_command(

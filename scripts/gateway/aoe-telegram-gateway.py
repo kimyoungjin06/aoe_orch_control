@@ -37,15 +37,13 @@ from aoe_tg_message_flow import (
     apply_retry_transition_to_resolved,
     enforce_command_auth,
 )
+from aoe_tg_queue_engine import drain_peek_next_todo as queue_drain_peek_next_todo
 from aoe_tg_todo_state import merge_todo_proposals
 from aoe_tg_investigations_sync import sync_investigations_docs
 from aoe_tg_ops_policy import (
     build_batch_finish_message,
-    find_pending_todo_for_chat as find_ops_pending_todo_for_chat,
     format_ops_skip_detail,
     new_ops_skip_counters,
-    priority_rank as ops_priority_rank,
-    project_alias as ops_project_alias,
     project_queue_snapshot,
     visible_ops_project_keys,
 )
@@ -6243,98 +6241,13 @@ def _parse_fanout_args(rest: str) -> tuple[int, bool]:
     return limit, force
 
 
-def _drain_priority_rank(priority: str) -> int:
-    return ops_priority_rank(priority)
-
-
-def _drain_project_alias(entry: Dict[str, Any], fallback: str) -> str:
-    return ops_project_alias(entry, fallback)
-
-
 def _drain_peek_next_todo(
     manager_state: Dict[str, Any],
     chat_id: str,
     *,
     force: bool,
 ) -> tuple[str, str, str]:
-    """Return (project_key, todo_id, reason) for the next runnable item.
-
-    When no runnable todo exists, returns ("", "", reason).
-    """
-    projects = manager_state.get("projects")
-    if not isinstance(projects, dict) or not projects:
-        return "", "", "no_projects"
-
-    cid = str(chat_id or "").strip()
-    if not cid:
-        return "", "", "invalid_chat_id"
-
-    # 0) Prefer resuming an existing pending todo for this chat (unless forced).
-    if not force:
-        pending_hit = find_ops_pending_todo_for_chat(projects, cid, skip_paused=True, require_ready=True)
-        if pending_hit:
-            p_key, entry, pending = pending_hit
-            p_todo = str(pending.get("todo_id", "")).strip()
-            tasks = entry.get("tasks") if isinstance(entry, dict) else {}
-            if isinstance(tasks, dict):
-                for t in tasks.values():
-                    if not isinstance(t, dict):
-                        continue
-                    if str(t.get("todo_id", "")).strip() != p_todo:
-                        continue
-                    status = str(t.get("status", "")).strip().lower()
-                    if status in {"pending", "running"}:
-                        return "", "", "pending_has_active_task"
-            snap = project_queue_snapshot(entry if isinstance(entry, dict) else {})
-            for row in snap["todos"]:
-                if str(row.get("id", "")).strip() != p_todo:
-                    continue
-                summary = str(row.get("summary", "")).strip()
-                if not summary:
-                    return "", "", "pending_missing_summary"
-                return p_key, p_todo, "resume_pending"
-            return "", "", "pending_not_found"
-
-    # 1) Pick the best open todo across projects (respect busy unless forced).
-    candidates: list[tuple[int, str, str, str, str]] = []
-    skipped_unready = 0
-    for key, entry in projects.items():
-        if not isinstance(entry, dict):
-            continue
-        if project_hidden_from_ops(entry):
-            continue
-        if project_runtime_issue(entry):
-            skipped_unready += 1
-            continue
-        if (not force) and bool_from_json(entry.get("paused"), False):
-            continue
-        snap = project_queue_snapshot(entry)
-        if not force and snap["has_running"]:
-            continue
-        best = snap["best_open"]
-        if not isinstance(best, dict):
-            continue
-        todo_id = str(best.get("id", "")).strip()
-        summary = str(best.get("summary", "")).strip()
-        if not todo_id or not summary:
-            continue
-        alias = _drain_project_alias(entry, str(key))
-        candidates.append(
-            (
-                _drain_priority_rank(str(best.get("priority", "P2"))),
-                str(best.get("created_at", "")),
-                str(alias),
-                str(todo_id),
-                str(key),
-            )
-        )
-    if not candidates:
-        if skipped_unready > 0:
-            return "", "", "unready_project"
-        return "", "", "no_runnable_open_todo"
-    candidates.sort()
-    _pr, _ts, _alias, todo_id, project_key = candidates[0]
-    return project_key, todo_id, "candidate"
+    return queue_drain_peek_next_todo(manager_state, chat_id, force=force)
 
 
 def handle_drain_command(

@@ -28,6 +28,7 @@ import aoe_tg_orch_overview_handlers as overview
 import aoe_tg_orch_task_handlers as orch_task_handlers
 import aoe_tg_parse as tg_parse
 import aoe_tg_project_runtime as runtime_helpers
+import aoe_tg_queue_engine as queue_engine
 import aoe_tg_todo_policy as todo_policy
 import aoe_tg_run_handlers as run_handlers
 import aoe_tg_scheduler_handlers as sched
@@ -1443,6 +1444,37 @@ def test_drain_peek_next_todo_ignores_blocked_rows_when_open_todo_exists(tmp_pat
     assert key == "local"
     assert todo_id == "TODO-002"
     assert reason == "candidate"
+
+
+def test_queue_engine_matches_gateway_and_scheduler_next_selection(tmp_path: Path) -> None:
+    state = _empty_state()
+    team = tmp_path / "Local" / ".aoe-team"
+    team.mkdir(parents=True, exist_ok=True)
+    (team / "orchestrator.json").write_text("{}", encoding="utf-8")
+
+    state["projects"]["local"] = {
+        "name": "local",
+        "display_name": "Local",
+        "project_alias": "O3",
+        "project_root": str(tmp_path / "Local"),
+        "team_dir": str(team),
+        "todos": [
+            {"id": "TODO-001", "summary": "blocked first", "priority": "P1", "status": "blocked"},
+            {"id": "TODO-002", "summary": "open second", "priority": "P2", "status": "open"},
+        ],
+    }
+
+    queue_pick = queue_engine.pick_global_next_candidate(state["projects"], ignore_busy=False, skip_paused=True)
+    sched_pick = sched._pick_global_next_candidate(state["projects"], ignore_busy=False, skip_paused=True)
+    gw_pick = gw._drain_peek_next_todo(state, "939062873", force=False)
+
+    assert isinstance(queue_pick, dict)
+    assert isinstance(sched_pick, dict)
+    assert queue_pick["project_key"] == "local"
+    assert queue_pick["todo"]["id"] == "TODO-002"
+    assert sched_pick["project_key"] == queue_pick["project_key"]
+    assert sched_pick["todo"]["id"] == queue_pick["todo"]["id"]
+    assert gw_pick == ("local", "TODO-002", "candidate")
 
 
 def test_orch_map_reply_markup_contains_use_focus_status_todo_and_active_sync_actions() -> None:
