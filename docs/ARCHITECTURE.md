@@ -303,7 +303,125 @@ The current engineering rule is:
 - new behavior should be added to policy/state/view/helper modules first
 - large handler files should keep orchestration glue, not domain rules
 
-## 10. Operational Rules
+## 10. Remaining Core Decomposition Priorities
+
+The package/runtime split is now explicit. The remaining architectural work is
+not a full rewrite. It is targeted decomposition of the three largest runtime
+cores.
+
+### 10.1 Priority 1: `aoe-telegram-gateway.py`
+
+Current role:
+
+- process entrypoint
+- Telegram transport
+- runtime registry load/save
+- request lifecycle glue
+- TF runtime orchestration
+
+Why it is first:
+
+- it is still the effective composition root
+- transport concerns and domain state orchestration still live too close
+- many later changes will continue to touch this file if the seam is not
+  tightened
+
+Next cut points:
+
+- `gateway_transport.py`
+  - polling
+  - send/retry
+  - offset/dedupe persistence
+- `gateway_runtime.py`
+  - registry bootstrap
+  - state load/save
+  - runtime path setup
+- keep `aoe-telegram-gateway.py` as a thin assembly layer
+
+Success condition:
+
+- the file mostly wires modules together and holds minimal CLI/process glue
+
+### 10.2 Priority 2: `aoe_tg_scheduler_handlers.py`
+
+Current role:
+
+- sync discovery
+- salvage/bootstrap
+- replace/prune
+- queue selection
+- `/next`
+- `/fanout`
+- `/queue`
+
+Why it is second:
+
+- off-desk quality depends on this file
+- sync rules and execution selection are conceptually separate domains
+- future drift/false-positive bugs are likely to originate here
+
+Next cut points:
+
+- `aoe_tg_sync_sources.py`
+  - file discovery
+  - source classification
+  - salvage extraction
+- `aoe_tg_sync_merge.py`
+  - queue merge
+  - replace/prune
+  - sync provenance decisions
+- keep scheduler handlers focused on Telegram command UX and batch control
+
+Success condition:
+
+- command handlers stop owning sync heuristics directly
+
+### 10.3 Priority 3: `aoe_tg_run_handlers.py`
+
+Current role:
+
+- planner / critic / repair
+- verifier gate
+- confirm flow
+- dispatch exception handling
+- proposal capture
+
+Why it is third:
+
+- it is large, but its seams became clearer after schema/state extraction
+- current delivery risk is lower than transport and scheduler risk
+
+Next cut points:
+
+- `aoe_tg_plan_pipeline.py`
+  - planner
+  - critic
+  - repair
+  - gate reason derivation
+- `aoe_tg_exec_pipeline.py`
+  - dispatch
+  - verifier
+  - exec critic
+  - result/proposal capture
+
+Success condition:
+
+- `aoe_tg_run_handlers.py` becomes request UX glue, not execution policy storage
+
+### 10.4 Working Rule
+
+Do not schedule decomposition as a standalone rewrite by default.
+
+Use this rule instead:
+
+- when a new feature touches one of the three large cores, extract the new
+  policy/state/view/helper first
+- when a bug fix touches duplicated logic, pay down the nearby seam in the same
+  change
+- avoid adding fresh business rules directly into the large core files unless
+  they are truly orchestration glue
+
+## 11. Operational Rules
 
 For deployment and maintenance:
 
@@ -313,10 +431,11 @@ For deployment and maintenance:
 - prefer `aoe-team-stack` as the public control surface
 - regenerate runtime files from templates/bootstrap instead of versioning local mutations
 
-## 11. Related Docs
+## 12. Related Docs
 
 - `README.md`
 - `docs/COMMANDS.md`
 - `docs/RUNBOOK.md`
+- `docs/DEPLOYMENT.md`
 - `docs/CONSTITUTION.md`
 - `docs/PROJECT_CHARTER.md`
