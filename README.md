@@ -42,19 +42,19 @@ Telegram-controlled orchestration workspace for multi-session AOE operations.
 - Run handlers source: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/aoe_tg_run_handlers.py`
 - Runtime link install: `bash /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/install_runtime.sh`
 - Global launcher install: `bash /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/team/install_global_cli.sh`
-- Runtime init (template bootstrap): `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh init`
-- Start stack: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh start`
-- Stop stack: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh stop`
-- Session overview (number map): `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh overview`
-- Apply tmux visual/key UI: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh ui`
+- Runtime init (template bootstrap): `aoe-team-stack --project-root /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control init`
+- Start stack: `aoe-team-stack --project-root /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control start`
+- Stop stack: `aoe-team-stack --project-root /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control stop`
+- Session overview (number map): `aoe-team-stack --project-root /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control overview`
+- Apply tmux visual/key UI: `aoe-team-stack --project-root /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control ui`
 - tmux page size env: `AOE_TMUX_PAGE_SIZE=<N>` (range: `1..9`, default: `9`)
 - tmux hint name width env: `AOE_TMUX_HINT_NAME_MAX=<N>` (default: `7`)
 - tmux compact display name width env (overview): `AOE_TMUX_COMPACT_NAME_MAX=<N>` (default: `20`)
 - Session naming envs (default + legacy compatibility):
 - `AOE_TMUX_GATEWAY_SESSION=aoe_mo_gateway` (legacy auto-detect: `aoe_tg_gateway`)
 - `AOE_TMUX_WORKER_PREFIX=aoe_tf_worker_` (legacy auto-detect: `aoe_tg_worker_`)
-- Fast switch by index/session: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh switch 2`
-- tmux page control: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh page next|prev|set <N>|status|reset`
+- Fast switch by index/session: `aoe-team-stack --project-root /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control switch 2`
+- tmux page control: `aoe-team-stack --project-root /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control page next|prev|set <N>|status|reset`
 - Systemd install: `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/systemd/install_user_services.sh`
 - Telegram input policy: slash-first (`/dispatch`, `/direct`, `/mode`, `/monitor`, `/check`, `/task`, `/pick`, `/kpi`, `/map`, `/cancel`, `/retry`, `/replan`, `/replay`, `/help`, `/whoami`, `/acl`, `/grant`, `/revoke`)
 - Access policy: deny-by-default + ACL envs (`TELEGRAM_ALLOW_CHAT_IDS`, `TELEGRAM_ADMIN_CHAT_IDS`, `TELEGRAM_READONLY_CHAT_IDS`)
@@ -83,6 +83,7 @@ Telegram-controlled orchestration workspace for multi-session AOE operations.
 
 ## Runtime Boundary
 - `.aoe-team` is an active runtime directory.
+- versioned launcher/worker assets live under `scripts/team/`; `.aoe-team/*.sh` are generated compatibility shims only.
 - The following mutable runtime files are intentionally untracked:
 - `.aoe-team/team.json`
 - `.aoe-team/orchestrator.json`

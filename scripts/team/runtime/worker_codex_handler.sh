@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 ROLE="${AOE_WORKER_ACTOR:-Worker}"
 ROLE_SAFE="$(printf '%s' "$ROLE" | tr -c 'A-Za-z0-9._-' '_')"
-TEAM_DIR="${AOE_TEAM_DIR:-$SCRIPT_DIR}"
-PROJECT_ROOT="$(dirname "$TEAM_DIR")"
+PACKAGE_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+DEFAULT_PROJECT_ROOT="$PACKAGE_ROOT"
+PROJECT_ROOT="${AOE_PROJECT_ROOT:-$DEFAULT_PROJECT_ROOT}"
+TEAM_DIR="${AOE_TEAM_DIR:-$PROJECT_ROOT/.aoe-team}"
 LOG_DIR="$TEAM_DIR/logs"
 mkdir -p "$LOG_DIR"
 

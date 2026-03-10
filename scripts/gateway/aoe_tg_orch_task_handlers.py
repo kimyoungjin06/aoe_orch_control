@@ -4,6 +4,8 @@
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from aoe_tg_package_paths import package_root
+
 from aoe_tg_project_runtime import project_hidden_from_ops, project_runtime_issue
 
 
@@ -105,7 +107,7 @@ def _repair_registered_project(
     logs: List[str] = []
     logs.append(
         ensure_scenario_file(
-            template_root=Path(args.project_root).expanduser().resolve(),
+            template_root=package_root(),
             team_dir=team_dir,
             dry_run=bool(args.dry_run),
         )
@@ -269,7 +271,7 @@ def handle_orch_task_command(
         scenario_log = ""
         try:
             scenario_log = ensure_scenario_file(
-                template_root=Path(args.project_root).expanduser().resolve(),
+                template_root=package_root(),
                 team_dir=team_dir,
                 dry_run=bool(args.dry_run),
             )

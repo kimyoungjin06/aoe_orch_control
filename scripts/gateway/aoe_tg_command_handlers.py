@@ -12,6 +12,7 @@ from aoe_tg_orch_discovery import (
     seed_team_dir_from_template,
     unique_project_key,
 )
+from aoe_tg_package_paths import templates_root
 from aoe_tg_orch_overview_handlers import handle_orch_overview_command
 from aoe_tg_orch_task_handlers import handle_orch_task_command
 from aoe_tg_room_handlers import RoomDeps, handle_room_command
@@ -161,7 +162,7 @@ def _auto_discover_orchs_if_enabled(*, cmd: str, args: Any, manager_state: Dict[
         return
 
     changed = False
-    tpl = Path(str(getattr(args, "project_root", ".") or ".")).expanduser().resolve() / "templates/aoe-team/AOE_TODO.md"
+    tpl = templates_root() / "AOE_TODO.md"
 
     for root, meta in sorted(discovered.items(), key=lambda kv: str(kv[0])):
         if root in existing_roots:

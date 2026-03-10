@@ -973,7 +973,6 @@ def test_tf_worker_specs_use_request_scoped_session_and_logs(tmp_path: Path) -> 
     project_root = tmp_path / "project"
     team_dir = project_root / ".aoe-team"
     team_dir.mkdir(parents=True, exist_ok=True)
-    (team_dir / "worker_codex_handler.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
 
     args = argparse.Namespace(
         project_root=project_root,
@@ -986,8 +985,9 @@ def test_tf_worker_specs_use_request_scoped_session_and_logs(tmp_path: Path) -> 
 
     assert len(specs) == 1
     spec = specs[0]
-    assert spec["session"].startswith("tfw_req_123_reviewer")
+    assert spec["session"].startswith("tfw_req-123_reviewer")
     assert "aoe-tf-worker-session.py" in spec["shell"]
+    assert "scripts/team/runtime/worker_codex_handler.sh" in spec["shell"]
     assert str(team_dir / "telegram.env") not in spec["shell"] or ". " in spec["shell"]
     assert str(team_dir / "tf_runs" / "REQ-123" / "logs" / "worker_reviewer.console.log") in spec["log_file"]
 

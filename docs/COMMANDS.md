@@ -6,7 +6,7 @@
 
 1. Upstream 실행 엔진(로컬 CLI): `aoe-orch`
 2. Upstream 팀 프로토콜(로컬 CLI): `aoe-team`
-3. 이 레포의 로컬 스택 제어(tel/tmux): `aoe-team-stack` (=`aoe-team-tmux`, 내부적으로 `.aoe-team/telegram_tmux.sh`)
+3. 이 레포의 로컬 스택 제어(tel/tmux): `aoe-team-stack` (=`aoe-team-tmux`, 내부적으로 `scripts/team/runtime/telegram_tmux.sh`)
 4. 이 레포의 Telegram 원격 콘솔: `/...` 슬래시 명령, 그리고 옵션으로 `aoe ...` CLI-스타일(봇이 파싱하는 입력 형식, 로컬 바이너리가 아님)
 
 ---
@@ -58,7 +58,8 @@
 구현 위치:
 
 - 포워더: `scripts/team/aoe-team-stack.sh`
-- 실제 tmux 제어: `.aoe-team/telegram_tmux.sh`
+- package-managed tmux 제어: `scripts/team/runtime/telegram_tmux.sh`
+- `.aoe-team/telegram_tmux.sh` 는 runtime에 생성되는 compatibility shim
 
 주요 서브커맨드(요약):
 

@@ -49,6 +49,7 @@ from aoe_tg_ops_policy import (
     project_queue_snapshot,
     visible_ops_project_keys,
 )
+from aoe_tg_package_paths import templates_root, worker_handler_script
 from aoe_tg_project_runtime import project_hidden_from_ops, project_runtime_issue, project_runtime_label
 from aoe_tg_runtime_seed import repair_runtime
 from aoe_tg_run_handlers import (
@@ -3518,7 +3519,7 @@ def run_aoe_init(
         if "file exists" in low and "agents.md" in low:
             logs = repair_runtime(
                 aoe_orch_bin=args.aoe_orch_bin,
-                template_root=Path(args.project_root).expanduser().resolve() / "templates" / "aoe-team",
+                template_root=templates_root(),
                 project_root=project_root,
                 team_dir=team_dir,
                 overview=overview,
@@ -4760,7 +4761,7 @@ def tf_worker_specs(
     startup_timeout_sec: int,
 ) -> List[Dict[str, str]]:
     runner = tf_worker_runner_path()
-    handler = (Path(str(args.team_dir)) / "worker_codex_handler.sh").resolve()
+    handler = worker_handler_script().resolve()
     env_file = (Path(str(args.team_dir)) / "telegram.env").resolve()
     run_dir = (Path(str(args.team_dir)) / "tf_runs" / request_id).resolve()
     workers_dir = (run_dir / "workers").resolve()

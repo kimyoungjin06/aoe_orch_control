@@ -14,6 +14,9 @@
 .aoe-team/TODO_SNAPSHOT_*.md
 .aoe-team/telegram.env.sample
 .aoe-team/sync_policy.sample.json
+.aoe-team/telegram_tmux.sh
+.aoe-team/telegram_stack.sh
+.aoe-team/worker_codex_handler.sh
 .aoe-team/*.bak*
 .aoe-team/workers/*.json
 .aoe-team/agents/*/AGENTS.md

@@ -24,23 +24,23 @@
 0. Bootstrap missing runtime files from templates (optional, non-destructive):
 `bash /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/team/bootstrap_runtime_templates.sh --project-root /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control`
 0. Equivalent shortcut:
-`/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh init`
+`aoe-team-stack --project-root /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control init`
 1. Start:
-`/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh start`
+`aoe-team-stack --project-root /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control start`
 0. (Optional) refresh runtime symlinks:
 `bash /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway/install_runtime.sh`
 2. Status:
-`/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh status`
+`aoe-team-stack --project-root /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control status`
 2.1 Session overview with numeric map:
-`/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh overview`
+`aoe-team-stack --project-root /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control overview`
 2.1.1 Telegram project alias map:
 `/map` (또는 `aoe map`, `aoe orch map`)
 2.2 Apply visual/key UI (status bar hints + Alt+1..9 and Prefix+1..9 binding refresh, page nav Alt+,/Alt+.):
-`/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh ui`
+`aoe-team-stack --project-root /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control ui`
 2.2.1 Page control (9개 초과 세션 페이징):
-`/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh page status`
-`/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh page next`
-`/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh page set 2`
+`aoe-team-stack --project-root /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control page status`
+`aoe-team-stack --project-root /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control page next`
+`aoe-team-stack --project-root /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control page set 2`
 2.3 Optional session naming override:
 `AOE_TMUX_GATEWAY_SESSION=aoe_mo_gateway AOE_TMUX_WORKER_PREFIX=aoe_tf_worker_ aoe-team-stack restart`
 2.3.1 Optional page size override (1..9):
@@ -49,7 +49,7 @@
 `AOE_TMUX_HINT_NAME_MAX=7 aoe-team-stack ui`
 `AOE_TMUX_COMPACT_NAME_MAX=20 aoe-team-stack ui`
 2.4 Quick switch by index:
-`/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh switch 2`
+`aoe-team-stack --project-root /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control switch 2`
 2.5 Same operations via global command (from anywhere):
 `aoe-team-stack start`
 `aoe-team-stack ui`
@@ -64,13 +64,13 @@
 긴급 정지:
 `/panic`
 3. Logs (tmux pane capture):
-`/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh logs`
+`aoe-team-stack --project-root /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control logs`
 4. Structured gateway events:
 `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/logs/gateway_events.jsonl`
 5. Health (unhealthy 시 `E_HEALTH_*` 원인 코드 출력):
-`/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh health --wait=3`
+`aoe-team-stack --project-root /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control health --wait=3`
 6. Stop:
-`/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram_tmux.sh stop`
+`aoe-team-stack --project-root /home/kimyoungjin06/Desktop/Workspace/aoe_orch_control stop`
 7. Gateway regression tests (pytest via uv):
 `/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/scripts/gateway_pytest.sh`
 8. Smoke/Error subset wrappers:

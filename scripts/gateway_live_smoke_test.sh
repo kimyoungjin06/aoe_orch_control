@@ -22,7 +22,7 @@ fi
 
 if [[ ! -f "$EVENT_LOG" ]]; then
   echo "[FAIL] event log not found: $EVENT_LOG"
-  echo "Start gateway first: $TEAM_DIR/telegram_tmux.sh start"
+  echo "Start gateway first: $ROOT/scripts/team/aoe-team-stack.sh --project-root $ROOT start"
   exit 1
 fi
 

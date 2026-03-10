@@ -24,6 +24,7 @@ from aoe_tg_ops_view import (
     render_ops_scope_compact_lines,
     render_project_snapshot_lines,
 )
+from aoe_tg_package_paths import team_tmux_script
 from aoe_tg_project_runtime import project_hidden_from_ops, project_runtime_issue, project_runtime_label
 from aoe_tg_todo_state import preview_syncback_plan
 
@@ -760,13 +761,18 @@ def _tmux_has_session(session_name: str) -> bool:
 
 
 def _tmux_auto_command(args: Any, action: str) -> Tuple[bool, str]:
-    script = Path(str(getattr(args, "team_dir", ""))).expanduser().resolve() / "telegram_tmux.sh"
+    script = team_tmux_script().resolve()
     if not script.exists():
         return False, f"tmux script not found: {script}"
     if not os.access(script, os.X_OK):
         return False, f"tmux script not executable: {script}"
     try:
-        proc = subprocess.run([str(script), "auto", action], capture_output=True, text=True, check=False)
+        env = dict(os.environ)
+        project_root = Path(str(getattr(args, "project_root", ".") or ".")).expanduser().resolve()
+        team_dir = Path(str(getattr(args, "team_dir", project_root / ".aoe-team") or (project_root / ".aoe-team"))).expanduser().resolve()
+        env["AOE_PROJECT_ROOT"] = str(project_root)
+        env["AOE_TEAM_DIR"] = str(team_dir)
+        proc = subprocess.run([str(script), "auto", action], capture_output=True, text=True, check=False, env=env)
         out = (proc.stdout or proc.stderr or "").strip()
         return proc.returncode == 0, out
     except Exception as e:

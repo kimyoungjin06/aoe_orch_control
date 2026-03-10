@@ -2,8 +2,8 @@
 
 ## Daily Start (5 min)
 1. (최초 1회) `scripts/team/install_global_cli.sh` 실행
-1. `telegram_tmux.sh status` 확인
-1. `telegram_tmux.sh ui` 실행 (Alt+1..9 또는 Prefix(C-b)+1..9 전환, Alt+,/Alt+. 페이지 이동, 상단 세션맵 갱신)
+1. `aoe-team-stack status` 확인
+1. `aoe-team-stack ui` 실행 (Alt+1..9 또는 Prefix(C-b)+1..9 전환, Alt+,/Alt+. 페이지 이동, 상단 세션맵 갱신)
 2. `ps -ef | rg 'aoe-telegram-gateway|aoe-orch worker'` 확인
 3. `systemctl --user status aoe-telegram-stack.service` 확인
 4. Telegram에서 `/whoami`, `/status`, `/map`, `/monitor 5` 실행
