@@ -132,6 +132,22 @@ def _base_state(*, chat_id: str, session_patch: Optional[Dict[str, object]] = No
     }
 
 
+def _seed_ready_project_runtime(entry: Dict[str, object], *, tmp_path: Path, slug: str) -> None:
+    project_root = tmp_path / slug
+    team_dir = project_root / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (team_dir / "orchestrator.json").write_text(
+        json.dumps({"name": slug, "roles": []}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (team_dir / "team.json").write_text(
+        json.dumps({"name": slug}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    entry["project_root"] = str(project_root)
+    entry["team_dir"] = str(team_dir)
+
+
 def _write_state(tmp_path: Path, *, chat_id: str, session_patch: Optional[Dict[str, object]] = None) -> Path:
     state = _base_state(chat_id=chat_id, session_patch=session_patch)
     path = tmp_path / "manager_state.json"
@@ -719,6 +735,7 @@ def test_drain_runs_multiple_steps(tmp_path: Path) -> None:
     assert isinstance(projects, dict)
     default = projects.get("default") or {}
     assert isinstance(default, dict)
+    _seed_ready_project_runtime(default, tmp_path=tmp_path, slug="default")
     default["project_alias"] = "O1"
     default["todos"] = [
         {
@@ -747,6 +764,7 @@ def test_fanout_runs_one_per_project(tmp_path: Path) -> None:
     assert isinstance(projects, dict)
     default = projects.get("default") or {}
     assert isinstance(default, dict)
+    _seed_ready_project_runtime(default, tmp_path=tmp_path, slug="default")
     default["project_alias"] = "O1"
     default["todos"] = [
         {
@@ -763,8 +781,8 @@ def test_fanout_runs_one_per_project(tmp_path: Path) -> None:
         "name": "proj2",
         "display_name": "proj2",
         "project_alias": "O2",
-        "project_root": str(ROOT),
-        "team_dir": str(ROOT / ".aoe-team"),
+        "project_root": "",
+        "team_dir": "",
         "overview": "",
         "last_request_id": "",
         "tasks": {},
@@ -783,6 +801,9 @@ def test_fanout_runs_one_per_project(tmp_path: Path) -> None:
         "created_at": "2026-02-24T00:00:00+0000",
         "updated_at": "2026-02-24T00:00:00+0000",
     }
+    proj2 = projects["proj2"]
+    assert isinstance(proj2, dict)
+    _seed_ready_project_runtime(proj2, tmp_path=tmp_path, slug="proj2")
 
     state_file = tmp_path / "manager_state.json"
     state_file.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -800,6 +821,7 @@ def test_fanout_skips_paused_projects(tmp_path: Path) -> None:
     assert isinstance(projects, dict)
     default = projects.get("default") or {}
     assert isinstance(default, dict)
+    _seed_ready_project_runtime(default, tmp_path=tmp_path, slug="default")
     default["project_alias"] = "O1"
     default["todos"] = [
         {
@@ -816,8 +838,8 @@ def test_fanout_skips_paused_projects(tmp_path: Path) -> None:
         "name": "proj2",
         "display_name": "proj2",
         "project_alias": "O2",
-        "project_root": str(ROOT),
-        "team_dir": str(ROOT / ".aoe-team"),
+        "project_root": "",
+        "team_dir": "",
         "overview": "",
         "last_request_id": "",
         "tasks": {},
@@ -837,6 +859,9 @@ def test_fanout_skips_paused_projects(tmp_path: Path) -> None:
         "created_at": "2026-02-24T00:00:00+0000",
         "updated_at": "2026-02-24T00:00:00+0000",
     }
+    proj2 = projects["proj2"]
+    assert isinstance(proj2, dict)
+    _seed_ready_project_runtime(proj2, tmp_path=tmp_path, slug="proj2")
 
     state_file = tmp_path / "manager_state.json"
     state_file.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -856,6 +881,7 @@ def test_fanout_does_not_treat_blocked_rows_as_busy_when_open_todo_exists(tmp_pa
     assert isinstance(projects, dict)
     default = projects.get("default") or {}
     assert isinstance(default, dict)
+    _seed_ready_project_runtime(default, tmp_path=tmp_path, slug="default")
     default["project_alias"] = "O1"
     default["todos"] = [
         {
@@ -894,6 +920,7 @@ def test_next_skips_paused_projects(tmp_path: Path) -> None:
 
     default = projects.get("default") or {}
     assert isinstance(default, dict)
+    _seed_ready_project_runtime(default, tmp_path=tmp_path, slug="default")
     default["project_alias"] = "O1"
     default["paused"] = True
     default["todos"] = [
@@ -911,8 +938,8 @@ def test_next_skips_paused_projects(tmp_path: Path) -> None:
         "name": "proj2",
         "display_name": "proj2",
         "project_alias": "O2",
-        "project_root": str(ROOT),
-        "team_dir": str(ROOT / ".aoe-team"),
+        "project_root": "",
+        "team_dir": "",
         "overview": "",
         "last_request_id": "",
         "tasks": {},
@@ -932,6 +959,9 @@ def test_next_skips_paused_projects(tmp_path: Path) -> None:
         "created_at": "2026-02-24T00:00:00+0000",
         "updated_at": "2026-02-24T00:00:00+0000",
     }
+    proj2 = projects["proj2"]
+    assert isinstance(proj2, dict)
+    _seed_ready_project_runtime(proj2, tmp_path=tmp_path, slug="proj2")
 
     state_file = tmp_path / "manager_state.json"
     state_file.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1245,7 +1275,14 @@ def test_mode_off_clears_pending_and_confirm(tmp_path: Path) -> None:
 
 @pytest.mark.smoke
 def test_status_includes_poll_state_counters(tmp_path: Path) -> None:
-    state_file = _write_state(tmp_path, chat_id="test")
+    state = _base_state(chat_id="test", session_patch={})
+    projects = state.get("projects") or {}
+    assert isinstance(projects, dict)
+    default = projects.get("default") or {}
+    assert isinstance(default, dict)
+    _seed_ready_project_runtime(default, tmp_path=tmp_path, slug="default")
+    state_file = tmp_path / "manager_state.json"
+    state_file.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     poll_state = _write_gateway_poll_state(tmp_path)
     out = _run_gateway(
         simulate_text="/status",
@@ -1277,7 +1314,14 @@ def test_kpi_includes_poll_state_counters(tmp_path: Path) -> None:
 
 @pytest.mark.smoke
 def test_status_poll_state_includes_failed_queue_summary(tmp_path: Path) -> None:
-    state_file = _write_state(tmp_path, chat_id="test")
+    state = _base_state(chat_id="test", session_patch={})
+    projects = state.get("projects") or {}
+    assert isinstance(projects, dict)
+    default = projects.get("default") or {}
+    assert isinstance(default, dict)
+    _seed_ready_project_runtime(default, tmp_path=tmp_path, slug="default")
+    state_file = tmp_path / "manager_state.json"
+    state_file.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     poll_state = _write_gateway_poll_state_with_failed_queue_multi_chat(tmp_path)
     out = _run_gateway(
         simulate_text="/status",
