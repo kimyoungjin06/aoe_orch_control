@@ -7,6 +7,7 @@ import argparse
 import copy
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -37,6 +38,7 @@ import aoe_tg_task_state as task_state
 import aoe_tg_task_view as task_view
 import aoe_tg_todo_handlers as todo_handlers
 import aoe_tg_todo_state as todo_state
+import aoe_tg_transport as transport
 
 _spec = importlib.util.spec_from_file_location("aoe_telegram_gateway_mod", GW_FILE)
 assert _spec and _spec.loader
@@ -1475,6 +1477,21 @@ def test_queue_engine_matches_gateway_and_scheduler_next_selection(tmp_path: Pat
     assert sched_pick["project_key"] == queue_pick["project_key"]
     assert sched_pick["todo"]["id"] == queue_pick["todo"]["id"]
     assert gw_pick == ("local", "TODO-002", "candidate")
+
+
+def test_transport_module_matches_gateway_transport_exports() -> None:
+    previous = os.environ.get("AOE_TG_COMMAND_PREFIXES")
+    os.environ["AOE_TG_COMMAND_PREFIXES"] = "!/"
+    try:
+        body = "alpha\nbeta\n" + ("z" * 300)
+        assert gw.split_text(body, 120) == transport.split_text(body, 120)
+        assert gw.preferred_command_prefix() == transport.preferred_command_prefix() == "!"
+        assert gw.build_quick_reply_keyboard() == transport.build_quick_reply_keyboard()
+    finally:
+        if previous is None:
+            os.environ.pop("AOE_TG_COMMAND_PREFIXES", None)
+        else:
+            os.environ["AOE_TG_COMMAND_PREFIXES"] = previous
 
 
 def test_orch_map_reply_markup_contains_use_focus_status_todo_and_active_sync_actions() -> None:
