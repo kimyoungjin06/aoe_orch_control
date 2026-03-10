@@ -36,6 +36,14 @@ from aoe_tg_message_flow import (
     enforce_command_auth,
 )
 from aoe_tg_queue_engine import drain_peek_next_todo as queue_drain_peek_next_todo
+from aoe_tg_runtime_core import (
+    acquire_process_lock as runtime_acquire_process_lock,
+    default_manager_state as runtime_default_manager_state,
+    resolve_project_root,
+    resolve_state_file,
+    resolve_team_dir,
+    save_manager_state as runtime_save_manager_state,
+)
 from aoe_tg_todo_state import merge_todo_proposals
 from aoe_tg_investigations_sync import sync_investigations_docs
 from aoe_tg_ops_policy import (
@@ -394,25 +402,6 @@ def alias_table_summary(args: argparse.Namespace, limit: int = 30) -> str:
         if len(rows) >= max(1, int(limit)):
             break
     return ", ".join(rows) if rows else "(empty)"
-
-
-def resolve_project_root(raw: str) -> Path:
-    return Path(raw).expanduser().resolve()
-
-
-def resolve_team_dir(project_root: Path, explicit_team_dir: Optional[str]) -> Path:
-    if explicit_team_dir:
-        return Path(explicit_team_dir).expanduser().resolve()
-    env_dir = os.environ.get("AOE_TEAM_DIR")
-    if env_dir:
-        return Path(env_dir).expanduser().resolve()
-    return project_root / ".aoe-team"
-
-
-def resolve_state_file(project_root: Path, explicit_state_file: Optional[str]) -> Path:
-    if explicit_state_file:
-        return Path(explicit_state_file).expanduser().resolve()
-    return project_root / ".aoe-team" / "telegram_gateway_state.json"
 
 
 def dedup_keep_limit() -> int:
@@ -1295,44 +1284,7 @@ def is_path_within(target: Path, root: Optional[Path]) -> bool:
 
 
 def default_manager_state(project_root: Path, team_dir: Path) -> Dict[str, Any]:
-    return {
-        "version": 1,
-        "active": "default",
-        "project_lock": {},
-        "updated_at": now_iso(),
-        "chat_sessions": {},
-        "projects": {
-            "default": {
-                "name": "default",
-                "display_name": "default",
-                "project_alias": "O1",
-                "project_root": str(project_root),
-                "team_dir": str(team_dir),
-                "overview": "",
-                "last_request_id": "",
-                "tasks": {},
-                "task_alias_index": {},
-                "task_seq": 0,
-                "todos": [],
-                "todo_seq": 0,
-            "todo_proposals": [],
-            "todo_proposal_seq": 0,
-            "system_project": True,
-            "ops_hidden": True,
-            "ops_hidden_reason": "internal fallback project",
-            "paused": False,
-            "paused_at": "",
-            "paused_by": "",
-                "paused_reason": "",
-                "resumed_at": "",
-                "resumed_by": "",
-                "last_sync_at": "",
-                "last_sync_mode": "",
-                "created_at": now_iso(),
-                "updated_at": now_iso(),
-            }
-        },
-    }
+    return runtime_default_manager_state(project_root, team_dir, now_iso=now_iso)
 
 
 def sanitize_task_record(raw_task: Dict[str, Any], req_id: str) -> Dict[str, Any]:
@@ -1826,39 +1778,18 @@ def load_manager_state(path: Path, project_root: Path, team_dir: Path) -> Dict[s
 
 
 def save_manager_state(path: Path, state: Dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = dict(state)
-    payload["updated_at"] = now_iso()
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
-    try:
-        sync_investigations_docs(path, payload)
-    except Exception as exc:
-        print(f"[WARN] investigations_mo sync skipped: {exc}", file=sys.stderr)
-    try:
-        cleanup_tf_exec_artifacts(path, payload)
-    except Exception as exc:
-        print(f"[WARN] tf_exec cleanup skipped: {exc}", file=sys.stderr)
-    try:
-        cleanup_room_logs(path.parent.resolve())
-    except Exception as exc:
-        print(f"[WARN] room log gc skipped: {exc}", file=sys.stderr)
+    return runtime_save_manager_state(
+        path,
+        state,
+        now_iso=now_iso,
+        sync_investigations_docs=sync_investigations_docs,
+        cleanup_tf_exec_artifacts=cleanup_tf_exec_artifacts,
+        cleanup_room_logs=cleanup_room_logs,
+    )
 
 
 def acquire_process_lock(lock_path: Path) -> Any:
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fh = lock_path.open("a+", encoding="utf-8")
-    try:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        fh.close()
-        raise RuntimeError(f"another gateway process is already running (lock={lock_path})")
-    fh.seek(0)
-    fh.truncate(0)
-    fh.write(f"pid={os.getpid()} started_at={now_iso()}\n")
-    fh.flush()
-    return fh
+    return runtime_acquire_process_lock(lock_path, now_iso=now_iso)
 
 
 def append_jsonl(path: Path, row: Dict[str, Any]) -> None:

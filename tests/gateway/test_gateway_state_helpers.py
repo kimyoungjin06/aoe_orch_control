@@ -29,6 +29,7 @@ import aoe_tg_orch_overview_handlers as overview
 import aoe_tg_orch_task_handlers as orch_task_handlers
 import aoe_tg_parse as tg_parse
 import aoe_tg_project_runtime as runtime_helpers
+import aoe_tg_runtime_core as runtime_core
 import aoe_tg_queue_engine as queue_engine
 import aoe_tg_todo_policy as todo_policy
 import aoe_tg_run_handlers as run_handlers
@@ -1492,6 +1493,20 @@ def test_transport_module_matches_gateway_transport_exports() -> None:
             os.environ.pop("AOE_TG_COMMAND_PREFIXES", None)
         else:
             os.environ["AOE_TG_COMMAND_PREFIXES"] = previous
+
+
+def test_runtime_core_matches_gateway_path_and_default_state_helpers(tmp_path: Path) -> None:
+    project_root = runtime_core.resolve_project_root(str(tmp_path))
+    team_dir = runtime_core.resolve_team_dir(project_root, None)
+    state_file = runtime_core.resolve_state_file(project_root, None)
+
+    assert gw.resolve_project_root(str(tmp_path)) == project_root
+    assert gw.resolve_team_dir(project_root, None) == team_dir
+    assert gw.resolve_state_file(project_root, None) == state_file
+
+    expected = runtime_core.default_manager_state(project_root, team_dir, now_iso=gw.now_iso)
+    actual = gw.default_manager_state(project_root, team_dir)
+    assert actual == expected
 
 
 def test_orch_map_reply_markup_contains_use_focus_status_todo_and_active_sync_actions() -> None:
