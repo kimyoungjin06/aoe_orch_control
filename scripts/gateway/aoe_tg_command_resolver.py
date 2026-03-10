@@ -18,6 +18,8 @@ from aoe_tg_parse import (
 
 _ABBREV_COMMANDS = [
     # Stable surface for prefix-based abbreviation (Telegram UX sugar).
+    "on",
+    "off",
     "help",
     "status",
     "check",
