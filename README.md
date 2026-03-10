@@ -15,6 +15,7 @@ Telegram-controlled orchestration workspace for multi-session AOE operations.
 ## Governance Docs
 - Constitution (highest level): `docs/CONSTITUTION.md`
 - Architecture: `docs/ARCHITECTURE.md`
+- Core Decomposition Plan: `docs/CORE_DECOMPOSITION_PLAN.md`
 - Deployment: `docs/DEPLOYMENT.md`
 - Constitution trace roadmap: `docs/ROADMAP.md`
 - Command reference: `docs/COMMANDS.md`
