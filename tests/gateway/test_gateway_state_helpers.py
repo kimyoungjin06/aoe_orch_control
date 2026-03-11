@@ -37,6 +37,7 @@ import aoe_tg_orch_responses as orch_responses
 import aoe_tg_orch_overview_handlers as overview
 import aoe_tg_orch_task_handlers as orch_task_handlers
 import aoe_tg_parse as tg_parse
+import aoe_tg_poll_loop as poll_loop
 import aoe_tg_project_state as project_state
 import aoe_tg_request_state as request_state
 import aoe_tg_run_guards as run_guards
@@ -305,6 +306,108 @@ def test_gateway_state_module_matches_gateway_poll_and_replay_helpers(tmp_path: 
         normalize_failed_queue=gw.normalize_failed_queue,
     )
     assert gw.load_state(path_a) == gw.load_state(path_b)
+
+
+def test_poll_loop_module_matches_gateway_iter_and_simulation_helpers() -> None:
+    updates = [
+        {"update_id": 1, "message": {"chat": {"id": "1"}, "text": "hello"}},
+        {"update_id": "bad", "message": {"chat": {"id": "2"}, "text": "skip"}},
+        {"update_id": 2, "edited_message": {"chat": {"id": "3"}, "text": "skip"}},
+        {"update_id": 3, "message": {"chat": {"id": "4"}, "text": "world"}},
+    ]
+    assert list(gw.iter_message_updates(updates)) == list(poll_loop.iter_message_updates(updates))
+
+    calls_gw = []
+    calls_mod = []
+
+    def _fake_handler(call_log, args, token, chat_id, text, trace_id=""):
+        call_log.append(
+            {
+                "token": token,
+                "chat_id": chat_id,
+                "text": text,
+                "trace_id": trace_id,
+                "dry_run": bool(args.dry_run),
+            }
+        )
+
+    args_gw = argparse.Namespace(
+        simulate_chat_id="939062873",
+        simulate_text="hello",
+        verbose=False,
+        dry_run=False,
+        simulate_live=False,
+    )
+    args_mod = copy.deepcopy(args_gw)
+
+    original_handle_text_message = gw.handle_text_message
+    try:
+        gw.handle_text_message = lambda *a, **k: _fake_handler(calls_gw, *a, **k)
+        gw.run_simulation(args_gw, "token-1")
+    finally:
+        gw.handle_text_message = original_handle_text_message
+
+    poll_loop.run_simulation(
+        args_mod,
+        "token-1",
+        handle_text_message=lambda *a, **k: _fake_handler(calls_mod, *a, **k),
+    )
+
+    assert calls_gw == calls_mod
+    assert args_gw.dry_run is False
+    assert args_mod.dry_run is False
+
+
+def test_poll_loop_run_loop_processes_single_allowed_message(tmp_path: Path) -> None:
+    args = argparse.Namespace(
+        state_file=tmp_path / "gateway_state.json",
+        poll_timeout_sec=1,
+        http_timeout_sec=1,
+        dry_run=True,
+        verbose=False,
+        once=True,
+        allow_chat_ids=set(),
+        admin_chat_ids=set(),
+        readonly_chat_ids=set(),
+        deny_by_default=False,
+        owner_chat_id="",
+        owner_only=False,
+        max_text_chars=4000,
+        team_dir=tmp_path,
+    )
+    handled = []
+    saved_states = []
+    updates = [{"update_id": 7, "message": {"chat": {"id": "939062873", "type": "private"}, "from": {"id": "939062873"}, "message_id": 11, "text": "hello"}}]
+
+    rc = poll_loop.run_loop(
+        args,
+        "token-1",
+        load_state=lambda _path: {},
+        save_state=lambda _path, state: saved_states.append(copy.deepcopy(state)),
+        dedup_keep_limit=lambda: 32,
+        normalize_recent_tokens=lambda values, _limit: list(values or []),
+        message_dedup_key=lambda msg: gw.message_dedup_key(msg),
+        append_recent_token=lambda seq, token, _limit: seq.append(token) if token not in seq else None,
+        tg_get_updates=lambda **_kwargs: updates,
+        ensure_chat_allowed=lambda *_a, **_k: True,
+        is_bootstrap_allowed_command=lambda _text: False,
+        safe_tg_send_text=lambda **_kwargs: True,
+        log_gateway_event=lambda **_kwargs: None,
+        handle_text_message=lambda *_a, **_k: handled.append("ok"),
+        preferred_command_prefix=lambda: "/",
+        state_acked_updates_key=gw.STATE_ACKED_UPDATES_KEY,
+        state_handled_messages_key=gw.STATE_HANDLED_MESSAGES_KEY,
+        state_duplicate_skipped_key=gw.STATE_DUPLICATE_SKIPPED_KEY,
+        state_empty_skipped_key=gw.STATE_EMPTY_SKIPPED_KEY,
+        state_unauthorized_skipped_key=gw.STATE_UNAUTHORIZED_SKIPPED_KEY,
+        state_handler_errors_key=gw.STATE_HANDLER_ERRORS_KEY,
+        error_auth=gw.ERROR_AUTH,
+    )
+
+    assert rc == 0
+    assert handled == ["ok"]
+    assert saved_states
+    assert saved_states[-1][gw.STATE_HANDLED_MESSAGES_KEY] == 1
 
 
 def test_chat_state_module_matches_gateway_chat_session_exports() -> None:

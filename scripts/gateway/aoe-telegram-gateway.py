@@ -79,6 +79,7 @@ import aoe_tg_gateway_state as gateway_state_mod
 import aoe_tg_orch_registry as orch_registry_mod
 import aoe_tg_orch_roles as orch_roles_mod
 import aoe_tg_orch_responses as orch_responses_mod
+import aoe_tg_poll_loop as poll_loop_mod
 import aoe_tg_request_state as request_state_mod
 import aoe_tg_tf_exec as tf_exec_mod
 from aoe_tg_message_flow import (
@@ -3941,208 +3942,42 @@ def handle_text_message(
 
 
 def iter_message_updates(updates: Iterable[Dict[str, Any]]) -> Iterable[Tuple[int, Dict[str, Any]]]:
-    for upd in updates:
-        if not isinstance(upd, dict):
-            continue
-        update_id = upd.get("update_id")
-        if not isinstance(update_id, int):
-            continue
-        msg = upd.get("message")
-        if isinstance(msg, dict):
-            yield update_id, msg
+    yield from poll_loop_mod.iter_message_updates(updates)
 
 
 def run_simulation(args: argparse.Namespace, token: str) -> None:
-    chat_id = str(args.simulate_chat_id)
-    if args.verbose:
-        print(f"[SIM] chat_id={chat_id} text={args.simulate_text}")
-    original_dry = bool(args.dry_run)
-    # Safety default: simulate-text is dry-run unless explicitly enabled.
-    if not bool(getattr(args, "simulate_live", False)):
-        args.dry_run = True
-    try:
-        handle_text_message(args, token, chat_id, args.simulate_text, trace_id=f"sim-{int(time.time() * 1000)}")
-    finally:
-        args.dry_run = original_dry
+    return poll_loop_mod.run_simulation(
+        args,
+        token,
+        handle_text_message=handle_text_message,
+    )
 
 
 def run_loop(args: argparse.Namespace, token: str) -> int:
-    state = load_state(args.state_file)
-    offset = int(state.get("offset", 0) or 0)
-    processed = int(state.get("processed", 0) or 0)
-    acked_updates = int(state.get(STATE_ACKED_UPDATES_KEY, processed) or 0)
-    handled_messages = int(state.get(STATE_HANDLED_MESSAGES_KEY, processed) or 0)
-    duplicate_skipped = int(state.get(STATE_DUPLICATE_SKIPPED_KEY, 0) or 0)
-    empty_skipped = int(state.get(STATE_EMPTY_SKIPPED_KEY, 0) or 0)
-    unauthorized_skipped = int(state.get(STATE_UNAUTHORIZED_SKIPPED_KEY, 0) or 0)
-    handler_errors = int(state.get(STATE_HANDLER_ERRORS_KEY, 0) or 0)
-    dedup_keep = dedup_keep_limit()
-    seen_update_ids = normalize_recent_tokens(state.get(STATE_SEEN_UPDATE_IDS_KEY), dedup_keep)
-    seen_message_keys = normalize_recent_tokens(state.get(STATE_SEEN_MESSAGE_KEYS_KEY), dedup_keep)
-    seen_update_set = set(seen_update_ids)
-    seen_message_set = set(seen_message_keys)
-    state[STATE_SEEN_UPDATE_IDS_KEY] = seen_update_ids
-    state[STATE_SEEN_MESSAGE_KEYS_KEY] = seen_message_keys
-    state["offset"] = offset
-    state[STATE_ACKED_UPDATES_KEY] = acked_updates
-    state[STATE_HANDLED_MESSAGES_KEY] = handled_messages
-    state[STATE_DUPLICATE_SKIPPED_KEY] = duplicate_skipped
-    state[STATE_EMPTY_SKIPPED_KEY] = empty_skipped
-    state[STATE_UNAUTHORIZED_SKIPPED_KEY] = unauthorized_skipped
-    state[STATE_HANDLER_ERRORS_KEY] = handler_errors
-    state["processed"] = handled_messages
-
-    unauthorized_sent: Set[str] = set()
-
-    while True:
-        try:
-            updates = tg_get_updates(
-                token=token,
-                offset=offset,
-                poll_timeout_sec=args.poll_timeout_sec,
-                timeout_sec=args.http_timeout_sec,
-            )
-        except Exception as e:
-            if args.verbose:
-                print(f"[ERROR] getUpdates failed: {e}", file=sys.stderr, flush=True)
-            time.sleep(2)
-            continue
-
-        handled_any = False
-
-        for update_id, msg in iter_message_updates(updates):
-            handled_any = True
-            offset = max(offset, update_id + 1)
-            state["offset"] = offset
-
-            chat = msg.get("chat") if isinstance(msg.get("chat"), dict) else {}
-            chat_id = str(chat.get("id", ""))
-            chat_type = str(chat.get("type", "") or "").strip().lower()
-            sender = msg.get("from") if isinstance(msg.get("from"), dict) else {}
-            sender_id = str(sender.get("id", ""))
-            text = str(msg.get("text", "") or "")
-            msg_key = message_dedup_key(msg)
-            update_token = str(update_id)
-            duplicate = (update_token in seen_update_set) or (bool(msg_key) and msg_key in seen_message_set)
-
-            append_recent_token(seen_update_ids, update_token, dedup_keep)
-            seen_update_set.add(update_token)
-            if msg_key:
-                append_recent_token(seen_message_keys, msg_key, dedup_keep)
-                seen_message_set.add(msg_key)
-            acked_updates += 1
-            state[STATE_ACKED_UPDATES_KEY] = acked_updates
-
-            if duplicate:
-                duplicate_skipped += 1
-                state[STATE_DUPLICATE_SKIPPED_KEY] = duplicate_skipped
-                state["processed"] = handled_messages
-                save_state(args.state_file, state)
-                if args.verbose:
-                    print(f"[SKIP] duplicate update_id={update_id} message_key={msg_key or '-'}")
-                if not args.dry_run:
-                    log_gateway_event(
-                        team_dir=args.team_dir,
-                        event="duplicate_update_skipped",
-                        trace_id=f"upd-{update_id}",
-                        stage="intake",
-                        actor=f"telegram:{chat_id or '-'}",
-                        status="skipped",
-                        detail=f"message_key={msg_key or '-'}",
-                    )
-                continue
-
-            if not chat_id or not text:
-                empty_skipped += 1
-                state[STATE_EMPTY_SKIPPED_KEY] = empty_skipped
-                state["processed"] = handled_messages
-                save_state(args.state_file, state)
-                continue
-
-            if args.verbose:
-                preview = text if len(text) <= 120 else text[:117] + "..."
-                print(f"[UPDATE] update_id={update_id} chat_id={chat_id} text={preview}")
-
-            allowed = False
-            if bool(getattr(args, "owner_only", False)):
-                owner = str(getattr(args, "owner_chat_id", "") or "").strip()
-                allowed = bool(owner) and (chat_type == "private") and (chat_id == owner) and (sender_id == owner)
-            else:
-                allowed = ensure_chat_allowed(
-                    chat_id,
-                    args.allow_chat_ids,
-                    args.admin_chat_ids,
-                    args.readonly_chat_ids,
-                    bool(args.deny_by_default),
-                    getattr(args, "owner_chat_id", ""),
-                )
-            bootstrap_allowed = False
-            acl_empty = (not args.allow_chat_ids) and (not args.admin_chat_ids) and (not args.readonly_chat_ids)
-            if (not allowed) and (not bool(getattr(args, "owner_only", False))) and bool(args.deny_by_default) and acl_empty:
-                bootstrap_allowed = is_bootstrap_allowed_command(text)
-                if bootstrap_allowed:
-                    allowed = True
-
-            if not allowed:
-                unauthorized_skipped += 1
-                state[STATE_UNAUTHORIZED_SKIPPED_KEY] = unauthorized_skipped
-                state["processed"] = handled_messages
-                save_state(args.state_file, state)
-                if args.verbose:
-                    print(f"[SKIP] unauthorized chat_id={chat_id}")
-                if chat_id not in unauthorized_sent:
-                    unauthorized_text = "not allowed."
-                    if bool(getattr(args, "owner_only", False)):
-                        unauthorized_text = "not allowed. owner-only mode: DM the bot from the owner account."
-                    elif bool(args.deny_by_default) and acl_empty:
-                        unauthorized_text = "not allowed. gateway is locked. use /lockme to claim this bot."
-                    safe_tg_send_text(
-                        token=token,
-                        chat_id=chat_id,
-                        text=unauthorized_text,
-                        max_chars=args.max_text_chars,
-                        timeout_sec=args.http_timeout_sec,
-                        dry_run=args.dry_run,
-                        verbose=args.verbose,
-                        context="unauthorized",
-                    )
-                    log_gateway_event(
-                        team_dir=args.team_dir,
-                        event="unauthorized_message",
-                        trace_id=f"upd-{update_id}",
-                        stage="intake",
-                        actor=f"telegram:{chat_id}",
-                        status="rejected",
-                        error_code=ERROR_AUTH,
-                        detail=text if len(text) <= 200 else (text[:197] + "..."),
-                    )
-                    unauthorized_sent.add(chat_id)
-                continue
-
-            state["processed"] = handled_messages
-            save_state(args.state_file, state)
-            try:
-                handle_text_message(args, token, chat_id, text, trace_id=f"upd-{update_id}")
-            except Exception as e:
-                handler_errors += 1
-                state[STATE_HANDLER_ERRORS_KEY] = handler_errors
-                if args.verbose:
-                    print(f"[ERROR] message handling failed: chat_id={chat_id} error={e}", file=sys.stderr, flush=True)
-            handled_messages += 1
-            processed = handled_messages
-            state[STATE_HANDLED_MESSAGES_KEY] = handled_messages
-            state["processed"] = handled_messages
-            save_state(args.state_file, state)
-
-        if handled_any:
-            state["offset"] = offset
-            state["processed"] = handled_messages
-            save_state(args.state_file, state)
-
-        if args.once:
-            break
-
-    return 0
+    return poll_loop_mod.run_loop(
+        args,
+        token,
+        load_state=load_state,
+        save_state=save_state,
+        dedup_keep_limit=dedup_keep_limit,
+        normalize_recent_tokens=normalize_recent_tokens,
+        message_dedup_key=message_dedup_key,
+        append_recent_token=append_recent_token,
+        tg_get_updates=tg_get_updates,
+        ensure_chat_allowed=ensure_chat_allowed,
+        is_bootstrap_allowed_command=is_bootstrap_allowed_command,
+        safe_tg_send_text=safe_tg_send_text,
+        log_gateway_event=log_gateway_event,
+        handle_text_message=handle_text_message,
+        preferred_command_prefix=preferred_command_prefix,
+        state_acked_updates_key=STATE_ACKED_UPDATES_KEY,
+        state_handled_messages_key=STATE_HANDLED_MESSAGES_KEY,
+        state_duplicate_skipped_key=STATE_DUPLICATE_SKIPPED_KEY,
+        state_empty_skipped_key=STATE_EMPTY_SKIPPED_KEY,
+        state_unauthorized_skipped_key=STATE_UNAUTHORIZED_SKIPPED_KEY,
+        state_handler_errors_key=STATE_HANDLER_ERRORS_KEY,
+        error_auth=ERROR_AUTH,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
