@@ -18,12 +18,17 @@ from typing import Any, Dict, List
 
 ROOT = Path(__file__).resolve().parents[2]
 GW_DIR = ROOT / "scripts" / "gateway"
+EXP_DIR = Path(__file__).resolve().parent
 if str(GW_DIR) not in sys.path:
     sys.path.insert(0, str(GW_DIR))
+if str(EXP_DIR) not in sys.path:
+    sys.path.insert(0, str(EXP_DIR))
 
 from aoe_tg_tf_backend import AUTOGEN_CORE_TF_BACKEND, DEFAULT_TF_BACKEND, normalize_tf_backend_name
 from aoe_tg_tf_backend_autogen import autogen_core_installed, autogen_core_version
+from aoe_tg_tf_event_schema import normalize_runtime_events, tf_followup_proposal_schema, tf_runtime_event_schema
 from aoe_tg_tf_exec import parse_roles_csv
+from autogen_core_contract_samples import build_sample_followup_proposals
 
 
 def now_iso() -> str:
@@ -69,6 +74,64 @@ def build_runtime_plan(args: argparse.Namespace) -> Dict[str, Any]:
     installed = autogen_core_installed()
     version = autogen_core_version()
     workspace = str(Path(args.workspace).expanduser().resolve()) if args.workspace else ""
+    expected_focus = [token.strip() for token in str(getattr(args, "expected_focus", "") or "").split(",") if token.strip()]
+    runtime_events = normalize_runtime_events(
+        [
+            {
+                "source": "tf_orchestrator",
+                "stage": "request.accepted",
+                "kind": "lifecycle",
+                "status": "info",
+                "summary": "accepted TF request and initialized AutoGen runtime plan",
+                "payload": {"project_key": str(args.project_key or "").strip()},
+            },
+            {
+                "source": "tf_orchestrator",
+                "stage": "roles.resolved",
+                "kind": "dispatch",
+                "status": "success",
+                "summary": "resolved requested role set for the TF runtime",
+                "payload": {"roles": roles},
+            },
+            {
+                "source": "autogen_runtime",
+                "stage": "runtime.started",
+                "kind": "lifecycle",
+                "status": "info",
+                "summary": "bootstrapped in-process AutoGen runtime",
+                "payload": {"runtime": "SingleThreadedAgentRuntime"},
+            },
+            {
+                "source": "reviewer",
+                "stage": "verdict.emitted",
+                "kind": "verdict",
+                "status": "success",
+                "summary": "reviewer emits success|retry|fail verdict back to orchestrator",
+                "payload": {"verdict": "success|retry|fail"},
+            },
+            {
+                "source": "tf_orchestrator",
+                "stage": "proposals.emitted",
+                "kind": "proposal",
+                "status": "info",
+                "summary": "normalized follow-up proposals returned to aoe_orch_control",
+                "payload": {"target": "proposal inbox"},
+            },
+        ],
+        default_backend=normalize_tf_backend_name(AUTOGEN_CORE_TF_BACKEND),
+        default_source="tf_orchestrator",
+        now_iso=now_iso,
+    )
+    sample_proposals = build_sample_followup_proposals(
+        case_id=str(getattr(args, "case_id", "") or "standalone_spike"),
+        project_key=str(args.project_key or "").strip(),
+        task_summary=str(args.task or "").strip(),
+        roles=roles,
+        workload_type=str(getattr(args, "workload_type", "") or "").strip(),
+        expected_focus=expected_focus,
+        source_request_id=str(getattr(args, "source_request_id", "") or "REQ-AUTOGEN-SPIKE"),
+        source_todo_id="",
+    )
     return {
         "generated_at": now_iso(),
         "phase": "phase0_design_spike",
@@ -130,7 +193,11 @@ def build_runtime_plan(args: argparse.Namespace) -> Dict[str, Any]:
                 "source_todo_id",
                 "confidence",
             ],
+            "runtime_event_schema": tf_runtime_event_schema(),
+            "followup_proposal_schema": tf_followup_proposal_schema(),
         },
+        "sample_runtime_events": runtime_events,
+        "sample_followup_proposals": sample_proposals,
         "warnings": [
             "This spike does not execute AutoGen agents.",
             "Backlog state mutation remains outside the backend.",
@@ -151,6 +218,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--workspace", default="", help="workspace path for the TF run")
     p.add_argument("--retry-budget", type=int, default=3, help="retry budget for the TF run")
     p.add_argument("--approval-required", action="store_true", help="mark the TF as approval-gated")
+    p.add_argument("--case-id", default="standalone_spike", help="benchmark/spike case identifier")
+    p.add_argument("--workload-type", default="", help="benchmark workload type label")
+    p.add_argument("--expected-focus", default="", help="comma-separated benchmark focus tags")
+    p.add_argument("--source-request-id", default="REQ-AUTOGEN-SPIKE", help="synthetic request id for contract samples")
     return p
 
 

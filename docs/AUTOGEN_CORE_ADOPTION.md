@@ -156,6 +156,7 @@ Recommended new seam:
 - `scripts/gateway/aoe_tg_tf_backend.py`
 - `scripts/gateway/aoe_tg_tf_backend_local.py`
 - `scripts/gateway/aoe_tg_tf_backend_autogen.py`
+- `scripts/gateway/aoe_tg_tf_event_schema.py`
 
 Rules:
 
@@ -291,5 +292,5 @@ If not, keep the current local backend and continue improving:
 - [ ] add `backend=local` explicit default to live execution wiring
 - [x] add `autogen_core` spike script under `scripts/experiments/`
 - [x] add benchmark set and dry-run compare harness for local vs AutoGen contract review
-- [ ] define normalized runtime event schema for adapter output
-- [ ] define proposal extraction parity test between local and AutoGen backend
+- [x] define normalized runtime event schema for adapter output
+- [x] define proposal extraction parity test between local and AutoGen backend
