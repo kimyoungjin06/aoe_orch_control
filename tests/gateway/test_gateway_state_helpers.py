@@ -5240,6 +5240,53 @@ def test_capture_todo_proposals_merges_and_alerts() -> None:
     assert any(evt.get("event") == "todo_proposals_created" for evt in logged)
 
 
+def test_capture_todo_proposals_prefers_backend_native_payload() -> None:
+    entry = {
+        "project_alias": "O4",
+        "todos": [],
+        "todo_seq": 0,
+        "todo_proposals": [],
+        "todo_proposal_seq": 0,
+    }
+    sent: list[tuple[str, str, dict | None]] = []
+    logged: list[dict] = []
+
+    result = run_handlers._maybe_capture_todo_proposals(
+        args=argparse.Namespace(dry_run=False),
+        entry=entry,
+        key="local_map_analysis",
+        p_args=argparse.Namespace(),
+        prompt="writer handoff prompt",
+        state={
+            "complete": True,
+            "replies": [{"role": "Local-Writer", "body": "hints are present but should not be reparsed"}],
+            "followup_proposals": [
+                {
+                    "summary": "Draft the machine-readable summary table from the canonical backlog",
+                    "priority": "P1",
+                    "kind": "handoff",
+                    "reason": "backend-native writer handoff proposal",
+                    "confidence": 0.81,
+                }
+            ],
+        },
+        req_id="REQ-901",
+        task={"todo_id": "TODO-015", "short_id": "T-901"},
+        todo_id="TODO-015",
+        send=lambda body, **kwargs: sent.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda **kwargs: logged.append(kwargs),
+        now_iso=lambda: "2026-03-11T21:00:00+0900",
+        extract_todo_proposals=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("extractor should not run when backend payload exists")),
+        merge_todo_proposals=todo_handlers.merge_todo_proposals,
+    )
+
+    assert result["created_count"] == 1
+    assert entry["todo_proposals"][0]["source_request_id"] == "REQ-901"
+    assert entry["todo_proposals"][0]["kind"] == "handoff"
+    assert any(evt.get("event") == "todo_proposals_backend_payload" for evt in logged)
+    assert sent[-1][0] == "todo-proposals-alert"
+
+
 def test_exec_pipeline_module_matches_run_terminal_todo_helpers() -> None:
     entry_a = {
         "project_alias": "O4",
@@ -7943,7 +7990,9 @@ def test_autogen_backend_reports_availability_and_stays_not_implemented(tmp_path
         assert len(result["replies"]) == 2
         assert result["counts"]["assignments"] == 2
         assert result["counts"]["replies"] == 2
+        assert result["followup_proposals"]
         assert all(not errs for errs in tf_event_schema.validate_runtime_events(result["runtime_events"]))
+        assert all(not errs for errs in tf_event_schema.validate_followup_proposals(result["followup_proposals"]))
         assert result["replies"][0]["role"] == "Local-Analyst"
         assert result["replies"][1]["role"] == "Reviewer"
     else:
@@ -8003,6 +8052,7 @@ def test_gateway_run_aoe_orch_executes_real_autogen_backend_when_available(tmp_p
     assert result["backend_profile"] == "sandbox"
     assert result["complete"] is True
     assert result["counts"]["replies"] == 2
+    assert result["followup_proposals"]
     assert all(not errs for errs in tf_event_schema.validate_runtime_events(result["runtime_events"]))
 
     project_rows = [
@@ -8073,6 +8123,8 @@ def test_gateway_run_aoe_orch_executes_writer_shape_with_real_autogen_backend_wh
     assert result["replies"][0]["role"] == "Local-Writer"
     assert "Local-Writer handoff" in result["replies"][0]["body"]
     assert "Local-Writer, Reviewer" in result["replies"][1]["body"]
+    assert result["followup_proposals"]
+    assert result["followup_proposals"][0]["kind"] == "handoff"
 
 
 def test_gateway_run_aoe_orch_uses_local_backend_by_default(tmp_path: Path) -> None:

@@ -168,7 +168,8 @@ Completed technical gates:
 - TwinPaper structured-analysis sandbox pilot with mirrored project/root event traces
 - KISTI_NanoClustering structured-analysis sandbox pilot with mirrored project/root event traces
 - Local_Map_Analysis writer/handoff sandbox pilot with mirrored project/root event traces
+- backend-native follow-up proposals emitted from sandbox gateway runs
 
 Next technical milestone:
 
-- emit backend-native follow-up proposals in a live sandbox pilot before any broader pilot
+- verify proposal inbox merge from backend-native follow-up proposals in a full operator-triggered sandbox run

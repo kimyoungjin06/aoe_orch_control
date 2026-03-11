@@ -183,6 +183,7 @@ Current status:
   - `TwinPaper` (`Local-Analyst` + `Reviewer`)
   - `KISTI_NanoClustering` (`Local-Analyst` + `Reviewer`)
   - `Local_Map_Analysis` (`Local-Writer` + `Reviewer`)
+- backend-native follow-up proposals are emitted in sandbox gateway runs
 
 Not for:
 
@@ -315,3 +316,4 @@ If not, keep the current local backend and continue improving:
 - [x] execute one TwinPaper sandbox pilot and verify mirrored runtime events
 - [x] execute a second read-only sandbox pilot on a separate canonical backlog
 - [x] execute a writer/report handoff sandbox pilot with mirrored runtime events
+- [x] emit backend-native follow-up proposals from the sandbox AutoGen runner
