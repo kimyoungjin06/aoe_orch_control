@@ -33,6 +33,7 @@ import aoe_tg_ops_policy as ops_policy
 import aoe_tg_ops_view as ops_view
 import aoe_tg_orch_registry as orch_registry
 import aoe_tg_orch_roles as orch_roles
+import aoe_tg_orch_responses as orch_responses
 import aoe_tg_orch_overview_handlers as overview
 import aoe_tg_orch_task_handlers as orch_task_handlers
 import aoe_tg_parse as tg_parse
@@ -1001,6 +1002,106 @@ def test_extract_followup_todo_proposals_normalizes_json_payload() -> None:
     assert rows[0]["priority"] == "P1"
     assert rows[0]["kind"] == "handoff"
     assert rows[0]["confidence"] == 0.88
+
+
+def test_orch_responses_module_matches_gateway_wrappers() -> None:
+    def _fake_run_codex_exec(args, prompt, timeout_sec=0):
+        if "proposals" in prompt:
+            return json.dumps(
+                {
+                    "proposals": [
+                        {
+                            "summary": "prepare deployment checklist",
+                            "priority": "P1",
+                            "kind": "handoff",
+                            "reason": "release notes mention it is missing",
+                            "confidence": 0.88,
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        if "\"verdict\"" in prompt or "execution critic" in prompt or "execution critic이다" in prompt:
+            return json.dumps(
+                {
+                    "verdict": "retry",
+                    "action": "replan",
+                    "reason": "missing validation",
+                    "fix": "add verifier pass",
+                },
+                ensure_ascii=False,
+            )
+        return "ok"
+
+    args = argparse.Namespace(orch_command_timeout_sec=120)
+    state = {"replies": [{"role": "Reviewer", "body": "need one more validation step"}]}
+    task = {"todo_id": "TODO-001", "plan": {"summary": "release prep", "subtasks": [{"title": "draft"}]}}
+
+    original = gw.run_codex_exec
+    gw.run_codex_exec = _fake_run_codex_exec
+    try:
+        assert gw.run_orchestrator_direct(args, "hello", reply_lang="ko") == orch_responses.run_orchestrator_direct(
+            args,
+            "hello",
+            reply_lang="ko",
+            default_reply_lang=gw.DEFAULT_REPLY_LANG,
+            normalize_chat_lang_token=gw.normalize_chat_lang_token,
+            run_codex_exec=_fake_run_codex_exec,
+        )
+        assert gw.synthesize_orchestrator_response(args, "hello", state, reply_lang="ko") == orch_responses.synthesize_orchestrator_response(
+            args,
+            "hello",
+            state,
+            reply_lang="ko",
+            default_reply_lang=gw.DEFAULT_REPLY_LANG,
+            normalize_chat_lang_token=gw.normalize_chat_lang_token,
+            run_codex_exec=_fake_run_codex_exec,
+        )
+        assert gw.critique_task_execution_result(
+            args,
+            "hello",
+            state,
+            task=task,
+            attempt_no=1,
+            max_attempts=3,
+            reply_lang="ko",
+        ) == orch_responses.critique_task_execution_result(
+            args,
+            "hello",
+            state,
+            task=task,
+            attempt_no=1,
+            max_attempts=3,
+            reply_lang="ko",
+            default_reply_lang=gw.DEFAULT_REPLY_LANG,
+            normalize_chat_lang_token=gw.normalize_chat_lang_token,
+            mask_sensitive_text=gw.mask_sensitive_text,
+            run_codex_exec=_fake_run_codex_exec,
+            parse_json_object_from_text=gw.parse_json_object_from_text,
+            normalize_exec_critic_payload=gw.normalize_exec_critic_payload,
+            now_iso=gw.now_iso,
+        )
+        assert gw.extract_followup_todo_proposals(
+            args,
+            "run release prep",
+            state,
+            task=task,
+            reply_lang="ko",
+        ) == orch_responses.extract_followup_todo_proposals(
+            args,
+            "run release prep",
+            state,
+            task=task,
+            reply_lang="ko",
+            default_reply_lang=gw.DEFAULT_REPLY_LANG,
+            default_orch_command_timeout_sec=gw.DEFAULT_ORCH_COMMAND_TIMEOUT_SEC,
+            normalize_chat_lang_token=gw.normalize_chat_lang_token,
+            mask_sensitive_text=gw.mask_sensitive_text,
+            run_codex_exec=_fake_run_codex_exec,
+            parse_json_object_from_text=gw.parse_json_object_from_text,
+        )
+    finally:
+        gw.run_codex_exec = original
 
 
 def test_ensure_tf_exec_workspace_records_project_envelope(tmp_path: Path, monkeypatch) -> None:
