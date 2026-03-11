@@ -27,6 +27,7 @@ import aoe_tg_chat_state as chat_state
 import aoe_tg_exec_pipeline as exec_pipeline
 import aoe_tg_exec_results as exec_results
 import aoe_tg_gateway_events as gateway_events
+import aoe_tg_gateway_aux as gateway_aux
 import aoe_tg_gateway_state as gateway_state
 import aoe_tg_management_handlers as mgmt_handlers
 import aoe_tg_ops_policy as ops_policy
@@ -408,6 +409,102 @@ def test_poll_loop_run_loop_processes_single_allowed_message(tmp_path: Path) -> 
     assert handled == ["ok"]
     assert saved_states
     assert saved_states[-1][gw.STATE_HANDLED_MESSAGES_KEY] == 1
+
+
+def test_gateway_aux_module_matches_error_and_metrics_helpers(tmp_path: Path) -> None:
+    err = RuntimeError("unknown orch project: demo")
+    assert gw.classify_handler_error(err) == gateway_aux.classify_handler_error(
+        err,
+        error_timeout=gw.ERROR_TIMEOUT,
+        error_command=gw.ERROR_COMMAND,
+        error_gate=gw.ERROR_GATE,
+        error_auth=gw.ERROR_AUTH,
+        error_request=gw.ERROR_REQUEST,
+        error_telegram=gw.ERROR_TELEGRAM,
+        error_orch=gw.ERROR_ORCH,
+        error_internal=gw.ERROR_INTERNAL,
+    )
+    assert gw.format_error_message("E_TEST", "failed", "/help", detail="token=secret") == gateway_aux.format_error_message(
+        "E_TEST",
+        "failed",
+        "/help",
+        detail="token=secret",
+        mask_sensitive_text=gw.mask_sensitive_text,
+    )
+
+    team_dir = tmp_path / ".aoe-team"
+    log_dir = team_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "gateway_events.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"timestamp": gw.now_iso(), "event": "incoming_message", "trace_id": "t1", "latency_ms": 5}),
+                json.dumps({"timestamp": gw.now_iso(), "event": "command_resolved", "trace_id": "t1", "status": "accepted", "latency_ms": 7}),
+                json.dumps({"timestamp": gw.now_iso(), "event": "send_message", "trace_id": "t1", "status": "sent", "latency_ms": 9}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert gw.summarize_gateway_metrics(team_dir, "demo", hours=24) == gateway_aux.summarize_gateway_metrics(
+        team_dir,
+        "demo",
+        hours=24,
+        summarize_gateway_poll_state=gw.summarize_gateway_poll_state,
+        parse_iso_ts=gw.parse_iso_ts,
+        percentile=gw.percentile,
+        error_internal=gw.ERROR_INTERNAL,
+    )
+
+
+def test_gateway_aux_module_matches_replay_list_path(tmp_path: Path) -> None:
+    args = argparse.Namespace(state_file=tmp_path / "gateway_state.json")
+    state = {
+        gw.STATE_FAILED_QUEUE_KEY: [
+            {
+                "id": "abc",
+                "at": "2026-03-11T12:00:00+0900",
+                "chat_id": "939062873",
+                "text": "/status",
+                "trace_id": "trace-1",
+                "error_code": "E_INTERNAL",
+                "error": "boom",
+                "cmd": "run",
+            }
+        ]
+    }
+    sent = []
+    logged = []
+    saved = []
+
+    result = gateway_aux.handle_replay_command(
+        args=args,
+        token="token-1",
+        chat_id="939062873",
+        target="list",
+        send=lambda body, **kwargs: sent.append((body, kwargs)),
+        log_event=lambda **kwargs: logged.append(kwargs),
+        load_state=lambda _path: copy.deepcopy(state),
+        save_state=lambda _path, payload: saved.append(copy.deepcopy(payload)),
+        normalize_failed_queue=gw.normalize_failed_queue,
+        failed_queue_keep_limit=gw.failed_queue_keep_limit,
+        state_failed_queue_key=gw.STATE_FAILED_QUEUE_KEY,
+        summarize_failed_queue=gw.summarize_failed_queue,
+        purge_failed_queue_for_chat=gw.purge_failed_queue_for_chat,
+        resolve_failed_queue_item=gw.resolve_failed_queue_item,
+        format_failed_queue_item_detail=gw.format_failed_queue_item_detail,
+        remove_failed_queue_item=gw.remove_failed_queue_item,
+        parse_command=gw.parse_command,
+        handle_text_message=lambda *_a, **_k: None,
+        preferred_command_prefix=gw.preferred_command_prefix,
+        replay_usage=gw.REPLAY_USAGE,
+    )
+
+    assert result is True
+    assert sent
+    assert "replay queue: 1 pending" in sent[0][0].lower()
+    assert saved
+    assert not logged
 
 
 def test_chat_state_module_matches_gateway_chat_session_exports() -> None:
