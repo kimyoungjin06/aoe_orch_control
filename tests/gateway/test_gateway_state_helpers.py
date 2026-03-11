@@ -45,6 +45,7 @@ import aoe_tg_scheduler_handlers as sched
 import aoe_tg_schema as schema
 import aoe_tg_task_state as task_state
 import aoe_tg_task_view as task_view
+import aoe_tg_tf_exec as tf_exec
 import aoe_tg_todo_handlers as todo_handlers
 import aoe_tg_todo_state as todo_state
 import aoe_tg_transport as transport
@@ -1571,6 +1572,71 @@ def test_finalize_request_reply_messages_marks_only_unresolved(monkeypatch, tmp_
     assert result["done"] == ["Reviewer:m_sent:sent"]
     assert "DataEngineer:m_done:done" in result["skipped"]
     assert calls == [("m_sent", "Orchestrator", "gateway integrated reply into final response")]
+
+
+def test_tf_exec_module_matches_gateway_exec_helpers(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AOE_TF_EXEC_MODE", "inplace")
+
+    project_root = tmp_path / "project"
+    team_dir = project_root / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+
+    args_a = argparse.Namespace(
+        project_root=project_root,
+        team_dir=team_dir,
+        orch_command_timeout_sec=900,
+        aoe_orch_bin="/usr/bin/aoe-orch",
+        orch_poll_sec=2.0,
+        roles="",
+        priority="P2",
+        orch_timeout_sec=120,
+        no_wait=False,
+        _aoe_project_key="demo_proj",
+        _aoe_project_alias="O9",
+        _aoe_control_mode="retry",
+        _aoe_source_request_id="REQ-000",
+    )
+    args_b = copy.deepcopy(args_a)
+    args_b._aoe_default_tf_worker_session_prefix = gw.DEFAULT_TF_WORKER_SESSION_PREFIX
+
+    meta_a = gw.ensure_tf_exec_workspace(args_a, "REQ-001")
+    meta_b = tf_exec.ensure_tf_exec_workspace(
+        args_b,
+        "REQ-002",
+        default_tf_exec_mode=gw.DEFAULT_TF_EXEC_MODE,
+        default_tf_work_root_name=gw.DEFAULT_TF_WORK_ROOT_NAME,
+        default_tf_exec_map_file=gw.DEFAULT_TF_EXEC_MAP_FILE,
+        now_iso=gw.now_iso,
+        run_command=gw.run_command,
+    )
+    assert meta_a["project_key"] == meta_b["project_key"] == "demo_proj"
+    assert meta_a["project_alias"] == meta_b["project_alias"] == "O9"
+
+    specs_a = gw.tf_worker_specs(args_a, "REQ-123", ["Reviewer"], startup_timeout_sec=120)
+    specs_b = tf_exec.tf_worker_specs(args_b, "REQ-123", ["Reviewer"], startup_timeout_sec=120)
+    assert specs_a == specs_b
+
+    class Proc:
+        returncode = 0
+        stdout = json.dumps({"request_id": "REQ-1", "dispatch_plan": [{"role": "DataEngineer"}, {"role": "Reviewer"}]})
+        stderr = ""
+
+    original_run_command = gw.run_command
+    gw.run_command = lambda cmd, env, timeout_sec: Proc()
+    try:
+        roles_a = gw.resolve_dispatch_roles_from_preview(args_a, "Check quality", "REQ-1", "", "P2", 120)
+        roles_b = tf_exec.resolve_dispatch_roles_from_preview(
+            args_b,
+            "Check quality",
+            "REQ-1",
+            "",
+            "P2",
+            120,
+            run_command=gw.run_command,
+        )
+    finally:
+        gw.run_command = original_run_command
+    assert roles_a == roles_b == ["DataEngineer", "Reviewer"]
 
 
 def test_infer_natural_run_mode_treats_direct_as_bias_not_force() -> None:
