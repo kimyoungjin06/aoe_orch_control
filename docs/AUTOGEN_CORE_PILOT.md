@@ -165,8 +165,10 @@ Completed technical gates:
 - sandbox wiring for backend runtime event mirroring into existing gateway/operator logs
 - controlled backend selection for one sandbox TF profile only
 - read-only sandbox runner over canonical `TODO.md`
-- one TwinPaper sandbox pilot with mirrored project/root event traces
+- TwinPaper structured-analysis sandbox pilot with mirrored project/root event traces
+- KISTI_NanoClustering structured-analysis sandbox pilot with mirrored project/root event traces
+- Local_Map_Analysis writer/handoff sandbox pilot with mirrored project/root event traces
 
 Next technical milestone:
 
-- run a second read-only pilot on another task shape before any broader pilot
+- emit backend-native follow-up proposals in a live sandbox pilot before any broader pilot

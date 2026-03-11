@@ -8019,6 +8019,62 @@ def test_gateway_run_aoe_orch_executes_real_autogen_backend_when_available(tmp_p
     assert any(row.get("project_team_dir") == str(team_dir.resolve()) for row in root_rows)
 
 
+def test_gateway_run_aoe_orch_executes_writer_shape_with_real_autogen_backend_when_available(tmp_path: Path) -> None:
+    if not tf_backend_autogen.autogen_core_backend().availability().available:
+        return
+    project_root = tmp_path / "project"
+    team_dir = project_root / ".aoe-team"
+    root_team_dir = tmp_path / "mother" / ".aoe-team"
+    team_dir.mkdir(parents=True)
+    root_team_dir.mkdir(parents=True)
+    (project_root / "TODO.md").write_text(
+        "\n".join(
+            [
+                "# Pilot TODO",
+                "",
+                "## Tasks",
+                "",
+                "- [ ] P1: Draft an operator-facing handoff from the canonical backlog.",
+                "- [ ] P2: Highlight the first item that still needs explicit human review.",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (team_dir / "tf_backend.json").write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "backend": "autogen_core",
+                "profile": "sandbox",
+                "sandbox_only": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = argparse.Namespace(
+        project_root=project_root,
+        team_dir=team_dir,
+        aoe_orch_bin="aoe-orch",
+        _aoe_root_team_dir=str(root_team_dir),
+        _aoe_project_key="O4",
+        _aoe_trace_id="trace-autogen-writer",
+    )
+
+    result = gw.run_aoe_orch(
+        args,
+        "Draft a short operator-facing handoff report from the canonical backlog without modifying files.",
+        "chat-1",
+        roles_override="Local-Writer,Reviewer",
+    )
+
+    assert result["backend"] == "autogen_core"
+    assert result["complete"] is True
+    assert result["replies"][0]["role"] == "Local-Writer"
+    assert "Local-Writer handoff" in result["replies"][0]["body"]
+    assert "Local-Writer, Reviewer" in result["replies"][1]["body"]
+
+
 def test_gateway_run_aoe_orch_uses_local_backend_by_default(tmp_path: Path) -> None:
     team_dir = tmp_path / "project" / ".aoe-team"
     team_dir.mkdir(parents=True)

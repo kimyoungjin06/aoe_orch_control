@@ -25,6 +25,7 @@ from aoe_tg_tf_exec import create_request_id, parse_roles_csv
 
 
 READONLY_ANALYST_ROLE = "Local-Analyst"
+READONLY_WRITER_ROLE = "Local-Writer"
 READONLY_REVIEWER_ROLE = "Reviewer"
 
 
@@ -60,7 +61,8 @@ def _priority_rank(priority: str) -> int:
 
 def _resolve_readonly_roles(raw: str) -> Dict[str, List[str]]:
     requested = parse_roles_csv(raw)
-    executed: List[str] = [READONLY_ANALYST_ROLE, READONLY_REVIEWER_ROLE]
+    primary_role = READONLY_WRITER_ROLE if READONLY_WRITER_ROLE in requested else READONLY_ANALYST_ROLE
+    executed: List[str] = [primary_role, READONLY_REVIEWER_ROLE]
     dropped = [role for role in requested if role not in executed]
     return {
         "requested": requested,
@@ -378,6 +380,9 @@ async def _run_autogen_runtime(request: TFBackendRequest, deps: TFBackendDeps) -
         },
     )
 
+    primary_role = roles["executed"][0] if roles["executed"] else READONLY_ANALYST_ROLE
+    primary_agent_type = "writer" if primary_role == READONLY_WRITER_ROLE else "analyst"
+
     class AnalystAgent(RoutedAgent):
         def __init__(self) -> None:
             super().__init__("sandbox analyst")
@@ -416,6 +421,50 @@ async def _run_autogen_runtime(request: TFBackendRequest, deps: TFBackendDeps) -
             )
             return AnalysisResponse(
                 role=READONLY_ANALYST_ROLE,
+                body=body,
+                top_items=top_items,
+                item_count=len(message.todo_items),
+            )
+
+    class WriterAgent(RoutedAgent):
+        def __init__(self) -> None:
+            super().__init__("sandbox writer")
+
+        @rpc
+        async def handle_analysis(self, message: AnalysisRequest, ctx: MessageContext) -> AnalysisResponse:
+            top_items = _format_item_lines(message.todo_items)
+            intro = "Local-Writer handoff"
+            if top_items:
+                body = "\n".join(
+                    [
+                        intro,
+                        f"- source: {message.source_path or '(missing source)'} ({message.source_kind})",
+                        f"- operator request: {message.prompt}",
+                        f"- actionable backlog items extracted: {len(message.todo_items)}",
+                        "- proposed handoff summary:",
+                        f"  Focus first on {top_items[0]}",
+                        *[f"  backlog: {line}" for line in top_items[1:3]],
+                    ]
+                )
+            else:
+                body = "\n".join(
+                    [
+                        intro,
+                        f"- source: {message.source_path or '(missing source)'} ({message.source_kind})",
+                        f"- operator request: {message.prompt}",
+                        "- no actionable backlog items were extracted from the current canonical source.",
+                    ]
+                )
+            recorder.add(
+                source="writer",
+                stage="dispatch.submitted",
+                kind="dispatch",
+                status="success",
+                summary="writer produced read-only handoff summary from canonical backlog",
+                payload={"item_count": len(message.todo_items), "source_kind": message.source_kind},
+            )
+            return AnalysisResponse(
+                role=READONLY_WRITER_ROLE,
                 body=body,
                 top_items=top_items,
                 item_count=len(message.todo_items),
@@ -473,7 +522,7 @@ async def _run_autogen_runtime(request: TFBackendRequest, deps: TFBackendDeps) -
                     dropped_roles=message.dropped_roles,
                     todo_items=message.todo_items,
                 ),
-                AgentId("analyst", "default"),
+                AgentId(primary_agent_type, "default"),
             )
             review = await self.send_message(
                 ReviewRequest(
@@ -524,6 +573,7 @@ async def _run_autogen_runtime(request: TFBackendRequest, deps: TFBackendDeps) -
 
     runtime = SingleThreadedAgentRuntime()
     await AnalystAgent.register(runtime, "analyst", lambda: AnalystAgent())
+    await WriterAgent.register(runtime, "writer", lambda: WriterAgent())
     await ReviewerAgent.register(runtime, "reviewer", lambda: ReviewerAgent())
     await OrchestratorAgent.register(runtime, "tf_orchestrator", lambda: OrchestratorAgent())
     runtime.start()
