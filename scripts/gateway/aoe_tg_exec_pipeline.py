@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
 from aoe_tg_blocked_state import apply_todo_execution_outcome, blocked_bucket_label
+from aoe_tg_tf_event_schema import normalize_followup_proposals
 
 
 @dataclass
@@ -201,36 +202,69 @@ def maybe_capture_todo_proposals(
 ) -> Dict[str, Any]:
     if not req_id:
         return {"created_count": 0, "created_ids": [], "duplicate_count": 0, "skipped_count": 0}
-    replies = state.get("replies") or []
-    if not isinstance(replies, list) or not replies:
-        return {"created_count": 0, "created_ids": [], "duplicate_count": 0, "skipped_count": 0}
-
-    try:
-        proposals_data = extract_todo_proposals(
-            p_args,
-            prompt,
-            state,
-            task=task,
-        )
-    except Exception as exc:
-        log_event(
-            event="todo_proposals_extract_failed",
-            project=key,
-            request_id=req_id,
-            task=task,
-            stage=str((task or {}).get("stage", "close")),
-            status="failed",
-            error_code="E_TODO_PROPOSALS",
-            detail=str(exc)[:240],
-        )
-        return {"created_count": 0, "created_ids": [], "duplicate_count": 0, "skipped_count": 0}
-
-    if not isinstance(proposals_data, list) or not proposals_data:
-        return {"created_count": 0, "created_ids": [], "duplicate_count": 0, "skipped_count": 0}
 
     source_todo_id = str(todo_id or "").strip()
     if not source_todo_id and isinstance(task, dict):
         source_todo_id = str(task.get("todo_id", "")).strip()
+
+    backend_rows = state.get("followup_proposals")
+    proposals_data: List[Dict[str, Any]] = []
+    if isinstance(backend_rows, list) and backend_rows:
+        try:
+            proposals_data = normalize_followup_proposals(
+                [row for row in backend_rows if isinstance(row, dict)],
+                default_source_request_id=req_id,
+                default_source_todo_id=source_todo_id,
+            )
+            log_event(
+                event="todo_proposals_backend_payload",
+                project=key,
+                request_id=req_id,
+                task=task,
+                stage=str((task or {}).get("stage", "close")),
+                status="completed",
+                detail=f"backend-native follow-up proposals accepted: {len(proposals_data)}",
+            )
+        except Exception as exc:
+            log_event(
+                event="todo_proposals_backend_payload_failed",
+                project=key,
+                request_id=req_id,
+                task=task,
+                stage=str((task or {}).get("stage", "close")),
+                status="failed",
+                error_code="E_TODO_PROPOSALS",
+                detail=str(exc)[:240],
+            )
+            proposals_data = []
+
+    if not proposals_data:
+        replies = state.get("replies") or []
+        if not isinstance(replies, list) or not replies:
+            return {"created_count": 0, "created_ids": [], "duplicate_count": 0, "skipped_count": 0}
+
+        try:
+            proposals_data = extract_todo_proposals(
+                p_args,
+                prompt,
+                state,
+                task=task,
+            )
+        except Exception as exc:
+            log_event(
+                event="todo_proposals_extract_failed",
+                project=key,
+                request_id=req_id,
+                task=task,
+                stage=str((task or {}).get("stage", "close")),
+                status="failed",
+                error_code="E_TODO_PROPOSALS",
+                detail=str(exc)[:240],
+            )
+            return {"created_count": 0, "created_ids": [], "duplicate_count": 0, "skipped_count": 0}
+
+    if not isinstance(proposals_data, list) or not proposals_data:
+        return {"created_count": 0, "created_ids": [], "duplicate_count": 0, "skipped_count": 0}
 
     try:
         merged = merge_todo_proposals(

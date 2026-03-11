@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from aoe_tg_tf_backend import TFBackendAdapter, TFBackendAvailability, TFBackendDeps, TFBackendRequest
-from aoe_tg_tf_event_schema import normalize_runtime_events
+from aoe_tg_tf_event_schema import normalize_followup_proposals, normalize_runtime_events
 from aoe_tg_tf_exec import create_request_id, parse_roles_csv
 
 
@@ -300,6 +300,7 @@ class OrchestratorResponse:
     done_roles: List[str]
     failed_roles: List[str]
     pending_roles: List[str]
+    followup_proposals: List[Dict[str, Any]]
 
 
 class _RuntimeEventRecorder:
@@ -340,6 +341,42 @@ def _build_runtime_events(recorder: _RuntimeEventRecorder, *, now_iso: Any) -> L
     )
 
 
+def _build_followup_proposals(
+    *,
+    request_id: str,
+    source_todo_id: str,
+    primary_role: str,
+    top_items: Sequence[str],
+    source_path: str,
+    source_kind: str,
+) -> List[Dict[str, Any]]:
+    if not top_items:
+        return []
+    kind = "handoff" if primary_role == READONLY_WRITER_ROLE else "followup"
+    reason_prefix = "writer handoff surfaced" if primary_role == READONLY_WRITER_ROLE else "read-only analysis surfaced"
+    raw_rows: List[Dict[str, Any]] = []
+    for line in list(top_items)[:2]:
+        raw_rows.append(
+            {
+                "summary": line,
+                "priority": "P1" if line.startswith("1.") else "P2",
+                "kind": kind,
+                "reason": f"{reason_prefix} this canonical backlog item from {source_kind or 'todo source'}",
+                "source_request_id": request_id,
+                "source_todo_id": source_todo_id,
+                "confidence": 0.78 if kind == "handoff" else 0.74,
+                "source_file": source_path,
+                "source_section": "Tasks",
+                "source_reason": "autogen_readonly_runtime",
+            }
+        )
+    return normalize_followup_proposals(
+        raw_rows,
+        default_source_request_id=request_id,
+        default_source_todo_id=source_todo_id,
+    )
+
+
 def _build_request_id(request: TFBackendRequest) -> str:
     raw = str(request.metadata.get("request_id", "") or "").strip()
     return raw or create_request_id()
@@ -358,6 +395,7 @@ async def _run_autogen_runtime(request: TFBackendRequest, deps: TFBackendDeps) -
     source_path = str(load_result.get("source_path", "") or "")
     source_kind = str(load_result.get("source_kind", "") or "missing")
     todo_items = list(load_result.get("items") or [])
+    source_todo_id = str(request.metadata.get("source_todo_id", "") or "").strip()
     recorder = _RuntimeEventRecorder(deps.now_iso)
     recorder.add(
         source="tf_orchestrator",
@@ -538,6 +576,23 @@ async def _run_autogen_runtime(request: TFBackendRequest, deps: TFBackendDeps) -
                 ),
                 AgentId("reviewer", "default"),
             )
+            followup_proposals = _build_followup_proposals(
+                request_id=message.request_id,
+                source_todo_id=source_todo_id,
+                primary_role=analysis.role,
+                top_items=analysis.top_items,
+                source_path=message.source_path,
+                source_kind=message.source_kind,
+            )
+            if followup_proposals:
+                recorder.add(
+                    source="tf_orchestrator",
+                    stage="proposals.emitted",
+                    kind="proposal",
+                    status="info",
+                    summary="emitted backend-native follow-up proposals",
+                    payload={"proposal_count": len(followup_proposals), "kind": followup_proposals[0].get("kind", "followup")},
+                )
             recorder.add(
                 source="tf_orchestrator",
                 stage="runtime.completed",
@@ -569,6 +624,7 @@ async def _run_autogen_runtime(request: TFBackendRequest, deps: TFBackendDeps) -
                 done_roles=[analysis.role, review.role],
                 failed_roles=[],
                 pending_roles=[],
+                followup_proposals=followup_proposals,
             )
 
     runtime = SingleThreadedAgentRuntime()
@@ -617,6 +673,7 @@ async def _run_autogen_runtime(request: TFBackendRequest, deps: TFBackendDeps) -
         "failed_roles": list(response.failed_roles),
         "pending_roles": list(response.pending_roles),
         "runtime_events": runtime_events,
+        "followup_proposals": list(response.followup_proposals),
         "artifacts": [
             {
                 "kind": "backlog_snapshot",
@@ -625,7 +682,6 @@ async def _run_autogen_runtime(request: TFBackendRequest, deps: TFBackendDeps) -
                 "item_count": len(todo_items),
             }
         ],
-        "followup_proposals": [],
     }
 
 
