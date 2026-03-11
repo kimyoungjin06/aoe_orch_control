@@ -537,8 +537,26 @@ def test_load_manager_state_preserves_todo_proposals_and_lineage_fields(tmp_path
     state_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
     loaded = gw.load_manager_state(state_path, tmp_path, team_dir)
+    loaded_runtime = runtime_core.load_manager_state(
+        state_path,
+        tmp_path,
+        team_dir,
+        default_manager_state=gw.default_manager_state,
+        now_iso=gw.now_iso,
+        normalize_project_name=gw.normalize_project_name,
+        sanitize_task_record=gw.sanitize_task_record,
+        trim_project_tasks=gw.trim_project_tasks,
+        normalize_task_alias_key=gw.normalize_task_alias_key,
+        bool_from_json=gw.bool_from_json,
+        normalize_project_alias=gw.normalize_project_alias,
+        backfill_task_aliases=gw.backfill_task_aliases,
+        ensure_project_aliases=gw.ensure_project_aliases,
+        sanitize_project_lock_row=gw.sanitize_project_lock_row,
+        sanitize_chat_session_row=gw.sanitize_chat_session_row,
+    )
     project = loaded["projects"]["default"]
 
+    assert loaded_runtime == loaded
     assert project["todo_proposal_seq"] == 1
     assert project["todo_proposals"][0]["source_request_id"] == "REQ-123"
     assert project["todo_proposals"][0]["confidence"] == 0.8
