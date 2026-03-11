@@ -221,6 +221,7 @@ def get_manager_project(
 
 def make_project_args(args: Any, entry: Dict[str, Any], key: str = "") -> argparse.Namespace:
     copied = argparse.Namespace(**vars(args))
+    copied._aoe_root_team_dir = str(getattr(args, "_aoe_root_team_dir", args.team_dir))
     copied.project_root = Path(str(entry.get("project_root", args.project_root))).expanduser().resolve()
     copied.team_dir = Path(str(entry.get("team_dir", copied.project_root / ".aoe-team"))).expanduser().resolve()
     project_key = normalize_project_name(str(key or entry.get("name", "")))

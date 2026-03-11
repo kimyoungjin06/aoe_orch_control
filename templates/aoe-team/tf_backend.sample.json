@@ -1,0 +1,7 @@
+{
+  "enabled": false,
+  "backend": "local",
+  "profile": "sandbox",
+  "sandbox_only": true,
+  "notes": "Rename this file to tf_backend.json only for a sandbox TF backend pilot."
+}

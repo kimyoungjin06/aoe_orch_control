@@ -294,10 +294,10 @@ If not, keep the current local backend and continue improving:
 ## 11. Immediate TODO
 
 - [x] define `TF backend adapter` interface
-- [ ] add `backend=local` explicit default to live execution wiring
+- [x] add `backend=local` explicit default to live execution wiring
 - [x] add `autogen_core` spike script under `scripts/experiments/`
 - [x] add benchmark set and dry-run compare harness for local vs AutoGen contract review
 - [x] define normalized runtime event schema for adapter output
 - [x] define proposal extraction parity test between local and AutoGen backend
 - [x] add gateway log mirroring helper for normalized backend runtime events
-- [ ] wire backend runtime event mirroring into a sandbox-only execution path
+- [x] wire backend runtime event mirroring into a sandbox-only execution path
