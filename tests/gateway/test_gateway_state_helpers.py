@@ -8,6 +8,7 @@ import copy
 import importlib.util
 import json
 import os
+import pytest
 import sys
 from pathlib import Path
 
@@ -8127,6 +8128,7 @@ def test_gateway_run_aoe_orch_executes_writer_shape_with_real_autogen_backend_wh
     assert result["followup_proposals"][0]["kind"] == "handoff"
 
 
+@pytest.mark.smoke
 def test_handle_text_message_operator_triggered_sandbox_run_merges_backend_native_proposals(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -8248,6 +8250,7 @@ def test_handle_text_message_operator_triggered_sandbox_run_merges_backend_nativ
     assert any(row.get("project_team_dir") == str(team_dir.resolve()) for row in root_rows)
 
 
+@pytest.mark.smoke
 def test_handle_text_message_operator_triggered_sandbox_run_exposes_todo_proposals_inbox(
     tmp_path: Path, monkeypatch
 ) -> None:
