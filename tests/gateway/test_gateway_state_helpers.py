@@ -7896,30 +7896,127 @@ def test_local_tf_backend_delegates_to_run_aoe_orch() -> None:
     assert calls["kwargs"]["no_wait_override"] is True
 
 
-def test_autogen_backend_reports_availability_and_stays_not_implemented() -> None:
+def test_autogen_backend_reports_availability_and_stays_not_implemented(tmp_path: Path) -> None:
     availability = tf_backend_autogen.autogen_core_backend().availability()
     assert isinstance(availability.available, bool)
     if availability.available:
-        try:
-            tf_backend_autogen.autogen_core_backend().run(
-                tf_backend.build_tf_backend_request(
-                    args=argparse.Namespace(project_root=str(ROOT), team_dir=str(ROOT / ".aoe-team")),
-                    prompt="test",
-                    chat_id="chat-1",
-                ),
-                tf_backend.build_tf_backend_deps(
-                    default_tf_exec_mode="local",
-                    default_tf_work_root_name=".aoe-tf",
-                    default_tf_exec_map_file="tf_exec_map.json",
-                    default_tf_worker_startup_grace_sec=45,
-                    now_iso=lambda: "2026-03-11T00:00:00+0000",
-                    run_command=lambda *args, **kwargs: None,
-                ),
+        project_root = tmp_path / "autogen_backend_test"
+        team_dir = project_root / ".aoe-team"
+        team_dir.mkdir(parents=True, exist_ok=True)
+        (project_root / "TODO.md").write_text(
+            "\n".join(
+                [
+                    "# Test TODO",
+                    "",
+                    "## Tasks",
+                    "",
+                    "- [ ] P1: Validate the AutoGen sandbox backend against a canonical TODO source.",
+                    "- [ ] P2: Summarize the extracted backlog items for operator review.",
+                ]
             )
-        except NotImplementedError as exc:
-            assert "not wired" in str(exc)
+            + "\n",
+            encoding="utf-8",
+        )
+        result = tf_backend_autogen.autogen_core_backend().run(
+            tf_backend.build_tf_backend_request(
+                args=argparse.Namespace(
+                    project_root=str(project_root),
+                    team_dir=str(team_dir),
+                    _aoe_project_key="O2",
+                ),
+                prompt="Summarize the canonical backlog and confirm the first next step.",
+                chat_id="chat-1",
+                roles_override="Local-Analyst,Reviewer",
+            ),
+            tf_backend.build_tf_backend_deps(
+                default_tf_exec_mode="local",
+                default_tf_work_root_name=".aoe-tf",
+                default_tf_exec_map_file="tf_exec_map.json",
+                default_tf_worker_startup_grace_sec=45,
+                now_iso=lambda: "2026-03-11T00:00:00+0000",
+                run_command=lambda *args, **kwargs: None,
+            ),
+        )
+        assert result["status"] == "completed"
+        assert result["complete"] is True
+        assert result["verdict"] in {"success", "fail"}
+        assert len(result["replies"]) == 2
+        assert result["counts"]["assignments"] == 2
+        assert result["counts"]["replies"] == 2
+        assert all(not errs for errs in tf_event_schema.validate_runtime_events(result["runtime_events"]))
+        assert result["replies"][0]["role"] == "Local-Analyst"
+        assert result["replies"][1]["role"] == "Reviewer"
     else:
         assert "not installed" in availability.reason
+
+
+def test_gateway_run_aoe_orch_executes_real_autogen_backend_when_available(tmp_path: Path) -> None:
+    if not tf_backend_autogen.autogen_core_backend().availability().available:
+        return
+    project_root = tmp_path / "project"
+    team_dir = project_root / ".aoe-team"
+    root_team_dir = tmp_path / "mother" / ".aoe-team"
+    team_dir.mkdir(parents=True)
+    root_team_dir.mkdir(parents=True)
+    (project_root / "TODO.md").write_text(
+        "\n".join(
+            [
+                "# Pilot TODO",
+                "",
+                "## Tasks",
+                "",
+                "- [ ] P1: Produce a read-only backlog summary for the sandbox pilot.",
+                "- [ ] P2: Confirm the next review focus without changing files.",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (team_dir / "tf_backend.json").write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "backend": "autogen_core",
+                "profile": "sandbox",
+                "sandbox_only": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = argparse.Namespace(
+        project_root=project_root,
+        team_dir=team_dir,
+        aoe_orch_bin="aoe-orch",
+        _aoe_root_team_dir=str(root_team_dir),
+        _aoe_project_key="O2",
+        _aoe_trace_id="trace-autogen-real",
+    )
+
+    result = gw.run_aoe_orch(
+        args,
+        "Summarize the canonical Twin backlog and identify the first next focus.",
+        "chat-1",
+        roles_override="Local-Analyst,Reviewer",
+    )
+
+    assert result["backend"] == "autogen_core"
+    assert result["backend_profile"] == "sandbox"
+    assert result["complete"] is True
+    assert result["counts"]["replies"] == 2
+    assert all(not errs for errs in tf_event_schema.validate_runtime_events(result["runtime_events"]))
+
+    project_rows = [
+        json.loads(line)
+        for line in (team_dir / "logs" / "gateway_events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    root_rows = [
+        json.loads(line)
+        for line in (root_team_dir / "logs" / "gateway_events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert any(row["event"] == "tf_backend_runtime_event" and row["backend"] == "autogen_core" for row in project_rows)
+    assert any(row.get("project_team_dir") == str(team_dir.resolve()) for row in root_rows)
 
 
 def test_gateway_run_aoe_orch_uses_local_backend_by_default(tmp_path: Path) -> None:
