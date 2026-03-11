@@ -31,6 +31,8 @@ import aoe_tg_gateway_events as gateway_events
 import aoe_tg_gateway_aux as gateway_aux
 import aoe_tg_gateway_batch_ops as gateway_batch_ops
 import aoe_tg_gateway_state as gateway_state
+import aoe_tg_management_acl as mgmt_acl
+import aoe_tg_management_chat as mgmt_chat
 import aoe_tg_management_handlers as mgmt_handlers
 import aoe_tg_scheduler_control_handlers as scheduler_control
 import aoe_tg_message_handler as message_handler
@@ -5775,6 +5777,113 @@ def _management_control_kwargs(
     )
 
 
+def _management_chat_kwargs(
+    *,
+    tmp_path: Path,
+    manager_state: dict,
+    cmd: str,
+    sent: list[tuple[str, dict | None]],
+    mode_setting=None,
+    lang_setting=None,
+    report_setting=None,
+    chat_role="admin",
+) -> dict:
+    team_dir = tmp_path / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    return dict(
+        cmd=cmd,
+        args=argparse.Namespace(
+            dry_run=True,
+            team_dir=team_dir,
+            manager_state_file=team_dir / "orch_manager_state.json",
+            default_lang="ko",
+            default_report_level="normal",
+        ),
+        manager_state=manager_state,
+        chat_id="939062873",
+        chat_role=chat_role,
+        mode_setting=mode_setting,
+        lang_setting=lang_setting,
+        report_setting=report_setting,
+        send=lambda body, **kwargs: sent.append((body, kwargs.get("reply_markup"))) or True,
+        get_default_mode=gw.get_default_mode,
+        get_pending_mode=gw.get_pending_mode,
+        get_chat_lang=gw.get_chat_lang,
+        get_chat_report_level=gw.get_chat_report_level,
+        set_default_mode=gw.set_default_mode,
+        set_pending_mode=gw.set_pending_mode,
+        set_chat_lang=gw.set_chat_lang,
+        set_chat_report_level=gw.set_chat_report_level,
+        clear_default_mode=gw.clear_default_mode,
+        clear_pending_mode=gw.clear_pending_mode,
+        clear_confirm_action=gw.clear_confirm_action,
+        clear_chat_report_level=gw.clear_chat_report_level,
+        save_manager_state=lambda *args, **kwargs: None,
+        cmd_prefix=mgmt_handlers._cmd_prefix,
+    )
+
+
+def _management_acl_kwargs(
+    *,
+    tmp_path: Path,
+    manager_state: dict,
+    cmd: str,
+    rest: str,
+    sent: list[tuple[str, dict | None]],
+    current_chat_alias="owner",
+    came_from_slash=True,
+    acl_grant_scope=None,
+    acl_grant_chat_id=None,
+    acl_revoke_scope=None,
+    acl_revoke_chat_id=None,
+    args_override: argparse.Namespace | None = None,
+) -> dict:
+    team_dir = tmp_path / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    args_obj = args_override or argparse.Namespace(
+        dry_run=True,
+        team_dir=team_dir,
+        manager_state_file=team_dir / "orch_manager_state.json",
+        default_lang="ko",
+        default_report_level="normal",
+        allow_chat_ids=set(),
+        admin_chat_ids=set(),
+        readonly_chat_ids=set(),
+        deny_by_default=False,
+        owner_only=False,
+        owner_chat_id="939062873",
+        owner_bootstrap_mode="dispatch",
+    )
+    return dict(
+        cmd=cmd,
+        args=args_obj,
+        manager_state=manager_state,
+        chat_id="939062873",
+        current_chat_alias=current_chat_alias,
+        rest=rest,
+        came_from_slash=came_from_slash,
+        acl_grant_scope=acl_grant_scope,
+        acl_grant_chat_id=acl_grant_chat_id,
+        acl_revoke_scope=acl_revoke_scope,
+        acl_revoke_chat_id=acl_revoke_chat_id,
+        send=lambda body, **kwargs: sent.append((body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda *args, **kwargs: None,
+        get_default_mode=gw.get_default_mode,
+        get_pending_mode=gw.get_pending_mode,
+        get_chat_lang=gw.get_chat_lang,
+        get_chat_report_level=gw.get_chat_report_level,
+        resolve_chat_role=gw.resolve_chat_role,
+        is_owner_chat=gw.is_owner_chat,
+        ensure_chat_aliases=gw.ensure_chat_aliases,
+        find_chat_alias=lambda aliases, chat_ref: "",
+        alias_table_summary=lambda aliases: "",
+        resolve_chat_ref=lambda aliases, chat_ref: (str(chat_ref), ""),
+        ensure_chat_alias=lambda *args, **kwargs: "owner",
+        sync_acl_env_file=lambda args: None,
+        project_lock_label=mgmt_handlers._project_lock_label,
+    )
+
+
 def _button_texts(markup: dict | None) -> list[str]:
     if not isinstance(markup, dict):
         return []
@@ -6017,6 +6126,353 @@ def test_scheduler_control_module_matches_management_offdesk_prepare_and_panic(t
     assert sent_panic_a == sent_panic_b
 
 
+def test_management_chat_module_matches_management_handler_modes(tmp_path: Path) -> None:
+    state_a = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+    state_b = copy.deepcopy(state_a)
+
+    sent_a: list[tuple[str, dict | None]] = []
+    sent_b: list[tuple[str, dict | None]] = []
+
+    ok_a = mgmt_handlers.handle_management_command(
+        cmd="mode",
+        args=argparse.Namespace(
+            dry_run=True,
+            team_dir=tmp_path / ".aoe-team",
+            manager_state_file=tmp_path / ".aoe-team" / "orch_manager_state.json",
+            default_lang="ko",
+            default_report_level="normal",
+        ),
+        manager_state=state_a,
+        chat_id="939062873",
+        chat_role="admin",
+        current_chat_alias="owner",
+        mode_setting="dispatch",
+        lang_setting=None,
+        report_setting=None,
+        rest="",
+        came_from_slash=True,
+        acl_grant_scope=None,
+        acl_grant_chat_id=None,
+        acl_revoke_scope=None,
+        acl_revoke_chat_id=None,
+        send=lambda body, **kwargs: sent_a.append((body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda *args, **kwargs: None,
+        help_text=lambda: "help",
+        get_default_mode=gw.get_default_mode,
+        get_pending_mode=gw.get_pending_mode,
+        get_chat_lang=gw.get_chat_lang,
+        get_chat_report_level=gw.get_chat_report_level,
+        get_chat_room=gw.get_chat_room,
+        set_default_mode=gw.set_default_mode,
+        set_pending_mode=gw.set_pending_mode,
+        set_chat_lang=gw.set_chat_lang,
+        set_chat_report_level=gw.set_chat_report_level,
+        set_chat_room=gw.set_chat_room,
+        clear_default_mode=gw.clear_default_mode,
+        clear_pending_mode=gw.clear_pending_mode,
+        clear_confirm_action=gw.clear_confirm_action,
+        clear_chat_report_level=gw.clear_chat_report_level,
+        save_manager_state=lambda *args, **kwargs: None,
+        resolve_chat_role=gw.resolve_chat_role,
+        is_owner_chat=gw.is_owner_chat,
+        ensure_chat_aliases=gw.ensure_chat_aliases,
+        find_chat_alias=lambda aliases, chat_ref: "",
+        alias_table_summary=lambda aliases: "",
+        resolve_chat_ref=lambda aliases, chat_ref: (str(chat_ref), ""),
+        ensure_chat_alias=lambda *args, **kwargs: "owner",
+        sync_acl_env_file=lambda args: None,
+    )
+    ok_b = mgmt_chat.handle_chat_management_command(
+        **_management_chat_kwargs(
+            tmp_path=tmp_path,
+            manager_state=state_b,
+            cmd="mode",
+            mode_setting="dispatch",
+            sent=sent_b,
+        )
+    )
+
+    assert ok_a == ok_b == True
+    assert state_a == state_b
+    assert sent_a == sent_b
+
+
+def test_management_chat_module_matches_management_handler_tutorial_and_cancel(tmp_path: Path) -> None:
+    state_a = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+    state_b = copy.deepcopy(state_a)
+    gw.set_pending_mode(state_a, "939062873", "dispatch")
+    gw.set_pending_mode(state_b, "939062873", "dispatch")
+    gw.set_confirm_action(state_a, chat_id="939062873", mode="dispatch", prompt="ship it", risk="high")
+    gw.set_confirm_action(state_b, chat_id="939062873", mode="dispatch", prompt="ship it", risk="high")
+
+    sent_tut_a: list[tuple[str, dict | None]] = []
+    sent_tut_b: list[tuple[str, dict | None]] = []
+    ok_tut_a = mgmt_handlers.handle_management_command(
+        cmd="tutorial",
+        args=argparse.Namespace(
+            dry_run=True,
+            team_dir=tmp_path / ".aoe-team",
+            manager_state_file=tmp_path / ".aoe-team" / "orch_manager_state.json",
+            default_lang="ko",
+            default_report_level="normal",
+        ),
+        manager_state=state_a,
+        chat_id="939062873",
+        chat_role="admin",
+        current_chat_alias="owner",
+        mode_setting=None,
+        lang_setting=None,
+        report_setting=None,
+        rest="",
+        came_from_slash=True,
+        acl_grant_scope=None,
+        acl_grant_chat_id=None,
+        acl_revoke_scope=None,
+        acl_revoke_chat_id=None,
+        send=lambda body, **kwargs: sent_tut_a.append((body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda *args, **kwargs: None,
+        help_text=lambda: "help",
+        get_default_mode=gw.get_default_mode,
+        get_pending_mode=gw.get_pending_mode,
+        get_chat_lang=gw.get_chat_lang,
+        get_chat_report_level=gw.get_chat_report_level,
+        get_chat_room=gw.get_chat_room,
+        set_default_mode=gw.set_default_mode,
+        set_pending_mode=gw.set_pending_mode,
+        set_chat_lang=gw.set_chat_lang,
+        set_chat_report_level=gw.set_chat_report_level,
+        set_chat_room=gw.set_chat_room,
+        clear_default_mode=gw.clear_default_mode,
+        clear_pending_mode=gw.clear_pending_mode,
+        clear_confirm_action=gw.clear_confirm_action,
+        clear_chat_report_level=gw.clear_chat_report_level,
+        save_manager_state=lambda *args, **kwargs: None,
+        resolve_chat_role=gw.resolve_chat_role,
+        is_owner_chat=gw.is_owner_chat,
+        ensure_chat_aliases=gw.ensure_chat_aliases,
+        find_chat_alias=lambda aliases, chat_ref: "",
+        alias_table_summary=lambda aliases: "",
+        resolve_chat_ref=lambda aliases, chat_ref: (str(chat_ref), ""),
+        ensure_chat_alias=lambda *args, **kwargs: "owner",
+        sync_acl_env_file=lambda args: None,
+    )
+    ok_tut_b = mgmt_chat.handle_chat_management_command(
+        **_management_chat_kwargs(
+            tmp_path=tmp_path,
+            manager_state=state_b,
+            cmd="tutorial",
+            sent=sent_tut_b,
+        )
+    )
+    assert ok_tut_a == ok_tut_b == True
+    assert sent_tut_a == sent_tut_b
+
+    sent_cancel_a: list[tuple[str, dict | None]] = []
+    sent_cancel_b: list[tuple[str, dict | None]] = []
+    state_c = copy.deepcopy(state_a)
+    state_d = copy.deepcopy(state_b)
+    ok_cancel_a = mgmt_handlers.handle_management_command(
+        cmd="cancel-pending",
+        args=argparse.Namespace(
+            dry_run=True,
+            team_dir=tmp_path / ".aoe-team",
+            manager_state_file=tmp_path / ".aoe-team" / "orch_manager_state.json",
+            default_lang="ko",
+            default_report_level="normal",
+        ),
+        manager_state=state_c,
+        chat_id="939062873",
+        chat_role="admin",
+        current_chat_alias="owner",
+        mode_setting=None,
+        lang_setting=None,
+        report_setting=None,
+        rest="",
+        came_from_slash=True,
+        acl_grant_scope=None,
+        acl_grant_chat_id=None,
+        acl_revoke_scope=None,
+        acl_revoke_chat_id=None,
+        send=lambda body, **kwargs: sent_cancel_a.append((body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda *args, **kwargs: None,
+        help_text=lambda: "help",
+        get_default_mode=gw.get_default_mode,
+        get_pending_mode=gw.get_pending_mode,
+        get_chat_lang=gw.get_chat_lang,
+        get_chat_report_level=gw.get_chat_report_level,
+        get_chat_room=gw.get_chat_room,
+        set_default_mode=gw.set_default_mode,
+        set_pending_mode=gw.set_pending_mode,
+        set_chat_lang=gw.set_chat_lang,
+        set_chat_report_level=gw.set_chat_report_level,
+        set_chat_room=gw.set_chat_room,
+        clear_default_mode=gw.clear_default_mode,
+        clear_pending_mode=gw.clear_pending_mode,
+        clear_confirm_action=gw.clear_confirm_action,
+        clear_chat_report_level=gw.clear_chat_report_level,
+        save_manager_state=lambda *args, **kwargs: None,
+        resolve_chat_role=gw.resolve_chat_role,
+        is_owner_chat=gw.is_owner_chat,
+        ensure_chat_aliases=gw.ensure_chat_aliases,
+        find_chat_alias=lambda aliases, chat_ref: "",
+        alias_table_summary=lambda aliases: "",
+        resolve_chat_ref=lambda aliases, chat_ref: (str(chat_ref), ""),
+        ensure_chat_alias=lambda *args, **kwargs: "owner",
+        sync_acl_env_file=lambda args: None,
+    )
+    ok_cancel_b = mgmt_chat.handle_chat_management_command(
+        **_management_chat_kwargs(
+            tmp_path=tmp_path,
+            manager_state=state_d,
+            cmd="cancel-pending",
+            sent=sent_cancel_b,
+        )
+    )
+
+    assert ok_cancel_a == ok_cancel_b == True
+    assert state_c == state_d
+    assert sent_cancel_a == sent_cancel_b
+
+
+def test_management_acl_module_matches_management_handler_identity_and_grant(tmp_path: Path) -> None:
+    state_a = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+    state_b = copy.deepcopy(state_a)
+
+    sent_a: list[tuple[str, dict | None]] = []
+    sent_b: list[tuple[str, dict | None]] = []
+    args_a = argparse.Namespace(
+        dry_run=True,
+        team_dir=tmp_path / ".aoe-team",
+        manager_state_file=tmp_path / ".aoe-team" / "orch_manager_state.json",
+        default_lang="ko",
+        default_report_level="normal",
+        allow_chat_ids=set(),
+        admin_chat_ids=set(),
+        readonly_chat_ids=set(),
+        deny_by_default=False,
+        owner_only=False,
+        owner_chat_id="939062873",
+        owner_bootstrap_mode="dispatch",
+    )
+    args_b = copy.deepcopy(args_a)
+
+    ok_a = mgmt_handlers.handle_management_command(
+        cmd="grant",
+        args=args_a,
+        manager_state=state_a,
+        chat_id="939062873",
+        chat_role="admin",
+        current_chat_alias="owner",
+        mode_setting=None,
+        lang_setting=None,
+        report_setting=None,
+        rest="admin 12345",
+        came_from_slash=True,
+        acl_grant_scope=None,
+        acl_grant_chat_id=None,
+        acl_revoke_scope=None,
+        acl_revoke_chat_id=None,
+        send=lambda body, **kwargs: sent_a.append((body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda *args, **kwargs: None,
+        help_text=lambda: "help",
+        get_default_mode=gw.get_default_mode,
+        get_pending_mode=gw.get_pending_mode,
+        get_chat_lang=gw.get_chat_lang,
+        get_chat_report_level=gw.get_chat_report_level,
+        get_chat_room=gw.get_chat_room,
+        set_default_mode=gw.set_default_mode,
+        set_pending_mode=gw.set_pending_mode,
+        set_chat_lang=gw.set_chat_lang,
+        set_chat_report_level=gw.set_chat_report_level,
+        set_chat_room=gw.set_chat_room,
+        clear_default_mode=gw.clear_default_mode,
+        clear_pending_mode=gw.clear_pending_mode,
+        clear_confirm_action=gw.clear_confirm_action,
+        clear_chat_report_level=gw.clear_chat_report_level,
+        save_manager_state=lambda *args, **kwargs: None,
+        resolve_chat_role=gw.resolve_chat_role,
+        is_owner_chat=gw.is_owner_chat,
+        ensure_chat_aliases=gw.ensure_chat_aliases,
+        find_chat_alias=lambda aliases, chat_ref: "",
+        alias_table_summary=lambda aliases: "",
+        resolve_chat_ref=lambda aliases, chat_ref: (str(chat_ref), ""),
+        ensure_chat_alias=lambda *args, **kwargs: "owner",
+        sync_acl_env_file=lambda args: None,
+    )
+    ok_b = mgmt_acl.handle_acl_management_command(
+        **_management_acl_kwargs(
+            tmp_path=tmp_path,
+            manager_state=state_b,
+            cmd="grant",
+            rest="admin 12345",
+            sent=sent_b,
+            args_override=args_b,
+        )
+    )
+
+    assert ok_a == ok_b == True
+    assert args_a.allow_chat_ids == args_b.allow_chat_ids
+    assert args_a.admin_chat_ids == args_b.admin_chat_ids
+    assert args_a.readonly_chat_ids == args_b.readonly_chat_ids
+    assert sent_a == sent_b
+
+    sent_who_a: list[tuple[str, dict | None]] = []
+    sent_who_b: list[tuple[str, dict | None]] = []
+    ok_who_a = mgmt_handlers.handle_management_command(
+        cmd="whoami",
+        args=args_a,
+        manager_state=state_a,
+        chat_id="939062873",
+        chat_role="admin",
+        current_chat_alias="owner",
+        mode_setting=None,
+        lang_setting=None,
+        report_setting=None,
+        rest="",
+        came_from_slash=True,
+        acl_grant_scope=None,
+        acl_grant_chat_id=None,
+        acl_revoke_scope=None,
+        acl_revoke_chat_id=None,
+        send=lambda body, **kwargs: sent_who_a.append((body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda *args, **kwargs: None,
+        help_text=lambda: "help",
+        get_default_mode=gw.get_default_mode,
+        get_pending_mode=gw.get_pending_mode,
+        get_chat_lang=gw.get_chat_lang,
+        get_chat_report_level=gw.get_chat_report_level,
+        get_chat_room=gw.get_chat_room,
+        set_default_mode=gw.set_default_mode,
+        set_pending_mode=gw.set_pending_mode,
+        set_chat_lang=gw.set_chat_lang,
+        set_chat_report_level=gw.set_chat_report_level,
+        set_chat_room=gw.set_chat_room,
+        clear_default_mode=gw.clear_default_mode,
+        clear_pending_mode=gw.clear_pending_mode,
+        clear_confirm_action=gw.clear_confirm_action,
+        clear_chat_report_level=gw.clear_chat_report_level,
+        save_manager_state=lambda *args, **kwargs: None,
+        resolve_chat_role=gw.resolve_chat_role,
+        is_owner_chat=gw.is_owner_chat,
+        ensure_chat_aliases=gw.ensure_chat_aliases,
+        find_chat_alias=lambda aliases, chat_ref: "",
+        alias_table_summary=lambda aliases: "",
+        resolve_chat_ref=lambda aliases, chat_ref: (str(chat_ref), ""),
+        ensure_chat_alias=lambda *args, **kwargs: "owner",
+        sync_acl_env_file=lambda args: None,
+    )
+    ok_who_b = mgmt_acl.handle_acl_management_command(
+        **_management_acl_kwargs(
+            tmp_path=tmp_path,
+            manager_state=state_b,
+            cmd="whoami",
+            rest="",
+            sent=sent_who_b,
+            args_override=args_b,
+        )
+    )
+    assert ok_who_a == ok_who_b == True
+    assert sent_who_a == sent_who_b
 def test_offdesk_flow_module_matches_management_prepare_report_and_markup(tmp_path: Path) -> None:
     project_root = tmp_path / "Proj3"
     team_dir = project_root / ".aoe-team"
