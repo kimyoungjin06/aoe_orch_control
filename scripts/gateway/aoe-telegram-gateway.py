@@ -77,6 +77,7 @@ from aoe_tg_gateway_events import (
 )
 import aoe_tg_gateway_state as gateway_state_mod
 import aoe_tg_gateway_aux as gateway_aux_mod
+import aoe_tg_gateway_batch_ops as gateway_batch_ops_mod
 import aoe_tg_cli as cli_mod
 import aoe_tg_room_runtime as room_runtime_mod
 import aoe_tg_orch_registry as orch_registry_mod
@@ -92,7 +93,6 @@ from aoe_tg_message_flow import (
     apply_retry_transition_to_resolved,
     enforce_command_auth,
 )
-from aoe_tg_queue_engine import drain_peek_next_todo as queue_drain_peek_next_todo
 from aoe_tg_runtime_core import (
     acquire_process_lock as runtime_acquire_process_lock,
     default_manager_state as runtime_default_manager_state,
@@ -106,15 +106,11 @@ from aoe_tg_runtime_core import (
 from aoe_tg_todo_state import merge_todo_proposals
 from aoe_tg_investigations_sync import sync_investigations_docs
 from aoe_tg_ops_policy import (
-    build_batch_finish_message,
-    format_ops_skip_detail,
-    new_ops_skip_counters,
-    project_queue_snapshot,
     visible_ops_project_keys,
 )
 from aoe_tg_package_paths import templates_root, worker_handler_script
 import aoe_tg_project_state as project_state_mod
-from aoe_tg_project_runtime import project_hidden_from_ops, project_runtime_issue, project_runtime_label
+from aoe_tg_project_runtime import project_runtime_label
 from aoe_tg_runtime_seed import repair_runtime
 from aoe_tg_run_handlers import (
     build_run_context,
@@ -2560,47 +2556,11 @@ def resolve_chat_role(chat_id: str, args: argparse.Namespace) -> str:
 
 
 def _parse_drain_args(rest: str) -> tuple[int, bool]:
-    """Parse /drain arguments.
-
-    Supported:
-    - /drain            -> default limit
-    - /drain 5          -> run up to 5 items
-    - /drain 20 force   -> ignore busy checks (same as /next force)
-    """
-    tokens = [t for t in str(rest or "").split() if t.strip()]
-    force = any(t.lower() in {"force", "!", "--force"} for t in tokens)
-    limit = 10
-    for t in tokens:
-        if t.isdigit():
-            limit = int(t)
-            break
-        low = t.lower()
-        if low in {"all", "*", "until-empty", "until_empty"}:
-            limit = 9999
-            break
-    # Keep bounded by default for safety.
-    limit = max(1, min(50, int(limit)))
-    return limit, force
+    return gateway_batch_ops_mod.parse_drain_args(rest)
 
 
 def _parse_fanout_args(rest: str) -> tuple[int, bool]:
-    """Parse /fanout arguments.
-
-    Supported:
-    - /fanout            -> run one todo per project (bounded)
-    - /fanout 5          -> run up to 5 projects
-    - /fanout force      -> ignore busy/pending checks (same semantics as /todo next force)
-    """
-    tokens = [t for t in str(rest or "").split() if t.strip()]
-    force = any(t.lower() in {"force", "!", "--force"} for t in tokens)
-    limit = 9999
-    for t in tokens:
-        if t.isdigit():
-            limit = int(t)
-            break
-    # Keep bounded by default for safety (projects can be many, and each run can be long).
-    limit = max(1, min(50, int(limit)))
-    return limit, force
+    return gateway_batch_ops_mod.parse_fanout_args(rest)
 
 
 def _drain_peek_next_todo(
@@ -2609,7 +2569,7 @@ def _drain_peek_next_todo(
     *,
     force: bool,
 ) -> tuple[str, str, str]:
-    return queue_drain_peek_next_todo(manager_state, chat_id, force=force)
+    return gateway_batch_ops_mod.drain_peek_next_todo(manager_state, chat_id, force=force)
 
 
 def handle_drain_command(
@@ -2622,87 +2582,16 @@ def handle_drain_command(
     send: Callable[..., bool],
     log_event: Callable[..., None],
 ) -> None:
-    limit, force = _parse_drain_args(rest)
-    force_token = " force" if force else ""
-    send(
-        "drain started\n"
-        f"- limit: {limit}\n"
-        f"- force: {'yes' if force else 'no'}\n"
-        "next:\n"
-        "- /queue (overview)\n"
-        "- /next (single step)\n"
-        "- /cancel (pending-mode only)\n",
-        context="drain-start",
-        with_menu=True,
+    return gateway_batch_ops_mod.handle_drain_command(
+        args=args,
+        token=token,
+        chat_id=chat_id,
+        rest=rest,
+        trace_id=trace_id,
+        send=send,
+        log_event=log_event,
+        deps=globals(),
     )
-    log_event(event="drain_start", status="running", stage="intake", detail=f"limit={limit} force={'yes' if force else 'no'}")
-
-    executed = 0
-    stop_reason = ""
-
-    for i in range(int(limit)):
-        # Avoid chaining when a confirm is pending.
-        manager_state = load_manager_state(args.manager_state_file, args.project_root, args.team_dir)
-        if get_confirm_action(manager_state, chat_id):
-            stop_reason = "confirm_pending"
-            break
-
-        if not args.dry_run:
-            project_key, todo_id, reason = _drain_peek_next_todo(manager_state, chat_id, force=force)
-            if not project_key or not todo_id:
-                stop_reason = reason
-                break
-        else:
-            # Dry-run cannot reliably observe todo state transitions; just run the loop.
-            project_key, todo_id, reason = "-", "-", "dry_run"
-
-        # Execute one scheduling step using the real /next handler.
-        handle_text_message(
-            args=args,
-            token=token,
-            chat_id=chat_id,
-            text=f"/next{force_token}",
-            trace_id=f"{trace_id}/drain-{i+1}",
-        )
-        executed += 1
-
-        if args.dry_run:
-            continue
-
-        manager_state = load_manager_state(args.manager_state_file, args.project_root, args.team_dir)
-        if get_confirm_action(manager_state, chat_id):
-            stop_reason = "confirm_pending"
-            break
-
-        projects = manager_state.get("projects") if isinstance(manager_state, dict) else {}
-        entry = projects.get(project_key) if isinstance(projects, dict) and isinstance(projects.get(project_key), dict) else {}
-        todos = entry.get("todos") if isinstance(entry, dict) else None
-        status = ""
-        if isinstance(todos, list):
-            for row in todos:
-                if not isinstance(row, dict):
-                    continue
-                if str(row.get("id", "")).strip() != str(todo_id).strip():
-                    continue
-                status = str(row.get("status", "")).strip().lower()
-                break
-        if status in {"blocked", "running", "open"}:
-            stop_reason = f"todo_{status or 'unknown'}"
-            break
-
-    if not stop_reason:
-        stop_reason = "limit_reached" if executed >= limit else "done"
-    send(
-        build_batch_finish_message(
-            title="drain finished",
-            executed=executed,
-            reason=stop_reason,
-            next_lines=["- /queue", "- /next"],
-        ),
-        context="drain-finish",
-        with_menu=True,
-    )
-    log_event(event="drain_finish", status="completed", stage="close", detail=f"executed={executed} reason={stop_reason}")
 
 
 def handle_fanout_command(
@@ -2715,151 +2604,15 @@ def handle_fanout_command(
     send: Callable[..., bool],
     log_event: Callable[..., None],
 ) -> None:
-    """Run a single "fanout" wave: at most one todo per project.
-
-    This is a fairness-oriented batch mode:
-    - For each registered orch project (O1..), attempt `/todo O# next`
-    - Skip projects with pending/running todo unless forced
-    - Blocked todos remain visible, but do not freeze other open todos in the same project
-    - Runs are sequential (safe) and use the regular run pipeline
-    """
-    limit, force = _parse_fanout_args(rest)
-    force_token = " force" if force else ""
-
-    manager_state = load_manager_state(args.manager_state_file, args.project_root, args.team_dir)
-    locked = project_lock_label(manager_state)
-    if locked:
-        send(
-            "fanout blocked by project lock\n"
-            f"- project_lock: {locked}\n"
-            "- reason: fanout is a global multi-project wave\n"
-            "next:\n"
-            "- /next\n"
-            "- /auto on next\n"
-            "- /offdesk on\n"
-            "- /focus off",
-            context="fanout-locked",
-            with_menu=True,
-        )
-        log_event(event="fanout_finish", status="rejected", stage="intake", detail=f"project_lock={locked}")
-        return
-
-    send(
-        "fanout started\n"
-        f"- max_projects: {limit}\n"
-        f"- force: {'yes' if force else 'no'}\n"
-        "rule: at most 1 todo per project\n"
-        "next:\n"
-        "- /queue (overview)\n"
-        "- /fanout (one wave)\n"
-        "- /auto on fanout (continuous)\n",
-        context="fanout-start",
-        with_menu=True,
-    )
-    log_event(event="fanout_start", status="running", stage="intake", detail=f"limit={limit} force={'yes' if force else 'no'}")
-
-    executed = 0
-    counters = new_ops_skip_counters()
-    stop_reason = ""
-
-    projects = manager_state.get("projects") if isinstance(manager_state, dict) else {}
-    if not isinstance(projects, dict) or not projects:
-        send("fanout: no orch projects registered. use /map and /orch add first.", context="fanout-empty", with_menu=True)
-        log_event(event="fanout_finish", status="completed", stage="close", detail="no_projects")
-        return
-
-    # Ensure aliases are available for stable ordering and /todo O# override.
-    alias_map = ensure_project_aliases(manager_state)
-    _ = alias_map  # keep visible for debugging, even if unused below.
-
-    def _proj_sort_key(k: str) -> tuple[int, str]:
-        entry = projects.get(k) if isinstance(projects.get(k), dict) else {}
-        alias = normalize_project_alias(str((entry or {}).get("project_alias", ""))) or "O?"
-        return (extract_project_alias_index(alias), str(k))
-
-    ordered_keys = sorted(
-        [str(k) for k, entry in projects.items() if isinstance(entry, dict) and not project_hidden_from_ops(entry)],
-        key=_proj_sort_key,
-    )
-
-    for idx, project_key in enumerate(ordered_keys[: int(limit)], start=1):
-        # Avoid chaining when a confirm is pending (operator gate).
-        manager_state = load_manager_state(args.manager_state_file, args.project_root, args.team_dir)
-        if get_confirm_action(manager_state, chat_id):
-            stop_reason = "confirm_pending"
-            break
-
-        projects = manager_state.get("projects") if isinstance(manager_state, dict) else {}
-        entry = projects.get(project_key) if isinstance(projects, dict) and isinstance(projects.get(project_key), dict) else {}
-
-        if project_hidden_from_ops(entry if isinstance(entry, dict) else {}):
-            continue
-        if (not force) and bool_from_json((entry or {}).get("paused"), False):
-            counters["paused"] += 1
-            continue
-        if project_runtime_issue(entry if isinstance(entry, dict) else {}):
-            counters["unready"] += 1
-            continue
-
-        alias = normalize_project_alias(str((entry or {}).get("project_alias", ""))) or project_alias_for_key(manager_state, project_key)
-        if not alias:
-            counters["missing_alias"] += 1
-            continue
-
-        pending = entry.get("pending_todo") if isinstance(entry, dict) else None
-        if (not force) and isinstance(pending, dict) and str(pending.get("todo_id", "")).strip():
-            counters["pending"] += 1
-            continue
-
-        snap = project_queue_snapshot(entry if isinstance(entry, dict) else {})
-        open_cnt = int(snap["open_count"])
-        busy_cnt = int(snap["running_count"])
-
-        if open_cnt <= 0:
-            counters["empty"] += 1
-            continue
-        if (not force) and busy_cnt > 0:
-            counters["busy"] += 1
-            continue
-
-        # Execute one per project using the real /todo handler (which dispatches into run pipeline).
-        handle_text_message(
-            args=args,
-            token=token,
-            chat_id=chat_id,
-            text=f"/todo {alias} next{force_token}",
-            trace_id=f"{trace_id}/fanout-{idx}",
-        )
-        executed += 1
-
-        # If fanout just created a confirm-pending gate, stop to avoid spamming.
-        if not args.dry_run:
-            manager_state = load_manager_state(args.manager_state_file, args.project_root, args.team_dir)
-            if get_confirm_action(manager_state, chat_id):
-                stop_reason = "confirm_pending"
-                break
-
-    if not stop_reason:
-        stop_reason = "done"
-
-    send(
-        build_batch_finish_message(
-            title="fanout finished",
-            executed=executed,
-            reason=stop_reason,
-            counters=counters,
-            next_lines=["- /queue", "- /fanout"],
-        ),
-        context="fanout-finish",
-        with_menu=True,
-    )
-    log_event(
-        event="fanout_finish",
-        status="completed",
-        stage="close",
-        detail=(
-            f"executed={executed} reason={stop_reason} {format_ops_skip_detail(counters)}"
-        ),
+    return gateway_batch_ops_mod.handle_fanout_command(
+        args=args,
+        token=token,
+        chat_id=chat_id,
+        rest=rest,
+        trace_id=trace_id,
+        send=send,
+        log_event=log_event,
+        deps=globals(),
     )
 
 
@@ -2872,63 +2625,14 @@ def handle_gc_command(
     send: Callable[..., bool],
     log_event: Callable[..., None],
 ) -> None:
-    tokens = [t for t in str(rest or "").split() if t.strip()]
-    sub = (tokens[0].lower() if tokens else "run").strip()
-    force = any(t.lower() in {"force", "!", "--force"} for t in tokens[1:]) or (sub in {"force"} and len(tokens) == 1)
-
-    retention_days = room_retention_days()
-    ttl_hours = tf_exec_cache_ttl_hours()
-    retention_policy = normalize_tf_exec_retention()
-
-    if sub in {"status", "show"}:
-        send(
-            "gc policy\n"
-            f"- room_retention_days: {retention_days} (0 disables)\n"
-            f"- tf_artifact_policy: {retention_policy}\n"
-            f"- tf_exec_cache_ttl_hours: {ttl_hours} (0 disables; ignored when policy=all)\n"
-            "run:\n"
-            "- /gc\n"
-            "- /gc force",
-            context="gc-status",
-            with_menu=True,
-        )
-        return
-
-    if bool(getattr(args, "dry_run", False)):
-        send(
-            "gc skipped (dry-run)\n"
-            f"- room_retention_days: {retention_days}\n"
-            f"- tf_artifact_policy: {retention_policy}\n"
-            f"- tf_exec_cache_ttl_hours: {ttl_hours}\n"
-            "run:\n"
-            "- /gc status",
-            context="gc-dry-run",
-            with_menu=True,
-        )
-        return
-
-    removed_rooms = cleanup_room_logs(args.team_dir, force=force)
-    removed_tf = cleanup_tf_exec_artifacts(args.manager_state_file, manager_state)
-    log_event(
-        event="gc",
-        stage="close",
-        status="completed",
-        detail=f"room_removed={removed_rooms} tf_removed={removed_tf} force={'yes' if force else 'no'}",
-    )
-    send(
-        "gc complete\n"
-        f"- room_removed: {removed_rooms}\n"
-        f"- tf_exec_removed: {removed_tf}\n"
-        f"- room_retention_days: {retention_days}\n"
-        f"- tf_artifact_policy: {retention_policy}\n"
-        f"- tf_exec_cache_ttl_hours: {ttl_hours}\n"
-        f"- force: {'yes' if force else 'no'}\n"
-        "next:\n"
-        "- /status\n"
-        "- /queue\n"
-        "- /room tail 20",
-        context="gc",
-        with_menu=True,
+    return gateway_batch_ops_mod.handle_gc_command(
+        args=args,
+        chat_id=chat_id,
+        rest=rest,
+        manager_state=manager_state,
+        send=send,
+        log_event=log_event,
+        deps=globals(),
     )
 
 

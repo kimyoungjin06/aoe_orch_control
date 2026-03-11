@@ -29,6 +29,7 @@ import aoe_tg_exec_pipeline as exec_pipeline
 import aoe_tg_exec_results as exec_results
 import aoe_tg_gateway_events as gateway_events
 import aoe_tg_gateway_aux as gateway_aux
+import aoe_tg_gateway_batch_ops as gateway_batch_ops
 import aoe_tg_gateway_state as gateway_state
 import aoe_tg_management_handlers as mgmt_handlers
 import aoe_tg_message_handler as message_handler
@@ -694,6 +695,13 @@ def test_room_runtime_module_matches_gateway_route_and_gc_helpers(tmp_path: Path
     )
     assert removed == 1
     assert not old_file.exists()
+
+
+def test_gateway_batch_ops_module_matches_gateway_parse_helpers() -> None:
+    assert gateway_batch_ops.parse_drain_args("5 force") == gw._parse_drain_args("5 force")
+    assert gateway_batch_ops.parse_drain_args("all") == gw._parse_drain_args("all")
+    assert gateway_batch_ops.parse_fanout_args("3 force") == gw._parse_fanout_args("3 force")
+    assert gateway_batch_ops.parse_fanout_args("") == gw._parse_fanout_args("")
 
 
 def test_room_runtime_module_builds_expected_autopublish_event() -> None:
@@ -2693,6 +2701,31 @@ def test_drain_peek_next_todo_ignores_blocked_rows_when_open_todo_exists(tmp_pat
     assert key == "local"
     assert todo_id == "TODO-002"
     assert reason == "candidate"
+
+
+def test_gateway_batch_ops_module_matches_gateway_drain_peek(tmp_path: Path) -> None:
+    state = _empty_state()
+    team = tmp_path / "Local" / ".aoe-team"
+    team.mkdir(parents=True, exist_ok=True)
+    (team / "orchestrator.json").write_text("{}", encoding="utf-8")
+
+    state["projects"]["local"] = {
+        "name": "local",
+        "display_name": "Local",
+        "project_alias": "O3",
+        "project_root": str(tmp_path / "Local"),
+        "team_dir": str(team),
+        "todos": [
+            {"id": "TODO-001", "summary": "blocked first", "priority": "P1", "status": "blocked"},
+            {"id": "TODO-002", "summary": "open second", "priority": "P2", "status": "open"},
+        ],
+    }
+
+    assert gateway_batch_ops.drain_peek_next_todo(state, "939062873", force=False) == gw._drain_peek_next_todo(
+        state,
+        "939062873",
+        force=False,
+    )
 
 
 def test_queue_engine_matches_gateway_and_scheduler_next_selection(tmp_path: Path) -> None:
