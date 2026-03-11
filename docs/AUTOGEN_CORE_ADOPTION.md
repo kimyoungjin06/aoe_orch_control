@@ -126,6 +126,10 @@ Important boundary:
 - `Mother-Orch` and `Project-Orch` remain outside AutoGen
 - only the `TF execution cell` becomes AutoGen-managed
 
+Pilot operating criteria:
+
+- `docs/AUTOGEN_CORE_PILOT.md`
+
 ## 7. Recommended Phase Plan
 
 ### Phase 0. No-runtime design spike

@@ -47,6 +47,7 @@ Primary docs:
 - Roadmap: `docs/ROADMAP.md`
 - Core decomposition plan: `docs/CORE_DECOMPOSITION_PLAN.md`
 - AutoGen Core adoption note: `docs/AUTOGEN_CORE_ADOPTION.md`
+- AutoGen Core sandbox pilot criteria: `docs/AUTOGEN_CORE_PILOT.md`
 
 ## Repository Layout
 - `scripts/gateway/`
