@@ -22,6 +22,7 @@ if str(GW_DIR) not in sys.path:
 
 import aoe_tg_command_resolver as resolver
 import aoe_tg_blocked_state as blocked_state
+import aoe_tg_exec_pipeline as exec_pipeline
 import aoe_tg_gateway_events as gateway_events
 import aoe_tg_management_handlers as mgmt_handlers
 import aoe_tg_ops_policy as ops_policy
@@ -3743,6 +3744,200 @@ def test_capture_todo_proposals_merges_and_alerts() -> None:
     assert "/todo proposals" in buttons
     assert "/todo accept PROP-001" in buttons
     assert any(evt.get("event") == "todo_proposals_created" for evt in logged)
+
+
+def test_exec_pipeline_module_matches_run_terminal_todo_helpers() -> None:
+    entry_a = {
+        "project_alias": "O4",
+        "todos": [
+            {
+                "id": "TODO-004",
+                "summary": "need owner input",
+                "priority": "P1",
+                "status": "blocked",
+                "blocked_count": 2,
+                "blocked_bucket": "manual_followup",
+                "blocked_reason": "critic unresolved after repair",
+            }
+        ],
+        "pending_todo": {
+            "todo_id": "TODO-004",
+            "chat_id": "939062873",
+            "selected_at": "2026-03-06T23:43:25+0900",
+        },
+    }
+    entry_b = copy.deepcopy(entry_a)
+    sent_a: list[tuple[str, str, dict | None]] = []
+    sent_b: list[tuple[str, str, dict | None]] = []
+
+    changed_a = run_handlers._cleanup_terminal_todo_gate(
+        entry=entry_a,
+        chat_id="939062873",
+        todo_id="",
+        pending_todo_used=False,
+        run_auto_source="todo:next",
+        reason="plan gate: critic unresolved after auto-replan",
+        now_iso=lambda: "2026-03-07T00:00:00+0900",
+    )
+    changed_b = exec_pipeline.cleanup_terminal_todo_gate(
+        entry=entry_b,
+        chat_id="939062873",
+        todo_id="",
+        pending_todo_used=False,
+        run_auto_source="todo:next",
+        reason="plan gate: critic unresolved after auto-replan",
+        now_iso=lambda: "2026-03-07T00:00:00+0900",
+        manual_followup_threshold=2,
+    )
+
+    assert changed_a == changed_b
+    assert entry_a == entry_b
+
+    first_a = run_handlers._maybe_send_manual_followup_alert(
+        entry=entry_a,
+        todo_id="TODO-004",
+        project_key="local_map_analysis",
+        send=lambda body, **kwargs: sent_a.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+        now_iso=lambda: "2026-03-07T00:30:00+0900",
+    )
+    first_b = exec_pipeline.maybe_send_manual_followup_alert(
+        entry=entry_b,
+        todo_id="TODO-004",
+        project_key="local_map_analysis",
+        send=lambda body, **kwargs: sent_b.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+        now_iso=lambda: "2026-03-07T00:30:00+0900",
+    )
+
+    assert first_a == first_b == True
+    assert sent_a == sent_b
+    assert entry_a == entry_b
+
+
+def test_exec_pipeline_module_matches_run_dispatch_sync_and_proposal_capture() -> None:
+    entry_a = {"project_alias": "O2", "last_request_id": ""}
+    entry_b = copy.deepcopy(entry_a)
+    manager_state_a = {"projects": {"twinpaper": entry_a}}
+    manager_state_b = {"projects": {"twinpaper": entry_b}}
+    touches_a: list[tuple] = []
+    touches_b: list[tuple] = []
+    selects_a: list[tuple] = []
+    selects_b: list[tuple] = []
+
+    def _run_aoe_orch(*_args, **_kwargs):
+        return {"request_id": "REQ-123", "complete": False, "replies": []}
+
+    def _sync_task_lifecycle(**kwargs):
+        return {
+            "request_id": kwargs["request_data"]["request_id"],
+            "status": "running",
+            "stages": {"verification": "pending"},
+        }
+
+    result_a = run_handlers._dispatch_and_sync_task(
+        p_args=argparse.Namespace(),
+        dispatch_prompt="dispatch prompt",
+        chat_id="939062873",
+        dispatch_roles="Reviewer",
+        run_priority_override=None,
+        run_timeout_override=None,
+        run_no_wait_override=None,
+        key="twinpaper",
+        entry=entry_a,
+        manager_state=manager_state_a,
+        prompt="original prompt",
+        selected_roles=["Reviewer"],
+        verifier_roles=[],
+        require_verifier=False,
+        verifier_candidates=[],
+        run_aoe_orch=_run_aoe_orch,
+        touch_chat_recent_task_ref=lambda *args: touches_a.append(args),
+        set_chat_selected_task_ref=lambda *args: selects_a.append(args),
+        now_iso=lambda: "2026-03-11T10:00:00+09:00",
+        sync_task_lifecycle=_sync_task_lifecycle,
+    )
+    result_b = exec_pipeline.dispatch_and_sync_task(
+        p_args=argparse.Namespace(),
+        dispatch_prompt="dispatch prompt",
+        chat_id="939062873",
+        dispatch_roles="Reviewer",
+        run_priority_override=None,
+        run_timeout_override=None,
+        run_no_wait_override=None,
+        key="twinpaper",
+        entry=entry_b,
+        manager_state=manager_state_b,
+        prompt="original prompt",
+        selected_roles=["Reviewer"],
+        verifier_roles=[],
+        require_verifier=False,
+        verifier_candidates=[],
+        run_aoe_orch=_run_aoe_orch,
+        touch_chat_recent_task_ref=lambda *args: touches_b.append(args),
+        set_chat_selected_task_ref=lambda *args: selects_b.append(args),
+        now_iso=lambda: "2026-03-11T10:00:00+09:00",
+        sync_task_lifecycle=_sync_task_lifecycle,
+    )
+
+    assert result_a == result_b
+    assert entry_a == entry_b
+    assert touches_a == touches_b
+    assert selects_a == selects_b
+
+    proposal_entry_a = {
+        "project_alias": "O2",
+        "todos": [{"id": "TODO-010", "summary": "existing task", "priority": "P2", "status": "done"}],
+        "todo_seq": 10,
+        "todo_proposals": [],
+        "todo_proposal_seq": 0,
+    }
+    proposal_entry_b = copy.deepcopy(proposal_entry_a)
+    sent_a: list[tuple[str, str, dict | None]] = []
+    sent_b: list[tuple[str, str, dict | None]] = []
+    logged_a: list[dict] = []
+    logged_b: list[dict] = []
+
+    common_kwargs = dict(
+        args=argparse.Namespace(dry_run=False),
+        key="twinpaper",
+        p_args=argparse.Namespace(),
+        prompt="run release prep",
+        state={
+            "complete": True,
+            "replies": [{"role": "Local-Writer", "body": "Release note draft is done. We still need a deployment checklist."}],
+        },
+        req_id="REQ-900",
+        task={"todo_id": "TODO-010", "short_id": "T-900"},
+        todo_id="TODO-010",
+        now_iso=lambda: "2026-03-09T10:00:00+0900",
+        extract_todo_proposals=lambda *args, **kwargs: [
+            {
+                "summary": "prepare deployment checklist",
+                "priority": "P1",
+                "kind": "handoff",
+                "reason": "release note mentions it is still missing",
+                "confidence": 0.88,
+            }
+        ],
+        merge_todo_proposals=todo_handlers.merge_todo_proposals,
+    )
+
+    proposals_a = run_handlers._maybe_capture_todo_proposals(
+        entry=proposal_entry_a,
+        send=lambda body, **kwargs: sent_a.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda **kwargs: logged_a.append(kwargs),
+        **common_kwargs,
+    )
+    proposals_b = exec_pipeline.maybe_capture_todo_proposals(
+        entry=proposal_entry_b,
+        send=lambda body, **kwargs: sent_b.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda **kwargs: logged_b.append(kwargs),
+        **common_kwargs,
+    )
+
+    assert proposals_a == proposals_b
+    assert proposal_entry_a == proposal_entry_b
+    assert sent_a == sent_b
+    assert logged_a == logged_b
 
 
 def test_apply_scenario_items_to_entry_prunes_stale_sync_open_todos() -> None:
