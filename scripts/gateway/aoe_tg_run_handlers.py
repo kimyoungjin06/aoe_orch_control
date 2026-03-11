@@ -2,7 +2,6 @@
 """Run and confirmation handler helpers for Telegram gateway."""
 
 import os
-from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
@@ -27,6 +26,17 @@ from aoe_tg_exec_results import (
     send_dispatch_exception as exec_send_dispatch_exception,
     send_dispatch_result as exec_send_dispatch_result,
     send_exec_critic_intervention as exec_send_exec_critic_intervention,
+)
+from aoe_tg_run_guards import (
+    DispatchPolicyResult,
+    EffectiveRunOptions,
+    build_dry_run_preview as guard_build_dry_run_preview,
+    confirm_required_reply_markup as guard_confirm_required_reply_markup,
+    enforce_dispatch_policies as guard_enforce_dispatch_policies,
+    handle_run_rate_limit_and_confirm as guard_handle_run_rate_limit_and_confirm,
+    rate_limit_reply_markup as guard_rate_limit_reply_markup,
+    resolve_confirm_run_transition as guard_resolve_confirm_run_transition,
+    resolve_effective_run_options as guard_resolve_effective_run_options,
 )
 from aoe_tg_plan_pipeline import (
     DispatchModeResult,
@@ -109,38 +119,11 @@ def _suggest_commands(raw_cmd: str, limit: int = 5) -> List[str]:
 
 
 def _confirm_required_reply_markup() -> Dict[str, Any]:
-    return {
-        "keyboard": [
-            [{"text": "/ok"}, {"text": "/cancel"}, {"text": "/clear pending"}],
-            [{"text": "/monitor"}, {"text": "/status"}, {"text": "/help"}],
-        ],
-        "resize_keyboard": True,
-        "one_time_keyboard": False,
-        "input_field_placeholder": "예: /ok 또는 /cancel",
-    }
+    return guard_confirm_required_reply_markup()
 
 
 def _rate_limit_reply_markup(entry: Optional[Dict[str, Any]] = None, key: str = "") -> Dict[str, Any]:
-    if isinstance(entry, dict):
-        alias = _project_alias(entry, key)
-        return {
-            "keyboard": [
-                [{"text": "/monitor"}, {"text": "/check"}, {"text": f"/orch status {alias}"}],
-                [{"text": f"/todo {alias}"}, {"text": "/queue"}, {"text": "/map"}],
-            ],
-            "resize_keyboard": True,
-            "one_time_keyboard": False,
-            "input_field_placeholder": f"예: /monitor 또는 /orch status {alias}",
-        }
-    return {
-        "keyboard": [
-            [{"text": "/monitor"}, {"text": "/check"}, {"text": "/queue"}],
-            [{"text": "/map"}, {"text": "/help"}],
-        ],
-        "resize_keyboard": True,
-        "one_time_keyboard": False,
-        "input_field_placeholder": "예: /monitor 또는 /queue",
-    }
+    return guard_rate_limit_reply_markup(entry, key)
 
 
 def _confirmed_result_reply_markup(entry: Dict[str, Any], key: str) -> Dict[str, Any]:
@@ -193,23 +176,6 @@ def _send_dispatch_exception(
         reason=reason,
         send=send,
     )
-
-
-@dataclass
-class DispatchPolicyResult:
-    terminal: bool
-    dispatch_roles: str = ""
-    selected_roles: List[str] = field(default_factory=list)
-    verifier_roles: List[str] = field(default_factory=list)
-    verifier_added: bool = False
-    terminal_reason: str = ""
-
-
-@dataclass
-class EffectiveRunOptions:
-    priority: str
-    timeout: int
-    no_wait: bool
 
 
 @dataclass
@@ -484,86 +450,24 @@ def _handle_run_rate_limit_and_confirm(
     send: Callable[..., bool],
     log_event: Callable[..., None],
 ) -> bool:
-    if cmd not in {"run", "orch-run"}:
-        return False
-
-    max_running = max(0, int(args.chat_max_running))
-    daily_cap = max(0, int(args.chat_daily_cap))
-    running_count, submitted_today = summarize_chat_usage(manager_state, chat_id)
-
-    if max_running > 0 and running_count >= max_running:
-        send(
-            "rate limit: 동시 실행 한도를 초과했습니다.\n"
-            f"- running_now: {running_count}\n"
-            f"- max_running: {max_running}\n"
-            "next: /monitor 또는 /check 로 기존 작업을 확인하세요.",
-            context="rate-limit-running",
-            with_menu=True,
-            reply_markup=_rate_limit_reply_markup(entry, key),
-        )
-        log_event(
-            event="rate_limited",
-            stage="intake",
-            status="rejected",
-            error_code="E_GATE",
-            detail=f"type=running running_now={running_count} max={max_running}",
-        )
-        return True
-
-    if daily_cap > 0 and submitted_today >= daily_cap:
-        send(
-            "rate limit: 일일 실행 한도에 도달했습니다.\n"
-            f"- submitted_today: {submitted_today}\n"
-            f"- daily_cap: {daily_cap}\n"
-            "next: 내일 다시 시도하거나 cap 설정을 조정하세요.",
-            context="rate-limit-daily",
-            with_menu=True,
-            reply_markup=_rate_limit_reply_markup(entry, key),
-        )
-        log_event(
-            event="rate_limited",
-            stage="intake",
-            status="rejected",
-            error_code="E_GATE",
-            detail=f"type=daily submitted_today={submitted_today} cap={daily_cap}",
-        )
-        return True
-
-    if run_auto_source != "default":
-        return False
-
-    risk = detect_high_risk_prompt(prompt)
-    if not risk:
-        return False
-
-    set_confirm_action(
-        manager_state,
+    return guard_handle_run_rate_limit_and_confirm(
+        cmd=cmd,
+        args=args,
+        manager_state=manager_state,
         chat_id=chat_id,
-        mode=(run_force_mode or "dispatch"),
+        key=key,
+        entry=entry,
+        run_auto_source=run_auto_source,
+        run_force_mode=run_force_mode,
+        orch_target=orch_target,
         prompt=prompt,
-        risk=risk,
-        orch=str(orch_target or ""),
+        summarize_chat_usage=summarize_chat_usage,
+        detect_high_risk_prompt=detect_high_risk_prompt,
+        set_confirm_action=set_confirm_action,
+        save_manager_state=save_manager_state,
+        send=send,
+        log_event=log_event,
     )
-    if not args.dry_run:
-        save_manager_state(args.manager_state_file, manager_state)
-    send(
-        "고위험 자동실행 감지: 확인이 필요합니다.\n"
-        f"- risk: {risk}\n"
-        f"- mode: {run_force_mode or 'dispatch'}\n"
-        f"- preview: {prompt[:160]}\n"
-        "실행: /ok\n"
-        "취소: /cancel",
-        context="confirm-required",
-        with_menu=True,
-        reply_markup=_confirm_required_reply_markup(),
-    )
-    log_event(
-        event="confirm_required",
-        stage="intake",
-        status="pending",
-        detail=f"risk={risk} mode={run_force_mode or 'dispatch'} auto_source={run_auto_source}",
-    )
-    return True
 
 
 def _task_label_for_todo(task: Optional[Dict[str, Any]], fallback_request_id: str) -> str:
@@ -936,61 +840,20 @@ def _enforce_dispatch_policies(
     dispatch_roles: str,
     send: Callable[..., bool],
 ) -> DispatchPolicyResult:
-    verifier_roles: List[str] = []
-    verifier_added = False
-
-    if not dispatch_mode:
-        return DispatchPolicyResult(
-            terminal=False,
-            dispatch_roles=dispatch_roles,
-            selected_roles=selected_roles,
-            verifier_roles=verifier_roles,
-            verifier_added=verifier_added,
-        )
-
-    selected_roles, verifier_roles, verifier_added, _available_verifier_roles = ensure_verifier_roles(
+    return guard_enforce_dispatch_policies(
+        dispatch_mode=dispatch_mode,
+        args=args,
+        key=key,
+        entry=entry,
         selected_roles=selected_roles,
         available_roles=available_roles,
         verifier_candidates=verifier_candidates,
-    )
-    dispatch_roles = ",".join(selected_roles)
-
-    if bool(args.require_verifier) and not verifier_roles:
-        send(
-            "error: verifier gate enabled but no verifier role is available.\n"
-            f"required_candidates={', '.join(verifier_candidates) or '-'}\n"
-            f"project_roles={', '.join(available_roles) or '-'}\n"
-            "hint: add a verifier role (e.g. Reviewer) or disable gate with --no-require-verifier",
-            context="verifier-gate setup",
-            with_menu=True,
-            reply_markup=_early_gate_reply_markup(entry, key),
-        )
-        return DispatchPolicyResult(
-            terminal=True,
-            terminal_reason="verifier gate: no verifier role is available",
-        )
-
-    if plan_gate_blocked:
-        send(
-            "plan gate blocked: critic issues remain after auto-replan.\n"
-            f"reason: {plan_gate_reason or 'unresolved issues'}\n"
-            "hint: 요청을 더 구체화하거나 역할/범위를 줄여 다시 실행하세요.\n"
-            f"replan_attempts: {len(plan_replans)}",
-            context="planning-gate",
-            with_menu=True,
-            reply_markup=_early_gate_reply_markup(entry, key),
-        )
-        return DispatchPolicyResult(
-            terminal=True,
-            terminal_reason=f"plan gate: {plan_gate_reason or 'unresolved issues'}",
-        )
-
-    return DispatchPolicyResult(
-        terminal=False,
+        plan_gate_blocked=plan_gate_blocked,
+        plan_gate_reason=plan_gate_reason,
+        plan_replans=plan_replans,
+        ensure_verifier_roles=ensure_verifier_roles,
         dispatch_roles=dispatch_roles,
-        selected_roles=selected_roles,
-        verifier_roles=verifier_roles,
-        verifier_added=verifier_added,
+        send=send,
     )
 
 
@@ -1001,10 +864,11 @@ def _resolve_effective_run_options(
     run_timeout_override: Optional[int],
     run_no_wait_override: Optional[bool],
 ) -> EffectiveRunOptions:
-    return EffectiveRunOptions(
-        priority=str(run_priority_override if run_priority_override is not None else p_args.priority),
-        timeout=int(run_timeout_override if run_timeout_override is not None else p_args.orch_timeout_sec),
-        no_wait=bool(run_no_wait_override if run_no_wait_override is not None else p_args.no_wait),
+    return guard_resolve_effective_run_options(
+        p_args=p_args,
+        run_priority_override=run_priority_override,
+        run_timeout_override=run_timeout_override,
+        run_no_wait_override=run_no_wait_override,
     )
 
 
@@ -1029,44 +893,25 @@ def _build_dry_run_preview(
     effective_timeout: int,
     effective_no_wait: bool,
 ) -> str:
-    plan_subtasks = len(plan_data.get("subtasks") or []) if isinstance(plan_data, dict) else 0
-    return (
-        "[DRY-RUN] orch={orch} mode: {mode}\n"
-        "- prompt: {prompt}\n"
-        "- roles: {roles}\n"
-        "- verifier_required: {ver_req}\n"
-        "- verifier_roles: {ver_roles}\n"
-        "- verifier_auto_added: {ver_added}\n"
-        "- control_mode: {control_mode}\n"
-        "- source_request_id: {source_request_id}\n"
-        "- task_planning: {plan_enabled}\n"
-        "- plan_reused: {plan_reused}\n"
-        "- plan_subtasks: {plan_subtasks}\n"
-        "- plan_replans: {plan_replans}\n"
-        "- plan_gate_blocked: {plan_gate}\n"
-        "- plan_error: {plan_error}\n"
-        "- priority: {priority}\n"
-        "- timeout: {timeout}s\n"
-        "- no_wait: {no_wait}"
-    ).format(
-        orch=key,
-        mode="dispatch" if dispatch_mode else "direct",
+    return guard_build_dry_run_preview(
+        key=key,
+        dispatch_mode=dispatch_mode,
         prompt=prompt,
-        roles=dispatch_roles if dispatch_roles else "-",
-        ver_req="yes" if bool(require_verifier) else "no",
-        ver_roles=", ".join(verifier_roles) if verifier_roles else "-",
-        ver_added="yes" if verifier_added else "no",
-        control_mode=run_control_mode or "normal",
-        source_request_id=(run_source_request_id or "-"),
-        plan_enabled="yes" if planning_enabled else "no",
-        plan_reused="yes" if (reuse_source_plan and isinstance(plan_data, dict)) else "no",
-        plan_subtasks=plan_subtasks,
-        plan_replans=len(plan_replans),
-        plan_gate="yes" if plan_gate_blocked else "no",
-        plan_error=(plan_error or "-"),
-        priority=effective_priority,
-        timeout=effective_timeout,
-        no_wait="yes" if effective_no_wait else "no",
+        dispatch_roles=dispatch_roles,
+        require_verifier=require_verifier,
+        verifier_roles=verifier_roles,
+        verifier_added=verifier_added,
+        run_control_mode=run_control_mode,
+        run_source_request_id=run_source_request_id,
+        planning_enabled=planning_enabled,
+        reuse_source_plan=reuse_source_plan,
+        plan_data=plan_data,
+        plan_replans=plan_replans,
+        plan_gate_blocked=plan_gate_blocked,
+        plan_error=plan_error,
+        effective_priority=effective_priority,
+        effective_timeout=effective_timeout,
+        effective_no_wait=effective_no_wait,
     )
 
 
@@ -1083,52 +928,18 @@ def resolve_confirm_run_transition(
     clear_confirm_action: Callable[[Dict[str, Any], str], bool],
     save_manager_state: Callable[..., None],
 ) -> Optional[Dict[str, Any]]:
-    if cmd != "confirm-run":
-        return None
-
-    confirm = get_confirm_action(manager_state, chat_id)
-    if not confirm:
-        send(
-            "확인 대기 중인 실행이 없습니다.\n"
-            "고위험 평문 자동실행이 감지되면 /ok 로 승인할 수 있습니다.",
-            context="confirm-empty",
-            with_menu=True,
-        )
-        return {"terminal": True}
-
-    requested_at = str(confirm.get("requested_at", "")).strip()
-    ttl_sec = max(30, int(args.confirm_ttl_sec))
-    created_ts = parse_iso_ts(requested_at)
-    expired = False
-    if created_ts is not None:
-        expired = (datetime.now(timezone.utc) - created_ts.astimezone(timezone.utc)).total_seconds() > ttl_sec
-    if expired:
-        _ = clear_confirm_action(manager_state, chat_id)
-        if not args.dry_run:
-            save_manager_state(args.manager_state_file, manager_state)
-        send(
-            "확인 요청이 만료되었습니다.\n"
-            "다시 평문으로 요청하거나 /dispatch 로 재실행하세요.",
-            context="confirm-expired",
-            with_menu=True,
-        )
-        return {"terminal": True}
-
-    run_prompt = str(confirm.get("prompt", "")).strip()
-    run_force_mode = str(confirm.get("mode", "")).strip().lower() or "dispatch"
-    next_orch_target = str(confirm.get("orch", "")).strip() or orch_target
-    _ = clear_confirm_action(manager_state, chat_id)
-    if not args.dry_run:
-        save_manager_state(args.manager_state_file, manager_state)
-
-    return {
-        "terminal": False,
-        "cmd": "run",
-        "run_prompt": run_prompt,
-        "run_force_mode": run_force_mode,
-        "orch_target": next_orch_target,
-        "run_auto_source": "confirmed",
-    }
+    return guard_resolve_confirm_run_transition(
+        cmd=cmd,
+        args=args,
+        manager_state=manager_state,
+        chat_id=chat_id,
+        orch_target=orch_target,
+        send=send,
+        get_confirm_action=get_confirm_action,
+        parse_iso_ts=parse_iso_ts,
+        clear_confirm_action=clear_confirm_action,
+        save_manager_state=save_manager_state,
+    )
 
 
 def handle_run_or_unknown_command(

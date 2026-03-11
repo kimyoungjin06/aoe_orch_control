@@ -31,6 +31,7 @@ import aoe_tg_ops_view as ops_view
 import aoe_tg_orch_overview_handlers as overview
 import aoe_tg_orch_task_handlers as orch_task_handlers
 import aoe_tg_parse as tg_parse
+import aoe_tg_run_guards as run_guards
 import aoe_tg_plan_pipeline as plan_pipeline
 import aoe_tg_project_runtime as runtime_helpers
 import aoe_tg_runtime_core as runtime_core
@@ -3169,6 +3170,180 @@ def test_enforce_dispatch_policies_planning_gate_adds_project_quick_actions() ->
     assert "/sync preview O2 1h" in buttons
     assert "/queue" in buttons
     assert "/map" in buttons
+
+
+def test_run_guards_module_matches_run_guard_exports() -> None:
+    assert run_handlers._confirm_required_reply_markup() == run_guards.confirm_required_reply_markup()
+    assert run_handlers._rate_limit_reply_markup({"project_alias": "O2"}, "twinpaper") == run_guards.rate_limit_reply_markup({"project_alias": "O2"}, "twinpaper")
+    assert run_handlers._rate_limit_reply_markup(None, "") == run_guards.rate_limit_reply_markup(None, "")
+
+    guard_run = run_handlers._resolve_effective_run_options(
+        p_args=argparse.Namespace(priority="P2", orch_timeout_sec=120, no_wait=False),
+        run_priority_override="P1",
+        run_timeout_override=30,
+        run_no_wait_override=True,
+    )
+    guard_mod = run_guards.resolve_effective_run_options(
+        p_args=argparse.Namespace(priority="P2", orch_timeout_sec=120, no_wait=False),
+        run_priority_override="P1",
+        run_timeout_override=30,
+        run_no_wait_override=True,
+    )
+    assert guard_run == guard_mod
+
+    preview_run = run_handlers._build_dry_run_preview(
+        key="twinpaper",
+        dispatch_mode=True,
+        prompt="implement feature",
+        dispatch_roles="Reviewer",
+        require_verifier=True,
+        verifier_roles=["Reviewer"],
+        verifier_added=False,
+        run_control_mode="retry",
+        run_source_request_id="REQ-1",
+        planning_enabled=True,
+        reuse_source_plan=False,
+        plan_data={"subtasks": [{"id": "S1"}]},
+        plan_replans=[{"attempt": 1}],
+        plan_gate_blocked=False,
+        plan_error="",
+        effective_priority="P1",
+        effective_timeout=60,
+        effective_no_wait=False,
+    )
+    preview_mod = run_guards.build_dry_run_preview(
+        key="twinpaper",
+        dispatch_mode=True,
+        prompt="implement feature",
+        dispatch_roles="Reviewer",
+        require_verifier=True,
+        verifier_roles=["Reviewer"],
+        verifier_added=False,
+        run_control_mode="retry",
+        run_source_request_id="REQ-1",
+        planning_enabled=True,
+        reuse_source_plan=False,
+        plan_data={"subtasks": [{"id": "S1"}]},
+        plan_replans=[{"attempt": 1}],
+        plan_gate_blocked=False,
+        plan_error="",
+        effective_priority="P1",
+        effective_timeout=60,
+        effective_no_wait=False,
+    )
+    assert preview_run == preview_mod
+
+    sent_run: list[tuple[str, str, dict | None]] = []
+    sent_mod: list[tuple[str, str, dict | None]] = []
+    logged_run: list[dict] = []
+    logged_mod: list[dict] = []
+    common = dict(
+        cmd="run",
+        args=argparse.Namespace(
+            dry_run=False,
+            manager_state_file=ROOT / ".aoe-team" / "orch_manager_state.json",
+            chat_max_running=1,
+            chat_daily_cap=20,
+        ),
+        manager_state=_empty_state(),
+        chat_id="939062873",
+        key="twinpaper",
+        entry={"project_alias": "O2"},
+        run_auto_source="default",
+        run_force_mode="dispatch",
+        orch_target="O2",
+        prompt="implement feature",
+        summarize_chat_usage=lambda manager_state, chat_id: (1, 0),
+        detect_high_risk_prompt=lambda prompt: "",
+        set_confirm_action=lambda *args, **kwargs: None,
+        save_manager_state=lambda path, manager_state: None,
+    )
+    handled_run = run_handlers._handle_run_rate_limit_and_confirm(
+        send=lambda body, **kwargs: sent_run.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda **kwargs: logged_run.append(kwargs),
+        **common,
+    )
+    handled_mod = run_guards.handle_run_rate_limit_and_confirm(
+        send=lambda body, **kwargs: sent_mod.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda **kwargs: logged_mod.append(kwargs),
+        **common,
+    )
+    assert handled_run == handled_mod == True
+    assert sent_run == sent_mod
+    assert logged_run == logged_mod
+
+    policy_sent_run: list[tuple[str, str, dict | None]] = []
+    policy_sent_mod: list[tuple[str, str, dict | None]] = []
+    policy_run = run_handlers._enforce_dispatch_policies(
+        dispatch_mode=True,
+        args=argparse.Namespace(require_verifier=False),
+        key="twinpaper",
+        entry={"project_alias": "O2"},
+        selected_roles=["Local-Dev"],
+        available_roles=["Local-Dev", "Reviewer"],
+        verifier_candidates=["Reviewer"],
+        plan_gate_blocked=True,
+        plan_gate_reason="critic unresolved after auto-replan",
+        plan_replans=[{"attempt": 1}],
+        ensure_verifier_roles=lambda **kwargs: (["Local-Dev"], ["Reviewer"], False, ["Reviewer"]),
+        dispatch_roles="Local-Dev",
+        send=lambda body, **kwargs: policy_sent_run.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+    )
+    policy_mod = run_guards.enforce_dispatch_policies(
+        dispatch_mode=True,
+        args=argparse.Namespace(require_verifier=False),
+        key="twinpaper",
+        entry={"project_alias": "O2"},
+        selected_roles=["Local-Dev"],
+        available_roles=["Local-Dev", "Reviewer"],
+        verifier_candidates=["Reviewer"],
+        plan_gate_blocked=True,
+        plan_gate_reason="critic unresolved after auto-replan",
+        plan_replans=[{"attempt": 1}],
+        ensure_verifier_roles=lambda **kwargs: (["Local-Dev"], ["Reviewer"], False, ["Reviewer"]),
+        dispatch_roles="Local-Dev",
+        send=lambda body, **kwargs: policy_sent_mod.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+    )
+    assert policy_run == policy_mod
+    assert policy_sent_run == policy_sent_mod
+
+    confirm_state_a = _empty_state()
+    confirm_state_b = copy.deepcopy(confirm_state_a)
+    gw.set_confirm_action(confirm_state_a, chat_id="939062873", mode="dispatch", prompt="rm -rf /tmp/demo", risk="destructive_delete")
+    gw.set_confirm_action(confirm_state_b, chat_id="939062873", mode="dispatch", prompt="rm -rf /tmp/demo", risk="destructive_delete")
+    saved_a: list[Path] = []
+    saved_b: list[Path] = []
+    confirm_sent_a: list[tuple[str, dict]] = []
+    confirm_sent_b: list[tuple[str, dict]] = []
+
+    result_a = run_handlers.resolve_confirm_run_transition(
+        cmd="confirm-run",
+        args=argparse.Namespace(dry_run=False, manager_state_file=ROOT / ".aoe-team" / "orch_manager_state.json", confirm_ttl_sec=300),
+        manager_state=confirm_state_a,
+        chat_id="939062873",
+        orch_target="O2",
+        send=lambda body, **kwargs: confirm_sent_a.append((body, kwargs)) or True,
+        get_confirm_action=gw.get_confirm_action,
+        parse_iso_ts=gw.parse_iso_ts,
+        clear_confirm_action=gw.clear_confirm_action,
+        save_manager_state=lambda path, manager_state: saved_a.append(path),
+    )
+    result_b = run_guards.resolve_confirm_run_transition(
+        cmd="confirm-run",
+        args=argparse.Namespace(dry_run=False, manager_state_file=ROOT / ".aoe-team" / "orch_manager_state.json", confirm_ttl_sec=300),
+        manager_state=confirm_state_b,
+        chat_id="939062873",
+        orch_target="O2",
+        send=lambda body, **kwargs: confirm_sent_b.append((body, kwargs)) or True,
+        get_confirm_action=gw.get_confirm_action,
+        parse_iso_ts=gw.parse_iso_ts,
+        clear_confirm_action=gw.clear_confirm_action,
+        save_manager_state=lambda path, manager_state: saved_b.append(path),
+    )
+    assert result_a == result_b
+    assert confirm_state_a == confirm_state_b
+    assert confirm_sent_a == confirm_sent_b
+    assert saved_a == saved_b
 
 
 def test_send_dispatch_result_adds_project_quick_actions_for_confirmed_result() -> None:
