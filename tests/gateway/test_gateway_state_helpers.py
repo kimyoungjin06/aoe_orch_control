@@ -2617,6 +2617,112 @@ def test_append_gateway_event_targets_mirrors_to_root_log(tmp_path: Path) -> Non
     assert root_rows[-1]["project_team_dir"] == str(project_team_dir.resolve())
 
 
+def test_mirror_tf_backend_runtime_events_writes_project_and_root_rows(tmp_path: Path) -> None:
+    project_team_dir = tmp_path / "project" / ".aoe-team"
+    root_team_dir = tmp_path / "mother" / ".aoe-team"
+    runtime_events = [
+        {
+            "seq": 1,
+            "ts": "2026-03-11T18:00:00+0900",
+            "backend": "autogen_core",
+            "source": "tf_orchestrator",
+            "stage": "request.accepted",
+            "kind": "lifecycle",
+            "status": "info",
+            "summary": "accepted TF request",
+            "payload": {"project_key": "O3"},
+        },
+        {
+            "seq": 2,
+            "ts": "2026-03-11T18:00:01+0900",
+            "backend": "autogen_core",
+            "source": "reviewer",
+            "stage": "verdict.emitted",
+            "kind": "verdict",
+            "status": "success",
+            "summary": "review verdict emitted",
+            "payload": {"verdict": "success"},
+        },
+    ]
+
+    mirrored = gw.mirror_tf_backend_runtime_events(
+        team_dir=project_team_dir,
+        backend="autogen_core",
+        runtime_events=runtime_events,
+        trace_id="trace-runtime-1",
+        project="kisti_nanoclustering",
+        request_id="REQ-42",
+        task={"short_id": "T-042", "alias": "sandbox"},
+        mirror_team_dir=root_team_dir,
+    )
+
+    assert mirrored == 2
+    proj_rows = [json.loads(x) for x in (project_team_dir / "logs" / "gateway_events.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
+    root_rows = [json.loads(x) for x in (root_team_dir / "logs" / "gateway_events.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
+
+    assert len(proj_rows) == 2
+    assert len(root_rows) == 2
+    assert proj_rows[0]["event"] == "tf_backend_runtime_event"
+    assert proj_rows[0]["backend"] == "autogen_core"
+    assert proj_rows[0]["backend_seq"] == 1
+    assert proj_rows[1]["backend_kind"] == "verdict"
+    assert proj_rows[1]["actor"] == "autogen_core:reviewer"
+    assert proj_rows[1]["request_id"] == "REQ-42"
+    assert proj_rows[1]["task_short_id"] == "T-042"
+    assert proj_rows[1]["log_scope"] == "project"
+    assert root_rows[0]["log_scope"] == "mother"
+    assert root_rows[0]["project_team_dir"] == str(project_team_dir.resolve())
+
+
+def test_gateway_events_module_matches_gateway_runtime_event_mirroring(tmp_path: Path) -> None:
+    project_a = tmp_path / "a" / ".aoe-team"
+    project_b = tmp_path / "b" / ".aoe-team"
+    runtime_events = [
+        {
+            "seq": 1,
+            "ts": "2026-03-11T18:00:00+0900",
+            "backend": "local",
+            "source": "gateway.preview",
+            "stage": "roles.resolved",
+            "kind": "dispatch",
+            "status": "success",
+            "summary": "resolved role set",
+            "payload": {"roles": ["Reviewer"]},
+        }
+    ]
+
+    count_a = gw.mirror_tf_backend_runtime_events(
+        team_dir=project_a,
+        backend="local",
+        runtime_events=runtime_events,
+        trace_id="trace-a",
+        project="demo",
+        request_id="REQ-A",
+        task={"short_id": "T-001", "alias": "demo"},
+    )
+    count_b = gateway_events.mirror_backend_runtime_events(
+        team_dir=project_b,
+        backend="local",
+        runtime_events=runtime_events,
+        now_iso=gw.now_iso,
+        mask_sensitive_text=gw.mask_sensitive_text,
+        append_gateway_event_targets=lambda **kwargs: gateway_events.append_gateway_event_targets(
+            append_jsonl=gw.append_jsonl,
+            **kwargs,
+        ),
+        trace_id="trace-a",
+        project="demo",
+        request_id="REQ-A",
+        task={"short_id": "T-001", "alias": "demo"},
+    )
+
+    rows_a = [json.loads(x) for x in (project_a / "logs" / "gateway_events.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
+    rows_b = [json.loads(x) for x in (project_b / "logs" / "gateway_events.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
+
+    assert count_a == count_b == 1
+    assert rows_a == rows_b
+
+
 def test_summarize_orch_registry_marks_unready_project(tmp_path: Path) -> None:
     state = _empty_state()
     team_dir = tmp_path / "TwinPaper" / ".aoe-team"

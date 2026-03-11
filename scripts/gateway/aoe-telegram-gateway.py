@@ -73,6 +73,7 @@ from aoe_tg_command_handlers import (
 from aoe_tg_gateway_events import (
     append_gateway_event_targets as gateway_append_gateway_event_targets,
     log_gateway_event as gateway_log_gateway_event,
+    mirror_backend_runtime_events as gateway_mirror_backend_runtime_events,
     task_identifiers as gateway_task_identifiers,
 )
 import aoe_tg_gateway_state as gateway_state_mod
@@ -998,6 +999,32 @@ def log_gateway_event(
         error_code=error_code,
         latency_ms=latency_ms,
         detail=detail,
+        mirror_team_dir=mirror_team_dir,
+    )
+
+
+def mirror_tf_backend_runtime_events(
+    *,
+    team_dir: Path,
+    backend: str,
+    runtime_events: List[Dict[str, Any]],
+    trace_id: str = "",
+    project: str = "",
+    request_id: str = "",
+    task: Optional[Dict[str, Any]] = None,
+    mirror_team_dir: Optional[Path] = None,
+) -> int:
+    return gateway_mirror_backend_runtime_events(
+        team_dir=team_dir,
+        backend=backend,
+        runtime_events=runtime_events,
+        now_iso=now_iso,
+        mask_sensitive_text=mask_sensitive_text,
+        append_gateway_event_targets=append_gateway_event_targets,
+        trace_id=trace_id,
+        project=project,
+        request_id=request_id,
+        task=task,
         mirror_team_dir=mirror_team_dir,
     )
 

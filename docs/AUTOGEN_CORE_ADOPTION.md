@@ -242,6 +242,7 @@ Current operator workflows depend on:
 Mitigation:
 
 - adapter must mirror AutoGen runtime events into existing gateway logs
+- current helper: `scripts/gateway/aoe_tg_gateway_events.py::mirror_backend_runtime_events`
 
 ### 8.4 Over-automation too early
 
@@ -298,3 +299,5 @@ If not, keep the current local backend and continue improving:
 - [x] add benchmark set and dry-run compare harness for local vs AutoGen contract review
 - [x] define normalized runtime event schema for adapter output
 - [x] define proposal extraction parity test between local and AutoGen backend
+- [x] add gateway log mirroring helper for normalized backend runtime events
+- [ ] wire backend runtime event mirroring into a sandbox-only execution path
