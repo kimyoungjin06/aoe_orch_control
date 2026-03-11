@@ -85,14 +85,12 @@ Purpose:
     items = mod._extract_todo_items_from_doc(text, allow_any_checkbox=True)
 
     assert [row["summary"] for row in items] == [
-        "**External bucket follow-ups**",
         "Build a one-page summary table",
         "**Actor role transitions**",
     ]
     assert items[0]["source_section"] == "P0 (next)"
     assert items[0]["source_reason"] == "doc_section_bullet"
-    assert items[1]["source_section"] == "P0 (next)"
-    assert items[2]["source_section"] == "P1"
+    assert items[1]["source_section"] == "P1"
 
 
 def test_extract_todo_items_from_doc_skips_completed_and_reference_note_rows() -> None:

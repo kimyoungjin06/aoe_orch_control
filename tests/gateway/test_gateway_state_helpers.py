@@ -7,6 +7,7 @@ import argparse
 import copy
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -21,21 +22,48 @@ if str(GW_DIR) not in sys.path:
 
 import aoe_tg_command_resolver as resolver
 import aoe_tg_blocked_state as blocked_state
+import aoe_tg_chat_aliases as chat_aliases
+import aoe_tg_cli as cli_mod
+import aoe_tg_chat_state as chat_state
+import aoe_tg_exec_pipeline as exec_pipeline
+import aoe_tg_exec_results as exec_results
+import aoe_tg_gateway_events as gateway_events
+import aoe_tg_gateway_aux as gateway_aux
+import aoe_tg_gateway_batch_ops as gateway_batch_ops
+import aoe_tg_gateway_state as gateway_state
+import aoe_tg_management_acl as mgmt_acl
+import aoe_tg_management_chat as mgmt_chat
 import aoe_tg_management_handlers as mgmt_handlers
+import aoe_tg_scheduler_control_handlers as scheduler_control
+import aoe_tg_message_handler as message_handler
+import aoe_tg_offdesk_flow as offdesk_flow
 import aoe_tg_ops_policy as ops_policy
 import aoe_tg_ops_view as ops_view
+import aoe_tg_room_runtime as room_runtime
+import aoe_tg_orch_registry as orch_registry
+import aoe_tg_orch_roles as orch_roles
+import aoe_tg_orch_responses as orch_responses
 import aoe_tg_orch_overview_handlers as overview
 import aoe_tg_orch_task_handlers as orch_task_handlers
 import aoe_tg_parse as tg_parse
+import aoe_tg_poll_loop as poll_loop
+import aoe_tg_project_state as project_state
+import aoe_tg_request_state as request_state
+import aoe_tg_run_guards as run_guards
+import aoe_tg_plan_pipeline as plan_pipeline
 import aoe_tg_project_runtime as runtime_helpers
+import aoe_tg_runtime_core as runtime_core
+import aoe_tg_queue_engine as queue_engine
 import aoe_tg_todo_policy as todo_policy
 import aoe_tg_run_handlers as run_handlers
 import aoe_tg_scheduler_handlers as sched
 import aoe_tg_schema as schema
 import aoe_tg_task_state as task_state
 import aoe_tg_task_view as task_view
+import aoe_tg_tf_exec as tf_exec
 import aoe_tg_todo_handlers as todo_handlers
 import aoe_tg_todo_state as todo_state
+import aoe_tg_transport as transport
 
 _spec = importlib.util.spec_from_file_location("aoe_telegram_gateway_mod", GW_FILE)
 assert _spec and _spec.loader
@@ -122,6 +150,674 @@ def test_set_recent_and_selected_task_refs_create_chat_session_row() -> None:
     selected = gw.get_chat_selected_task_ref(state, "939062873", "default")
     assert refs[:2] == ["REQ-1", "REQ-2"]
     assert selected == "REQ-2"
+
+
+def test_chat_aliases_module_matches_gateway_exports(tmp_path: Path) -> None:
+    alias_file = tmp_path / "aliases.json"
+    args_a = argparse.Namespace(
+        chat_aliases_file=alias_file,
+        chat_alias_cache={"2": "939062874"},
+        dry_run=False,
+        allow_chat_ids={"939062873", "939062874"},
+        admin_chat_ids=set(),
+        readonly_chat_ids=set(),
+        deny_by_default=False,
+    )
+    args_b = copy.deepcopy(args_a)
+    alias_file.write_text('{"1":"939062873"}\n', encoding="utf-8")
+
+    assert gw.resolve_chat_aliases_file(tmp_path, "") == chat_aliases.resolve_chat_aliases_file(tmp_path, "")
+    assert gw.load_chat_aliases(alias_file) == chat_aliases.load_chat_aliases(alias_file)
+    assert gw.merged_chat_aliases(args_a) == chat_aliases.merged_chat_aliases(args_b)
+    assert gw.find_chat_alias({"1": "939062873"}, "939062873") == chat_aliases.find_chat_alias({"1": "939062873"}, "939062873")
+    assert gw.next_chat_alias({"1": "939062873"}) == chat_aliases.next_chat_alias({"1": "939062873"})
+    assert gw.ensure_chat_alias(args_a, "939062875") == chat_aliases.ensure_chat_alias(args_b, "939062875")
+    assert gw.ensure_chat_aliases(args_a, ["939062876", "939062877"]) == chat_aliases.ensure_chat_aliases(args_b, ["939062876", "939062877"])
+    assert gw.resolve_chat_ref(args_a, "1") == chat_aliases.resolve_chat_ref(args_b, "1")
+    assert gw.alias_table_summary(args_a) == chat_aliases.alias_table_summary(args_b)
+
+
+def test_orch_roles_module_matches_gateway_exports(tmp_path: Path) -> None:
+    team_dir = tmp_path / ".aoe-team"
+    (team_dir / "agents" / "Reviewer").mkdir(parents=True, exist_ok=True)
+    (team_dir / "agents" / "Local-Dev").mkdir(parents=True, exist_ok=True)
+    (team_dir / "agents" / "Reviewer" / "AGENTS.md").write_text(
+        "# AGENTS.md - Reviewer\n\n## Mission\nFind risks, regressions, and missing tests before merge.\n",
+        encoding="utf-8",
+    )
+    (team_dir / "agents" / "Local-Dev" / "AGENTS.md").write_text(
+        "# AGENTS.md - Local-Dev\n\n## Mission\nImplement code changes and fix application bugs.\n",
+        encoding="utf-8",
+    )
+    (team_dir / "orchestrator.json").write_text(
+        json.dumps(
+            {
+                "coordinator": {"role": "Orchestrator"},
+                "agents": [{"role": "Reviewer"}, {"role": "Local-Dev"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert gw.parse_roles_csv("Reviewer, Local-Dev,Reviewer") == orch_roles.parse_roles_csv("Reviewer, Local-Dev,Reviewer")
+    assert gw.load_orchestrator_roles(team_dir) == orch_roles.load_orchestrator_roles(team_dir)
+    assert gw.load_orchestrator_role_profiles(team_dir) == orch_roles.load_orchestrator_role_profiles(team_dir)
+    assert gw.resolve_verifier_candidates("") == orch_roles.resolve_verifier_candidates("", default_verifier_roles=gw.DEFAULT_VERIFIER_ROLES)
+    assert gw.ensure_verifier_roles(["Local-Dev"], ["Reviewer", "Local-Dev"], ["Reviewer"]) == orch_roles.ensure_verifier_roles(
+        ["Local-Dev"],
+        ["Reviewer", "Local-Dev"],
+        ["Reviewer"],
+    )
+    assert gw.choose_auto_dispatch_roles(
+        "로그인 버그를 수정하고 회귀 리스크도 같이 검토해줘.",
+        available_roles=["Local-Dev", "Reviewer"],
+        team_dir=team_dir,
+    ) == orch_roles.choose_auto_dispatch_roles(
+        "로그인 버그를 수정하고 회귀 리스크도 같이 검토해줘.",
+        available_roles=["Local-Dev", "Reviewer"],
+        team_dir=team_dir,
+    )
+    assert gw.available_worker_roles([]) == orch_roles.available_worker_roles([])
+
+
+def test_gateway_state_module_matches_gateway_poll_and_replay_helpers(tmp_path: Path) -> None:
+    state_payload = {
+        "offset": 12,
+        "processed": 3,
+        gw.STATE_ACKED_UPDATES_KEY: 4,
+        gw.STATE_HANDLED_MESSAGES_KEY: 3,
+        gw.STATE_DUPLICATE_SKIPPED_KEY: 1,
+        gw.STATE_EMPTY_SKIPPED_KEY: 1,
+        gw.STATE_UNAUTHORIZED_SKIPPED_KEY: 0,
+        gw.STATE_HANDLER_ERRORS_KEY: 1,
+        gw.STATE_FAILED_QUEUE_KEY: [
+            {
+                "id": "abc",
+                "at": "2026-03-11T12:00:00+0900",
+                "chat_id": "939062873",
+                "text": "retry me",
+                "trace_id": "trace-1",
+                "error_code": "E_INTERNAL",
+                "error": "boom",
+                "cmd": "run",
+            }
+        ],
+        gw.STATE_SEEN_UPDATE_IDS_KEY: ["10", "11", "12"],
+        gw.STATE_SEEN_MESSAGE_KEYS_KEY: ["939062873:1"],
+        "updated_at": "2026-03-11T12:00:00+0900",
+    }
+    path = tmp_path / "gateway_state.json"
+    path.write_text(json.dumps(state_payload), encoding="utf-8")
+
+    gw_loaded = gw.load_state(path)
+    mod_loaded = gateway_state.load_state(
+        path,
+        acked_updates_key=gw.STATE_ACKED_UPDATES_KEY,
+        handled_messages_key=gw.STATE_HANDLED_MESSAGES_KEY,
+        duplicate_skipped_key=gw.STATE_DUPLICATE_SKIPPED_KEY,
+        empty_skipped_key=gw.STATE_EMPTY_SKIPPED_KEY,
+        unauthorized_skipped_key=gw.STATE_UNAUTHORIZED_SKIPPED_KEY,
+        handler_errors_key=gw.STATE_HANDLER_ERRORS_KEY,
+        failed_queue_key=gw.STATE_FAILED_QUEUE_KEY,
+        seen_update_ids_key=gw.STATE_SEEN_UPDATE_IDS_KEY,
+        seen_message_keys_key=gw.STATE_SEEN_MESSAGE_KEYS_KEY,
+        dedup_keep_limit=gw.dedup_keep_limit,
+        failed_queue_keep_limit=gw.failed_queue_keep_limit,
+        normalize_recent_tokens=gw.normalize_recent_tokens,
+        normalize_failed_queue=gw.normalize_failed_queue,
+    )
+    assert gw_loaded == mod_loaded
+    assert gw.normalize_recent_tokens(["1", "2", "2"], 5) == gateway_state.normalize_recent_tokens(["1", "2", "2"], 5)
+    assert gw.message_dedup_key({"chat": {"id": "939062873"}, "message_id": 7}) == gateway_state.message_dedup_key({"chat": {"id": "939062873"}, "message_id": 7})
+    assert gw.summarize_failed_queue(gw_loaded, "939062873") == gateway_state.summarize_failed_queue(
+        mod_loaded,
+        "939062873",
+        failed_queue_for_chat=lambda st, cid: gateway_state.failed_queue_for_chat(
+            st,
+            cid,
+            failed_queue_keep_limit=gw.failed_queue_keep_limit,
+            normalize_failed_queue=gw.normalize_failed_queue,
+            failed_queue_key=gw.STATE_FAILED_QUEUE_KEY,
+        ),
+        replay_usage=gw.REPLAY_USAGE,
+    )
+    assert gw.resolve_failed_queue_item(gw_loaded, "939062873", "latest") == gateway_state.resolve_failed_queue_item(
+        mod_loaded,
+        "939062873",
+        "latest",
+        failed_queue_for_chat=lambda st, cid: gateway_state.failed_queue_for_chat(
+            st,
+            cid,
+            failed_queue_keep_limit=gw.failed_queue_keep_limit,
+            normalize_failed_queue=gw.normalize_failed_queue,
+            failed_queue_key=gw.STATE_FAILED_QUEUE_KEY,
+        ),
+    )
+
+    path_a = tmp_path / "save_a.json"
+    path_b = tmp_path / "save_b.json"
+    gw.save_state(path_a, gw_loaded)
+    gateway_state.save_state(
+        path_b,
+        mod_loaded,
+        acked_updates_key=gw.STATE_ACKED_UPDATES_KEY,
+        handled_messages_key=gw.STATE_HANDLED_MESSAGES_KEY,
+        duplicate_skipped_key=gw.STATE_DUPLICATE_SKIPPED_KEY,
+        empty_skipped_key=gw.STATE_EMPTY_SKIPPED_KEY,
+        unauthorized_skipped_key=gw.STATE_UNAUTHORIZED_SKIPPED_KEY,
+        handler_errors_key=gw.STATE_HANDLER_ERRORS_KEY,
+        failed_queue_key=gw.STATE_FAILED_QUEUE_KEY,
+        seen_update_ids_key=gw.STATE_SEEN_UPDATE_IDS_KEY,
+        seen_message_keys_key=gw.STATE_SEEN_MESSAGE_KEYS_KEY,
+        dedup_keep_limit=gw.dedup_keep_limit,
+        failed_queue_keep_limit=gw.failed_queue_keep_limit,
+        normalize_recent_tokens=gw.normalize_recent_tokens,
+        normalize_failed_queue=gw.normalize_failed_queue,
+    )
+    assert gw.load_state(path_a) == gw.load_state(path_b)
+
+
+def test_cli_module_matches_gateway_parser_defaults_and_args() -> None:
+    argv = [
+        "--simulate-text",
+        "hello",
+        "--simulate-chat-id",
+        "test",
+        "--allow-chat-ids",
+        "1,2",
+        "--chat-daily-cap",
+        "5",
+    ]
+
+    assert vars(gw.build_parser().parse_args(argv)) == vars(cli_mod.build_parser(deps=gw.__dict__).parse_args(argv))
+
+
+def test_cli_module_normalizes_main_args_like_gateway_flow(tmp_path: Path) -> None:
+    project_root = tmp_path / "proj"
+    team_dir = project_root / ".aoe-team"
+    alias_file = tmp_path / "aliases.json"
+    project_root.mkdir(parents=True, exist_ok=True)
+    team_dir.mkdir(parents=True, exist_ok=True)
+    alias_file.write_text("{}", encoding="utf-8")
+
+    base_args = argparse.Namespace(
+        project_root=str(project_root),
+        team_dir=None,
+        state_file=None,
+        manager_state_file="",
+        chat_aliases_file=str(alias_file),
+        instance_lock_file="",
+        workspace_root="",
+        owner_chat_id="939062873",
+        owner_bootstrap_mode="Dispatch",
+        default_lang="ko",
+        default_reply_lang="en",
+        default_report_level="LONG",
+        allow_chat_ids="1,2",
+        admin_chat_ids="2,3",
+        readonly_chat_ids="3,4",
+    )
+
+    manual_args = copy.deepcopy(base_args)
+    manual_args.project_root = gw.resolve_project_root(manual_args.project_root)
+    manual_args.team_dir = gw.resolve_team_dir(manual_args.project_root, manual_args.team_dir)
+    manual_args.state_file = gw.resolve_state_file(manual_args.project_root, manual_args.state_file)
+    manual_args.manager_state_file = gw.resolve_manager_state_file(manual_args.team_dir, manual_args.manager_state_file)
+    manual_args.chat_aliases_file = gw.resolve_chat_aliases_file(manual_args.team_dir, manual_args.chat_aliases_file)
+    if str(manual_args.instance_lock_file or "").strip():
+        manual_args.instance_lock_file = Path(str(manual_args.instance_lock_file)).expanduser().resolve()
+    else:
+        manual_args.instance_lock_file = (manual_args.team_dir / ".gateway.instance.lock").resolve()
+    manual_args.workspace_root = gw.resolve_workspace_root(manual_args.workspace_root)
+    manual_args.owner_chat_id = gw.normalize_owner_chat_id(manual_args.owner_chat_id)
+    manual_args.owner_bootstrap_mode = (
+        gw.normalize_mode_token(str(getattr(manual_args, "owner_bootstrap_mode", "") or "").strip())
+        if str(getattr(manual_args, "owner_bootstrap_mode", "") or "").strip()
+        else ""
+    )
+    if manual_args.owner_bootstrap_mode not in {"dispatch", "direct"}:
+        manual_args.owner_bootstrap_mode = ""
+    manual_args.default_lang = gw.normalize_chat_lang_token(manual_args.default_lang, gw.DEFAULT_UI_LANG) or gw.DEFAULT_UI_LANG
+    manual_args.default_reply_lang = (
+        gw.normalize_chat_lang_token(manual_args.default_reply_lang, gw.DEFAULT_REPLY_LANG) or gw.DEFAULT_REPLY_LANG
+    )
+    raw_default_report = gw.normalize_report_token(str(getattr(manual_args, "default_report_level", "") or "").strip())
+    manual_args.default_report_level = (
+        raw_default_report if raw_default_report in {"short", "normal", "long"} else gw.DEFAULT_REPORT_LEVEL
+    )
+    manual_args.allow_chat_ids = gw.parse_csv_set(manual_args.allow_chat_ids)
+    manual_args.admin_chat_ids = gw.parse_csv_set(manual_args.admin_chat_ids)
+    manual_args.readonly_chat_ids = gw.parse_csv_set(manual_args.readonly_chat_ids)
+    manual_args.readonly_chat_ids = {
+        value for value in manual_args.readonly_chat_ids if value not in manual_args.admin_chat_ids
+    }
+    manual_args.chat_alias_cache = gw.load_chat_aliases(manual_args.chat_aliases_file)
+
+    cli_args = cli_mod.normalize_main_args(copy.deepcopy(base_args), deps=gw.__dict__)
+
+    assert cli_args.project_root == manual_args.project_root
+    assert cli_args.team_dir == manual_args.team_dir
+    assert cli_args.state_file == manual_args.state_file
+    assert cli_args.manager_state_file == manual_args.manager_state_file
+    assert cli_args.chat_aliases_file == manual_args.chat_aliases_file
+    assert cli_args.instance_lock_file == manual_args.instance_lock_file
+    assert cli_args.workspace_root == manual_args.workspace_root
+    assert cli_args.owner_chat_id == manual_args.owner_chat_id
+    assert cli_args.owner_bootstrap_mode == manual_args.owner_bootstrap_mode == "dispatch"
+    assert cli_args.default_lang == manual_args.default_lang
+    assert cli_args.default_reply_lang == manual_args.default_reply_lang
+    assert cli_args.default_report_level == manual_args.default_report_level
+    assert cli_args.allow_chat_ids == manual_args.allow_chat_ids
+    assert cli_args.admin_chat_ids == manual_args.admin_chat_ids
+    assert cli_args.readonly_chat_ids == manual_args.readonly_chat_ids
+    assert cli_args.chat_alias_cache == manual_args.chat_alias_cache
+
+
+def test_poll_loop_module_matches_gateway_iter_and_simulation_helpers() -> None:
+    updates = [
+        {"update_id": 1, "message": {"chat": {"id": "1"}, "text": "hello"}},
+        {"update_id": "bad", "message": {"chat": {"id": "2"}, "text": "skip"}},
+        {"update_id": 2, "edited_message": {"chat": {"id": "3"}, "text": "skip"}},
+        {"update_id": 3, "message": {"chat": {"id": "4"}, "text": "world"}},
+    ]
+    assert list(gw.iter_message_updates(updates)) == list(poll_loop.iter_message_updates(updates))
+
+    calls_gw = []
+    calls_mod = []
+
+    def _fake_handler(call_log, args, token, chat_id, text, trace_id=""):
+        call_log.append(
+            {
+                "token": token,
+                "chat_id": chat_id,
+                "text": text,
+                "trace_id": trace_id,
+                "dry_run": bool(args.dry_run),
+            }
+        )
+
+    args_gw = argparse.Namespace(
+        simulate_chat_id="939062873",
+        simulate_text="hello",
+        verbose=False,
+        dry_run=False,
+        simulate_live=False,
+    )
+    args_mod = copy.deepcopy(args_gw)
+
+    original_handle_text_message = gw.handle_text_message
+    try:
+        gw.handle_text_message = lambda *a, **k: _fake_handler(calls_gw, *a, **k)
+        gw.run_simulation(args_gw, "token-1")
+    finally:
+        gw.handle_text_message = original_handle_text_message
+
+    poll_loop.run_simulation(
+        args_mod,
+        "token-1",
+        handle_text_message=lambda *a, **k: _fake_handler(calls_mod, *a, **k),
+    )
+
+    assert calls_gw == calls_mod
+    assert args_gw.dry_run is False
+    assert args_mod.dry_run is False
+
+
+def test_poll_loop_run_loop_processes_single_allowed_message(tmp_path: Path) -> None:
+    args = argparse.Namespace(
+        state_file=tmp_path / "gateway_state.json",
+        poll_timeout_sec=1,
+        http_timeout_sec=1,
+        dry_run=True,
+        verbose=False,
+        once=True,
+        allow_chat_ids=set(),
+        admin_chat_ids=set(),
+        readonly_chat_ids=set(),
+        deny_by_default=False,
+        owner_chat_id="",
+        owner_only=False,
+        max_text_chars=4000,
+        team_dir=tmp_path,
+    )
+    handled = []
+    saved_states = []
+    updates = [{"update_id": 7, "message": {"chat": {"id": "939062873", "type": "private"}, "from": {"id": "939062873"}, "message_id": 11, "text": "hello"}}]
+
+    rc = poll_loop.run_loop(
+        args,
+        "token-1",
+        load_state=lambda _path: {},
+        save_state=lambda _path, state: saved_states.append(copy.deepcopy(state)),
+        dedup_keep_limit=lambda: 32,
+        normalize_recent_tokens=lambda values, _limit: list(values or []),
+        message_dedup_key=lambda msg: gw.message_dedup_key(msg),
+        append_recent_token=lambda seq, token, _limit: seq.append(token) if token not in seq else None,
+        tg_get_updates=lambda **_kwargs: updates,
+        ensure_chat_allowed=lambda *_a, **_k: True,
+        is_bootstrap_allowed_command=lambda _text: False,
+        safe_tg_send_text=lambda **_kwargs: True,
+        log_gateway_event=lambda **_kwargs: None,
+        handle_text_message=lambda *_a, **_k: handled.append("ok"),
+        preferred_command_prefix=lambda: "/",
+        state_acked_updates_key=gw.STATE_ACKED_UPDATES_KEY,
+        state_handled_messages_key=gw.STATE_HANDLED_MESSAGES_KEY,
+        state_duplicate_skipped_key=gw.STATE_DUPLICATE_SKIPPED_KEY,
+        state_empty_skipped_key=gw.STATE_EMPTY_SKIPPED_KEY,
+        state_unauthorized_skipped_key=gw.STATE_UNAUTHORIZED_SKIPPED_KEY,
+        state_handler_errors_key=gw.STATE_HANDLER_ERRORS_KEY,
+        error_auth=gw.ERROR_AUTH,
+    )
+
+    assert rc == 0
+    assert handled == ["ok"]
+    assert saved_states
+    assert saved_states[-1][gw.STATE_HANDLED_MESSAGES_KEY] == 1
+
+
+def test_gateway_aux_module_matches_error_and_metrics_helpers(tmp_path: Path) -> None:
+    err = RuntimeError("unknown orch project: demo")
+    assert gw.classify_handler_error(err) == gateway_aux.classify_handler_error(
+        err,
+        error_timeout=gw.ERROR_TIMEOUT,
+        error_command=gw.ERROR_COMMAND,
+        error_gate=gw.ERROR_GATE,
+        error_auth=gw.ERROR_AUTH,
+        error_request=gw.ERROR_REQUEST,
+        error_telegram=gw.ERROR_TELEGRAM,
+        error_orch=gw.ERROR_ORCH,
+        error_internal=gw.ERROR_INTERNAL,
+    )
+    assert gw.format_error_message("E_TEST", "failed", "/help", detail="token=secret") == gateway_aux.format_error_message(
+        "E_TEST",
+        "failed",
+        "/help",
+        detail="token=secret",
+        mask_sensitive_text=gw.mask_sensitive_text,
+    )
+
+    team_dir = tmp_path / ".aoe-team"
+    log_dir = team_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "gateway_events.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"timestamp": gw.now_iso(), "event": "incoming_message", "trace_id": "t1", "latency_ms": 5}),
+                json.dumps({"timestamp": gw.now_iso(), "event": "command_resolved", "trace_id": "t1", "status": "accepted", "latency_ms": 7}),
+                json.dumps({"timestamp": gw.now_iso(), "event": "send_message", "trace_id": "t1", "status": "sent", "latency_ms": 9}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert gw.summarize_gateway_metrics(team_dir, "demo", hours=24) == gateway_aux.summarize_gateway_metrics(
+        team_dir,
+        "demo",
+        hours=24,
+        summarize_gateway_poll_state=gw.summarize_gateway_poll_state,
+        parse_iso_ts=gw.parse_iso_ts,
+        percentile=gw.percentile,
+        error_internal=gw.ERROR_INTERNAL,
+    )
+
+
+def test_gateway_aux_module_matches_replay_list_path(tmp_path: Path) -> None:
+    args = argparse.Namespace(state_file=tmp_path / "gateway_state.json")
+    state = {
+        gw.STATE_FAILED_QUEUE_KEY: [
+            {
+                "id": "abc",
+                "at": "2026-03-11T12:00:00+0900",
+                "chat_id": "939062873",
+                "text": "/status",
+                "trace_id": "trace-1",
+                "error_code": "E_INTERNAL",
+                "error": "boom",
+                "cmd": "run",
+            }
+        ]
+    }
+    sent = []
+    logged = []
+    saved = []
+
+    result = gateway_aux.handle_replay_command(
+        args=args,
+        token="token-1",
+        chat_id="939062873",
+        target="list",
+        send=lambda body, **kwargs: sent.append((body, kwargs)),
+        log_event=lambda **kwargs: logged.append(kwargs),
+        load_state=lambda _path: copy.deepcopy(state),
+        save_state=lambda _path, payload: saved.append(copy.deepcopy(payload)),
+        normalize_failed_queue=gw.normalize_failed_queue,
+        failed_queue_keep_limit=gw.failed_queue_keep_limit,
+        state_failed_queue_key=gw.STATE_FAILED_QUEUE_KEY,
+        summarize_failed_queue=gw.summarize_failed_queue,
+        purge_failed_queue_for_chat=gw.purge_failed_queue_for_chat,
+        resolve_failed_queue_item=gw.resolve_failed_queue_item,
+        format_failed_queue_item_detail=gw.format_failed_queue_item_detail,
+        remove_failed_queue_item=gw.remove_failed_queue_item,
+        parse_command=gw.parse_command,
+        handle_text_message=lambda *_a, **_k: None,
+        preferred_command_prefix=gw.preferred_command_prefix,
+        replay_usage=gw.REPLAY_USAGE,
+    )
+
+    assert result is True
+    assert sent
+    assert "replay queue: 1 pending" in sent[0][0].lower()
+    assert saved
+    assert not logged
+
+
+def test_message_handler_module_handles_slash_only_hint(tmp_path: Path) -> None:
+    team_dir = tmp_path / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    sent = []
+    args = argparse.Namespace(
+        slash_only=True,
+        manager_state_file=tmp_path / "orch_manager_state.json",
+        project_root=tmp_path,
+        team_dir=team_dir,
+        owner_bootstrap_mode="",
+        dry_run=True,
+        default_lang="ko",
+        default_reply_lang="ko",
+        default_report_level="normal",
+        max_text_chars=4000,
+        http_timeout_sec=1,
+        verbose=False,
+    )
+
+    deps = {
+        "mask_sensitive_text": lambda s: s,
+        "ResolvedCommand": gw.ResolvedCommand,
+        "RunTransitionState": gw.RunTransitionState,
+        "load_manager_state": lambda *_a, **_k: _empty_state(),
+        "ensure_default_project_registered": lambda *_a, **_k: None,
+        "is_owner_chat": lambda *_a, **_k: False,
+        "get_default_mode": lambda *_a, **_k: "",
+        "set_default_mode": lambda *_a, **_k: None,
+        "save_manager_state": lambda *_a, **_k: None,
+        "get_manager_project": lambda *_a, **_k: (
+            "default",
+            {"team_dir": str(team_dir), "project_root": str(tmp_path)},
+        ),
+        "make_project_args": lambda base_args, entry, key="": argparse.Namespace(
+            **vars(base_args),
+            team_dir=Path(str(entry["team_dir"])),
+            project_root=Path(str(entry["project_root"])),
+            _aoe_project_key=key or "default",
+        ),
+        "log_gateway_event": lambda **_k: None,
+        "room_autopublish_event": lambda **_k: None,
+        "int_from_env": gw.int_from_env,
+        "build_quick_reply_keyboard": lambda: {"keyboard": []},
+        "safe_tg_send_text": lambda **kwargs: sent.append(kwargs) or True,
+        "ERROR_TELEGRAM": gw.ERROR_TELEGRAM,
+        "resolve_message_command": lambda **_k: gw.ResolvedCommand(),
+        "get_pending_mode": lambda *_a, **_k: "",
+        "clear_pending_mode": lambda *_a, **_k: None,
+        "get_chat_lang": lambda *_a, **_k: "ko",
+        "get_chat_report_level": lambda *_a, **_k: "normal",
+        "DEFAULT_REPORT_LEVEL": gw.DEFAULT_REPORT_LEVEL,
+        "preferred_command_prefix": lambda: "/",
+        "ERROR_COMMAND": gw.ERROR_COMMAND,
+    }
+
+    message_handler.handle_text_message(
+        args,
+        "token-1",
+        "939062873",
+        "plain text",
+        deps=deps,
+    )
+
+    assert sent
+    assert "입력 형식" in sent[0]["text"]
+
+
+def test_room_runtime_module_matches_gateway_route_and_gc_helpers(tmp_path: Path) -> None:
+    assert gw.normalize_room_autopublish_route("project_tf") == room_runtime.normalize_room_autopublish_route(
+        "project_tf",
+        default_room_autopublish_route=gw.DEFAULT_ROOM_AUTOPUBLISH_ROUTE,
+    )
+    assert gw._room_autopublish_title("dispatch_failed") == room_runtime.room_autopublish_title("dispatch_failed")
+
+    team_dir = tmp_path / ".aoe-team"
+    room_dir = team_dir / "logs" / "rooms" / "demo"
+    room_dir.mkdir(parents=True, exist_ok=True)
+    old_file = room_dir / "2026-01-01.jsonl"
+    old_file.write_text("{}\n", encoding="utf-8")
+
+    removed = room_runtime.cleanup_room_logs(
+        team_dir,
+        force=True,
+        room_retention_days=lambda: 1,
+        today_key_local=lambda: "2026-03-11",
+    )
+    assert removed == 1
+    assert not old_file.exists()
+
+
+def test_gateway_batch_ops_module_matches_gateway_parse_helpers() -> None:
+    assert gateway_batch_ops.parse_drain_args("5 force") == gw._parse_drain_args("5 force")
+    assert gateway_batch_ops.parse_drain_args("all") == gw._parse_drain_args("all")
+    assert gateway_batch_ops.parse_fanout_args("3 force") == gw._parse_fanout_args("3 force")
+    assert gateway_batch_ops.parse_fanout_args("") == gw._parse_fanout_args("")
+
+
+def test_offdesk_flow_module_matches_management_prefetch_and_state_helpers(tmp_path: Path, monkeypatch) -> None:
+    previous = os.environ.get("AOE_TG_COMMAND_PREFIXES")
+    os.environ["AOE_TG_COMMAND_PREFIXES"] = "!/"
+    monkeypatch.setattr(offdesk_flow, "now_iso", lambda: "2026-03-11T10:00:00+0900")
+    try:
+        args = argparse.Namespace(team_dir=tmp_path / ".aoe-team", project_root=tmp_path)
+        assert offdesk_flow.cmd_prefix() == mgmt_handlers._cmd_prefix() == "!"
+        assert offdesk_flow.normalize_prefetch_token("recent_docs") == mgmt_handlers._normalize_prefetch_token("recent_docs")
+        assert offdesk_flow.parse_replace_sync_flag(["replace-sync"]) == mgmt_handlers._parse_replace_sync_flag(["replace-sync"])
+        assert offdesk_flow.prefetch_display("sync_recent", "3h", True) == mgmt_handlers._prefetch_display("sync_recent", "3h", True)
+        assert offdesk_flow.status_report_level(["status", "long"], "short") == mgmt_handlers._status_report_level(["status", "long"], "short")
+        assert offdesk_flow.auto_state_path(args, filename=mgmt_handlers.AUTO_STATE_FILENAME) == mgmt_handlers._auto_state_path(args)
+        assert offdesk_flow.offdesk_state_path(args, filename=mgmt_handlers.OFFDESK_STATE_FILENAME) == mgmt_handlers._offdesk_state_path(args)
+
+        state_a = tmp_path / "a.json"
+        state_b = tmp_path / "b.json"
+        payload = {"enabled": True, "chat_id": "939062873"}
+        mgmt_handlers._save_auto_state(state_a, payload)
+        offdesk_flow.save_auto_state(state_b, payload)
+        assert mgmt_handlers._load_auto_state(state_a) == offdesk_flow.load_auto_state(state_b)
+    finally:
+        if previous is None:
+            os.environ.pop("AOE_TG_COMMAND_PREFIXES", None)
+        else:
+            os.environ["AOE_TG_COMMAND_PREFIXES"] = previous
+
+
+def test_room_runtime_module_builds_expected_autopublish_event() -> None:
+    events = []
+    manager_state = _empty_state()
+    manager_state["projects"]["default"]["project_alias"] = "O1"
+
+    room_runtime.room_autopublish_event(
+        team_dir=ROOT / ".aoe-team",
+        manager_state=manager_state,
+        chat_id="939062873",
+        event="dispatch_completed",
+        project="default",
+        request_id="REQ-1",
+        task={"short_id": "T-001", "todo_id": "TODO-001"},
+        stage="close",
+        status="completed",
+        error_code="",
+        detail="done",
+        room_autopublish_enabled=lambda: True,
+        project_alias_for_key=gw.project_alias_for_key,
+        get_chat_room=lambda *_a, **_k: gw.DEFAULT_ROOM_NAME,
+        normalize_room_token=gw.normalize_room_token,
+        room_autopublish_route=lambda: "project",
+        int_from_env=gw.int_from_env,
+        task_display_label=gw.task_display_label,
+        append_room_event=lambda **kwargs: events.append(kwargs),
+        now_iso=lambda: "2026-03-11T12:00:00+0900",
+        default_room_name=gw.DEFAULT_ROOM_NAME,
+        default_max_event_chars=gw.DEFAULT_MAX_EVENT_CHARS,
+        default_max_file_bytes=gw.DEFAULT_MAX_FILE_BYTES,
+    )
+
+    assert events
+    assert events[0]["room"] == "O1"
+    assert events[0]["event"]["todo_id"] == "TODO-001"
+
+
+def test_chat_state_module_matches_gateway_chat_session_exports() -> None:
+    state_a = _empty_state()
+    state_b = copy.deepcopy(state_a)
+
+    gw.set_default_mode(state_a, "939062873", "dispatch")
+    chat_state.set_default_mode(state_b, "939062873", "dispatch")
+    gw.set_pending_mode(state_a, "939062873", "direct")
+    chat_state.set_pending_mode(state_b, "939062873", "direct")
+    gw.set_chat_lang(state_a, "939062873", "en")
+    chat_state.set_chat_lang(state_b, "939062873", "en")
+    gw.set_chat_report_level(state_a, "939062873", "long")
+    chat_state.set_chat_report_level(state_b, "939062873", "long")
+    gw.set_chat_room(state_a, "939062873", "O3/TF-ALPHA")
+    chat_state.set_chat_room(state_b, "939062873", "O3/TF-ALPHA")
+    gw.set_confirm_action(state_a, "939062873", "dispatch", "rm -rf /tmp/demo", risk="destructive_delete", orch="Twin")
+    chat_state.set_confirm_action(state_b, "939062873", "dispatch", "rm -rf /tmp/demo", risk="destructive_delete", orch="Twin")
+    gw.set_chat_recent_task_refs(state_a, "939062873", "Twin Paper", ["REQ-1", "REQ-2", "REQ-1"])
+    chat_state.set_chat_recent_task_refs(state_b, "939062873", "Twin Paper", ["REQ-1", "REQ-2", "REQ-1"])
+    gw.set_chat_selected_task_ref(state_a, "939062873", "Twin Paper", "REQ-2")
+    chat_state.set_chat_selected_task_ref(state_b, "939062873", "Twin Paper", "REQ-2")
+
+    assert gw.get_default_mode(state_a, "939062873") == chat_state.get_default_mode(state_b, "939062873")
+    assert gw.get_pending_mode(state_a, "939062873") == chat_state.get_pending_mode(state_b, "939062873")
+    assert gw.get_chat_lang(state_a, "939062873", "ko") == chat_state.get_chat_lang(state_b, "939062873", "ko")
+    assert gw.get_chat_report_level(state_a, "939062873", "normal") == chat_state.get_chat_report_level(state_b, "939062873", "normal")
+    assert gw.get_chat_room(state_a, "939062873", "global") == chat_state.get_chat_room(state_b, "939062873", "global")
+    assert gw.get_confirm_action(state_a, "939062873").get("mode") == chat_state.get_confirm_action(state_b, "939062873").get("mode")
+    assert gw.get_chat_recent_task_refs(state_a, "939062873", "Twin Paper") == chat_state.get_chat_recent_task_refs(state_b, "939062873", "Twin Paper")
+    assert gw.get_chat_selected_task_ref(state_a, "939062873", "Twin Paper") == chat_state.get_chat_selected_task_ref(state_b, "939062873", "Twin Paper")
+    assert gw.resolve_chat_task_ref(state_a, "939062873", "Twin Paper", "2") == chat_state.resolve_chat_task_ref(state_b, "939062873", "Twin Paper", "2")
+
+    raw_row = {
+        "pending_mode": "dispatch",
+        "default_mode": "direct",
+        "lang": "한국어",
+        "report_level": "short",
+        "room": "main",
+        "confirm_action": {"mode": "dispatch", "prompt": "echo hi"},
+        "recent_task_refs": {"Twin Paper": ["REQ-1", "REQ-1", "REQ-2"]},
+        "selected_task_refs": {"Twin Paper": "REQ-2"},
+    }
+    assert gw.sanitize_chat_session_row(raw_row) == chat_state.sanitize_chat_session_row(raw_row)
+
+    assert gw.clear_pending_mode(state_a, "939062873") == chat_state.clear_pending_mode(state_b, "939062873")
+    assert gw.clear_default_mode(state_a, "939062873") == chat_state.clear_default_mode(state_b, "939062873")
+    assert gw.clear_chat_report_level(state_a, "939062873") == chat_state.clear_chat_report_level(state_b, "939062873")
+    assert gw.clear_confirm_action(state_a, "939062873") == chat_state.clear_confirm_action(state_b, "939062873")
 
 
 def test_planning_stage_timeout_sec_caps_long_global_timeout() -> None:
@@ -428,6 +1124,176 @@ def test_compute_dispatch_plan_reports_progress_sequence() -> None:
     assert phases[2]["total"] == 1
 
 
+def test_plan_pipeline_module_matches_run_planning_exports() -> None:
+    prompt = "각 프로젝트별로 5시간 내로 가장 늦게 생성된 10개 md를 살펴보고 업데이트 부탁해"
+    assert run_handlers._apply_success_first_prompt_fallbacks(prompt) == plan_pipeline.apply_success_first_prompt_fallbacks(prompt)
+
+    def _choose_roles(user_prompt: str, **_kwargs):
+        if "analyze" in user_prompt.lower():
+            return ["Analyst", "Reviewer"]
+        return ["Reviewer"]
+
+    run_mode = run_handlers._resolve_dispatch_mode_and_roles(
+        run_force_mode=None,
+        run_roles_override="",
+        project_roles_csv="",
+        auto_dispatch_enabled=True,
+        prompt="analyze this change",
+        choose_auto_dispatch_roles=_choose_roles,
+        available_roles=["Analyst", "Reviewer"],
+        team_dir=ROOT,
+    )
+    module_mode = plan_pipeline.resolve_dispatch_mode_and_roles(
+        run_force_mode=None,
+        run_roles_override="",
+        project_roles_csv="",
+        auto_dispatch_enabled=True,
+        prompt="analyze this change",
+        choose_auto_dispatch_roles=_choose_roles,
+        available_roles=["Analyst", "Reviewer"],
+        team_dir=ROOT,
+    )
+    assert run_mode == module_mode
+
+    run_sent: list[tuple[str, dict]] = []
+    module_sent: list[tuple[str, dict]] = []
+    run_logged: list[dict] = []
+    module_logged: list[dict] = []
+
+    run_handlers._emit_planning_progress(
+        phase="repair",
+        key="local_map_analysis",
+        send=lambda body, **kwargs: run_sent.append((body, kwargs)) or True,
+        log_event=lambda **kwargs: run_logged.append(kwargs),
+        emit_chat=True,
+        detail="critic issues found; auto-replanning",
+        attempt=1,
+        total=2,
+    )
+    plan_pipeline.emit_planning_progress(
+        phase="repair",
+        key="local_map_analysis",
+        send=lambda body, **kwargs: module_sent.append((body, kwargs)) or True,
+        log_event=lambda **kwargs: module_logged.append(kwargs),
+        emit_chat=True,
+        detail="critic issues found; auto-replanning",
+        attempt=1,
+        total=2,
+    )
+
+    assert run_logged == module_logged
+    assert run_sent == module_sent
+
+
+def test_plan_pipeline_module_matches_run_compute_and_lineage_helpers() -> None:
+    args = argparse.Namespace(
+        task_planning=True,
+        dry_run=False,
+        plan_max_subtasks=4,
+        plan_auto_replan=True,
+        plan_replan_attempts=1,
+        plan_block_on_critic=True,
+    )
+    critic_call_count = {"n": 0}
+
+    def _build(*_args, **_kwargs):
+        return {
+            "summary": "plan",
+            "subtasks": [{"id": "S1", "title": "build", "goal": "build", "owner_role": "DataEngineer", "acceptance": ["ok"]}],
+        }
+
+    def _critic(*_args, **_kwargs):
+        critic_call_count["n"] += 1
+        if critic_call_count["n"] == 1:
+            return {"approved": False, "issues": ["fix this"], "recommendations": ["repair"]}
+        return {"approved": True, "issues": [], "recommendations": []}
+
+    def _repair(*_args, **_kwargs):
+        return {
+            "summary": "plan-fixed",
+            "subtasks": [{"id": "S1", "title": "fixed", "goal": "fixed", "owner_role": "DataEngineer", "acceptance": ["ok"]}],
+        }
+
+    run_phases: list[dict] = []
+    module_phases: list[dict] = []
+    critic_has_blockers = lambda critic: (not bool(critic.get("approved", True))) or bool(critic.get("issues") or [])
+
+    run_meta = run_handlers._compute_dispatch_plan(
+        args=args,
+        p_args=argparse.Namespace(),
+        prompt="build something",
+        dispatch_mode=True,
+        run_control_mode="normal",
+        run_source_task=None,
+        selected_roles=[],
+        available_roles=["DataEngineer", "Reviewer"],
+        available_worker_roles=lambda roles: roles,
+        normalize_task_plan_payload=lambda parsed, **_kwargs: parsed,
+        build_task_execution_plan=_build,
+        critique_task_execution_plan=_critic,
+        critic_has_blockers=critic_has_blockers,
+        repair_task_execution_plan=_repair,
+        plan_roles_from_subtasks=lambda plan: ["DataEngineer"] if isinstance(plan, dict) else [],
+        report_progress=lambda **kwargs: run_phases.append(kwargs),
+    )
+
+    critic_call_count["n"] = 0
+    module_meta = plan_pipeline.compute_dispatch_plan(
+        args=args,
+        p_args=argparse.Namespace(),
+        prompt="build something",
+        dispatch_mode=True,
+        run_control_mode="normal",
+        run_source_task=None,
+        selected_roles=[],
+        available_roles=["DataEngineer", "Reviewer"],
+        available_worker_roles=lambda roles: roles,
+        normalize_task_plan_payload=lambda parsed, **_kwargs: parsed,
+        build_task_execution_plan=_build,
+        critique_task_execution_plan=_critic,
+        critic_has_blockers=critic_has_blockers,
+        repair_task_execution_plan=_repair,
+        plan_roles_from_subtasks=lambda plan: ["DataEngineer"] if isinstance(plan, dict) else [],
+        report_progress=lambda **kwargs: module_phases.append(kwargs),
+    )
+
+    assert run_meta == module_meta
+    assert run_phases == module_phases
+
+    task_a = {"request_id": "REQ-001", "context": {}}
+    task_b = {"request_id": "REQ-001", "context": {}}
+    source_a = {"request_id": "REQ-000", "context": {}}
+    source_b = {"request_id": "REQ-000", "context": {}}
+    notes_a: list[tuple[tuple, dict]] = []
+    notes_b: list[tuple[tuple, dict]] = []
+
+    kwargs = dict(
+        task=task_a,
+        plan_data={"subtasks": [{"id": "S1"}]},
+        plan_critic={"approved": True, "issues": [], "recommendations": []},
+        plan_roles=["DataEngineer"],
+        plan_replans=[{"attempt": 1, "critic": "approved", "subtasks": 1}],
+        plan_error="",
+        critic_has_blockers=critic_has_blockers,
+        lifecycle_set_stage=lambda *args, **kwargs: notes_a.append((args, kwargs)),
+        run_control_mode="retry",
+        run_source_request_id="REQ-000",
+        run_source_task=source_a,
+        req_id="REQ-001",
+        now_iso=lambda: "2026-03-11T10:00:00+09:00",
+    )
+    run_handlers._apply_plan_and_lineage(**kwargs)
+
+    kwargs["task"] = task_b
+    kwargs["run_source_task"] = source_b
+    kwargs["lifecycle_set_stage"] = lambda *args, **kwargs: notes_b.append((args, kwargs))
+    plan_pipeline.apply_plan_and_lineage(**kwargs)
+
+    assert task_a == task_b
+    assert source_a == source_b
+    assert notes_a == notes_b
+
+
 def test_save_manager_state_syncs_investigations_registry_files(tmp_path: Path) -> None:
     state = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
     project = state["projects"]["default"]
@@ -532,8 +1398,26 @@ def test_load_manager_state_preserves_todo_proposals_and_lineage_fields(tmp_path
     state_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
     loaded = gw.load_manager_state(state_path, tmp_path, team_dir)
+    loaded_runtime = runtime_core.load_manager_state(
+        state_path,
+        tmp_path,
+        team_dir,
+        default_manager_state=gw.default_manager_state,
+        now_iso=gw.now_iso,
+        normalize_project_name=gw.normalize_project_name,
+        sanitize_task_record=gw.sanitize_task_record,
+        trim_project_tasks=gw.trim_project_tasks,
+        normalize_task_alias_key=gw.normalize_task_alias_key,
+        bool_from_json=gw.bool_from_json,
+        normalize_project_alias=gw.normalize_project_alias,
+        backfill_task_aliases=gw.backfill_task_aliases,
+        ensure_project_aliases=gw.ensure_project_aliases,
+        sanitize_project_lock_row=gw.sanitize_project_lock_row,
+        sanitize_chat_session_row=gw.sanitize_chat_session_row,
+    )
     project = loaded["projects"]["default"]
 
+    assert loaded_runtime == loaded
     assert project["todo_proposal_seq"] == 1
     assert project["todo_proposals"][0]["source_request_id"] == "REQ-123"
     assert project["todo_proposals"][0]["confidence"] == 0.8
@@ -583,6 +1467,106 @@ def test_extract_followup_todo_proposals_normalizes_json_payload() -> None:
     assert rows[0]["priority"] == "P1"
     assert rows[0]["kind"] == "handoff"
     assert rows[0]["confidence"] == 0.88
+
+
+def test_orch_responses_module_matches_gateway_wrappers() -> None:
+    def _fake_run_codex_exec(args, prompt, timeout_sec=0):
+        if "proposals" in prompt:
+            return json.dumps(
+                {
+                    "proposals": [
+                        {
+                            "summary": "prepare deployment checklist",
+                            "priority": "P1",
+                            "kind": "handoff",
+                            "reason": "release notes mention it is missing",
+                            "confidence": 0.88,
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        if "\"verdict\"" in prompt or "execution critic" in prompt or "execution critic이다" in prompt:
+            return json.dumps(
+                {
+                    "verdict": "retry",
+                    "action": "replan",
+                    "reason": "missing validation",
+                    "fix": "add verifier pass",
+                },
+                ensure_ascii=False,
+            )
+        return "ok"
+
+    args = argparse.Namespace(orch_command_timeout_sec=120)
+    state = {"replies": [{"role": "Reviewer", "body": "need one more validation step"}]}
+    task = {"todo_id": "TODO-001", "plan": {"summary": "release prep", "subtasks": [{"title": "draft"}]}}
+
+    original = gw.run_codex_exec
+    gw.run_codex_exec = _fake_run_codex_exec
+    try:
+        assert gw.run_orchestrator_direct(args, "hello", reply_lang="ko") == orch_responses.run_orchestrator_direct(
+            args,
+            "hello",
+            reply_lang="ko",
+            default_reply_lang=gw.DEFAULT_REPLY_LANG,
+            normalize_chat_lang_token=gw.normalize_chat_lang_token,
+            run_codex_exec=_fake_run_codex_exec,
+        )
+        assert gw.synthesize_orchestrator_response(args, "hello", state, reply_lang="ko") == orch_responses.synthesize_orchestrator_response(
+            args,
+            "hello",
+            state,
+            reply_lang="ko",
+            default_reply_lang=gw.DEFAULT_REPLY_LANG,
+            normalize_chat_lang_token=gw.normalize_chat_lang_token,
+            run_codex_exec=_fake_run_codex_exec,
+        )
+        assert gw.critique_task_execution_result(
+            args,
+            "hello",
+            state,
+            task=task,
+            attempt_no=1,
+            max_attempts=3,
+            reply_lang="ko",
+        ) == orch_responses.critique_task_execution_result(
+            args,
+            "hello",
+            state,
+            task=task,
+            attempt_no=1,
+            max_attempts=3,
+            reply_lang="ko",
+            default_reply_lang=gw.DEFAULT_REPLY_LANG,
+            normalize_chat_lang_token=gw.normalize_chat_lang_token,
+            mask_sensitive_text=gw.mask_sensitive_text,
+            run_codex_exec=_fake_run_codex_exec,
+            parse_json_object_from_text=gw.parse_json_object_from_text,
+            normalize_exec_critic_payload=gw.normalize_exec_critic_payload,
+            now_iso=gw.now_iso,
+        )
+        assert gw.extract_followup_todo_proposals(
+            args,
+            "run release prep",
+            state,
+            task=task,
+            reply_lang="ko",
+        ) == orch_responses.extract_followup_todo_proposals(
+            args,
+            "run release prep",
+            state,
+            task=task,
+            reply_lang="ko",
+            default_reply_lang=gw.DEFAULT_REPLY_LANG,
+            default_orch_command_timeout_sec=gw.DEFAULT_ORCH_COMMAND_TIMEOUT_SEC,
+            normalize_chat_lang_token=gw.normalize_chat_lang_token,
+            mask_sensitive_text=gw.mask_sensitive_text,
+            run_codex_exec=_fake_run_codex_exec,
+            parse_json_object_from_text=gw.parse_json_object_from_text,
+        )
+    finally:
+        gw.run_codex_exec = original
 
 
 def test_ensure_tf_exec_workspace_records_project_envelope(tmp_path: Path, monkeypatch) -> None:
@@ -969,6 +1953,73 @@ def test_task_state_snapshot_and_sync_match_gateway() -> None:
     assert task_b["stages"] == task_a["stages"]
 
 
+def test_task_state_sanitize_task_record_matches_gateway(monkeypatch) -> None:
+    monkeypatch.setattr(gw, "now_iso", lambda: "2026-03-11T10:00:00+0900")
+    raw_task = {
+        "mode": "weird",
+        "prompt": "  Review the output  ",
+        "roles": ["Local-Dev", "Reviewer", "Local-Dev"],
+        "verifier_roles": ["Reviewer", "Reviewer"],
+        "require_verifier": 1,
+        "stages": {"planning": "complete", "execution": "active", "garbage": "bad"},
+        "stage": "unknown",
+        "history": [
+            {"at": "", "stage": "planning", "status": "success", "note": "ready"},
+            {"at": "", "stage": "bad", "status": "oops"},
+        ],
+        "status": "done",
+        "short_id": "t-008",
+        "alias": " review-output ",
+        "control_mode": "DISPATCH",
+        "source_request_id": "REQ-00123456789",
+        "retry_of": "REQ-0001",
+        "replan_of": "REQ-0002",
+        "retry_children": ["REQ-010", "REQ-010", ""],
+        "replan_children": ["REQ-020", "REQ-021", "REQ-020"],
+        "initiator_chat_id": "939062873",
+        "todo_id": "TODO-004",
+        "todo_priority": "p2",
+        "todo_status": "RUNNING",
+        "plan": {
+            "summary": "demo",
+            "meta": {"worker_roles": ["Reviewer", "Local-Dev", "Reviewer"]},
+            "subtasks": [{"id": "S1", "title": "check", "owner_role": "Reviewer"}],
+        },
+        "plan_critic": {"approved": False, "issues": ["missing acceptance"]},
+        "plan_roles": ["Reviewer", "Local-Dev", "Reviewer"],
+        "plan_replans": [{"attempt": "2", "critic": "retry", "subtasks": "3"}],
+        "plan_gate_passed": False,
+        "exec_critic": {
+            "verdict": "success",
+            "action": "none",
+            "attempt": 1,
+            "max_attempts": 3,
+            "at": "",
+        },
+        "context": {"project_key": "demo"},
+    }
+
+    expected = gw.sanitize_task_record(copy.deepcopy(raw_task), "REQ-777")
+    actual = task_state.sanitize_task_record(
+        copy.deepcopy(raw_task),
+        "REQ-777",
+        dedupe_roles=gw.dedupe_roles,
+        lifecycle_stages=gw.LIFECYCLE_STAGES,
+        normalize_stage_status=gw.normalize_stage_status,
+        normalize_task_status=gw.normalize_task_status,
+        now_iso=gw.now_iso,
+        history_limit=gw.DEFAULT_TASK_HISTORY_LIMIT,
+        normalize_task_plan_schema=gw.normalize_task_plan_schema,
+        normalize_plan_critic_payload=gw.normalize_plan_critic_payload,
+        normalize_plan_replans_payload=gw.normalize_plan_replans_payload,
+        plan_critic_primary_issue=gw.plan_critic_primary_issue,
+        normalize_exec_critic_payload=gw.normalize_exec_critic_payload,
+        build_task_context=gw.build_task_context,
+    )
+
+    assert actual == expected
+
+
 def test_tf_worker_specs_use_request_scoped_session_and_logs(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     team_dir = project_root / ".aoe-team"
@@ -1202,6 +2253,147 @@ def test_finalize_request_reply_messages_marks_only_unresolved(monkeypatch, tmp_
     assert calls == [("m_sent", "Orchestrator", "gateway integrated reply into final response")]
 
 
+def test_request_state_module_matches_gateway_request_helpers(monkeypatch, tmp_path: Path) -> None:
+    args = argparse.Namespace(
+        aoe_team_bin="aoe-team",
+        team_dir=tmp_path / ".aoe-team",
+        state_file=tmp_path / "gateway_state.json",
+    )
+    args.team_dir.mkdir(parents=True, exist_ok=True)
+
+    class Proc:
+        returncode = 0
+        stdout = json.dumps({"request_id": "REQ-1", "counts": {"messages": 1, "assignments": 1, "replies": 0}})
+        stderr = ""
+
+    monkeypatch.setattr(gw, "run_command", lambda cmd, env, timeout_sec: Proc())
+
+    assert gw.run_request_query(args, "REQ-1") == request_state.run_request_query(
+        args,
+        "REQ-1",
+        run_command=lambda cmd, env, timeout_sec: Proc(),
+    )
+
+    task = {"request_id": "REQ-1", "short_id": "T-001", "alias": "demo", "status": "running"}
+    state = {
+        "request_id": "REQ-1",
+        "complete": False,
+        "counts": {"messages": 1, "assignments": 1, "replies": 0},
+        "roles": [{"role": "Reviewer", "status": "pending", "message_id": "m-1"}],
+        "unresolved_roles": ["Reviewer"],
+    }
+
+    assert gw.summarize_request_state(state, task=task) == request_state.summarize_request_state(
+        state,
+        task=task,
+        task_display_label=gw.task_display_label,
+    )
+    assert gw.render_run_response(state, task=task, report_level="short") == request_state.render_run_response(
+        state,
+        task=task,
+        report_level="short",
+        default_report_level=gw.DEFAULT_REPORT_LEVEL,
+        task_display_label=gw.task_display_label,
+        summarize_state=gw.summarize_state,
+    )
+
+    reply_state = {
+        "request_id": "REQ-1",
+        "reply_messages": [
+            {"id": "m-1", "from": "Reviewer", "status": "sent"},
+            {"id": "m-2", "from": "Reviewer", "status": "done"},
+        ],
+    }
+    done_calls: list[tuple[str, str, str]] = []
+
+    def _done(_args, message_id: str, actor: str, note: str) -> tuple[bool, str]:
+        done_calls.append((message_id, actor, note))
+        return True, "ok"
+
+    monkeypatch.setattr(gw, "run_request_query", lambda _args, _rid: reply_state)
+    monkeypatch.setattr(gw, "run_message_done", _done)
+
+    assert gw.finalize_request_reply_messages(
+        args,
+        "REQ-1",
+        actor="Orchestrator",
+        note="note",
+    ) == request_state.finalize_request_reply_messages(
+        args,
+        "REQ-1",
+        run_request_query=lambda _args, _rid: reply_state,
+        run_message_done=_done,
+        actor="Orchestrator",
+        note="note",
+    )
+    assert done_calls == [("m-1", "Orchestrator", "note"), ("m-1", "Orchestrator", "note")]
+
+
+def test_tf_exec_module_matches_gateway_exec_helpers(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AOE_TF_EXEC_MODE", "inplace")
+
+    project_root = tmp_path / "project"
+    team_dir = project_root / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+
+    args_a = argparse.Namespace(
+        project_root=project_root,
+        team_dir=team_dir,
+        orch_command_timeout_sec=900,
+        aoe_orch_bin="/usr/bin/aoe-orch",
+        orch_poll_sec=2.0,
+        roles="",
+        priority="P2",
+        orch_timeout_sec=120,
+        no_wait=False,
+        _aoe_project_key="demo_proj",
+        _aoe_project_alias="O9",
+        _aoe_control_mode="retry",
+        _aoe_source_request_id="REQ-000",
+    )
+    args_b = copy.deepcopy(args_a)
+    args_b._aoe_default_tf_worker_session_prefix = gw.DEFAULT_TF_WORKER_SESSION_PREFIX
+
+    meta_a = gw.ensure_tf_exec_workspace(args_a, "REQ-001")
+    meta_b = tf_exec.ensure_tf_exec_workspace(
+        args_b,
+        "REQ-002",
+        default_tf_exec_mode=gw.DEFAULT_TF_EXEC_MODE,
+        default_tf_work_root_name=gw.DEFAULT_TF_WORK_ROOT_NAME,
+        default_tf_exec_map_file=gw.DEFAULT_TF_EXEC_MAP_FILE,
+        now_iso=gw.now_iso,
+        run_command=gw.run_command,
+    )
+    assert meta_a["project_key"] == meta_b["project_key"] == "demo_proj"
+    assert meta_a["project_alias"] == meta_b["project_alias"] == "O9"
+
+    specs_a = gw.tf_worker_specs(args_a, "REQ-123", ["Reviewer"], startup_timeout_sec=120)
+    specs_b = tf_exec.tf_worker_specs(args_b, "REQ-123", ["Reviewer"], startup_timeout_sec=120)
+    assert specs_a == specs_b
+
+    class Proc:
+        returncode = 0
+        stdout = json.dumps({"request_id": "REQ-1", "dispatch_plan": [{"role": "DataEngineer"}, {"role": "Reviewer"}]})
+        stderr = ""
+
+    original_run_command = gw.run_command
+    gw.run_command = lambda cmd, env, timeout_sec: Proc()
+    try:
+        roles_a = gw.resolve_dispatch_roles_from_preview(args_a, "Check quality", "REQ-1", "", "P2", 120)
+        roles_b = tf_exec.resolve_dispatch_roles_from_preview(
+            args_b,
+            "Check quality",
+            "REQ-1",
+            "",
+            "P2",
+            120,
+            run_command=gw.run_command,
+        )
+    finally:
+        gw.run_command = original_run_command
+    assert roles_a == roles_b == ["DataEngineer", "Reviewer"]
+
+
 def test_infer_natural_run_mode_treats_direct_as_bias_not_force() -> None:
     assert tg_parse.infer_natural_run_mode("로그인 버그를 수정해줘", "direct") == "dispatch"
     assert tg_parse.infer_natural_run_mode("지금 상태 설명해줘", "direct") == "direct"
@@ -1229,6 +2421,52 @@ def test_set_and_clear_project_lock_roundtrip() -> None:
     assert gw.clear_project_lock(state) is True
     assert gw.get_project_lock_key(state) == ""
     assert gw.clear_project_lock(state) is False
+
+
+def test_project_state_module_matches_gateway_project_helpers(tmp_path: Path) -> None:
+    state = _empty_state()
+    project_root = tmp_path / "TwinPaper"
+    team_dir = project_root / ".aoe-team"
+    state["projects"]["twinpaper"] = {
+        "name": "twinpaper",
+        "display_name": "TwinPaper",
+        "project_alias": "O2",
+        "project_root": str(project_root),
+        "team_dir": str(team_dir),
+        "tasks": {},
+    }
+
+    assert gw.normalize_project_name("Twin Paper") == project_state.normalize_project_name("Twin Paper")
+    assert gw.normalize_project_alias("o2") == project_state.normalize_project_alias("o2")
+    assert gw.extract_project_alias_index("O2") == project_state.extract_project_alias_index("O2")
+    assert gw.ensure_project_aliases(state) == project_state.ensure_project_aliases(state)
+    assert gw.project_alias_for_key(state, "twinpaper") == project_state.project_alias_for_key(state, "twinpaper")
+
+    state_for_mod = copy.deepcopy(state)
+    original_now_iso = gw.now_iso
+    try:
+        gw.now_iso = lambda: "2026-03-11T12:00:00+0900"
+        row = gw.set_project_lock(state, "twinpaper", actor="chat:939062873")
+        row_mod = project_state.set_project_lock(
+            state_for_mod,
+            "twinpaper",
+            now_iso=lambda: "2026-03-11T12:00:00+0900",
+            actor="chat:939062873",
+        )
+    finally:
+        gw.now_iso = original_now_iso
+    assert row == row_mod
+    assert gw.get_project_lock_key(state) == project_state.get_project_lock_key(state, bool_from_json=gw.bool_from_json)
+    assert gw.project_lock_label(state) == project_state.project_lock_label(state, bool_from_json=gw.bool_from_json)
+
+    key_a, entry_a = gw.get_manager_project(state, "O2")
+    key_b, entry_b = project_state.get_manager_project(state, "O2", bool_from_json=gw.bool_from_json)
+    assert (key_a, entry_a) == (key_b, entry_b)
+
+    args = argparse.Namespace(project_root=project_root, team_dir=team_dir, foo="bar")
+    a_args = gw.make_project_args(args, entry_a, key=key_a)
+    b_args = project_state.make_project_args(args, entry_b, key=key_b)
+    assert vars(a_args) == vars(b_args)
 
 
 def test_get_manager_project_respects_hard_project_lock() -> None:
@@ -1388,6 +2626,57 @@ def test_summarize_orch_registry_marks_unready_project(tmp_path: Path) -> None:
     assert "runtime=missing orchestrator.json" in text
 
 
+def test_orch_registry_module_matches_gateway_summary_and_status(tmp_path: Path, monkeypatch) -> None:
+    state = _empty_state()
+    team_dir = tmp_path / "TwinPaper" / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    state["projects"]["twinpaper"] = {
+        "name": "twinpaper",
+        "display_name": "TwinPaper",
+        "project_alias": "O2",
+        "project_root": str(tmp_path / "TwinPaper"),
+        "team_dir": str(team_dir),
+        "last_sync_mode": "scenario",
+        "todos": [{"id": "TODO-001", "summary": "first", "priority": "P1", "status": "open"}],
+        "tasks": {},
+    }
+    state["active"] = "twinpaper"
+
+    gw_text = gw.summarize_orch_registry(state)
+    mod_text = orch_registry.summarize_orch_registry(
+        state,
+        ensure_project_aliases=gw.ensure_project_aliases,
+        project_alias_for_key=gw.project_alias_for_key,
+        project_lock_label=gw.project_lock_label,
+        extract_project_alias_index=gw.extract_project_alias_index,
+        bool_from_json=gw.bool_from_json,
+        task_display_label=gw.task_display_label,
+        normalize_task_status=gw.normalize_task_status,
+    )
+    assert gw_text == mod_text
+
+    args = argparse.Namespace(
+        aoe_orch_bin="aoe-orch",
+        project_root=tmp_path / "TwinPaper",
+        team_dir=team_dir,
+        state_file=tmp_path / "gateway_state.json",
+    )
+
+    class Proc:
+        returncode = 0
+        stdout = "status ok"
+        stderr = ""
+
+    monkeypatch.setattr(gw, "run_command", lambda cmd, env, timeout_sec: Proc())
+    monkeypatch.setattr(gw, "summarize_gateway_poll_state", lambda path: "poll-summary")
+
+    assert gw.run_aoe_status(args) == orch_registry.run_aoe_status(
+        args,
+        run_command=lambda cmd, env, timeout_sec: Proc(),
+        summarize_gateway_poll_state=lambda path: "poll-summary",
+    )
+
+
 def test_drain_peek_next_todo_skips_unready_project_and_selects_ready_one(tmp_path: Path) -> None:
     state = _empty_state()
     bad_team = tmp_path / "TwinPaper" / ".aoe-team"
@@ -1443,6 +2732,119 @@ def test_drain_peek_next_todo_ignores_blocked_rows_when_open_todo_exists(tmp_pat
     assert key == "local"
     assert todo_id == "TODO-002"
     assert reason == "candidate"
+
+
+def test_gateway_batch_ops_module_matches_gateway_drain_peek(tmp_path: Path) -> None:
+    state = _empty_state()
+    team = tmp_path / "Local" / ".aoe-team"
+    team.mkdir(parents=True, exist_ok=True)
+    (team / "orchestrator.json").write_text("{}", encoding="utf-8")
+
+    state["projects"]["local"] = {
+        "name": "local",
+        "display_name": "Local",
+        "project_alias": "O3",
+        "project_root": str(tmp_path / "Local"),
+        "team_dir": str(team),
+        "todos": [
+            {"id": "TODO-001", "summary": "blocked first", "priority": "P1", "status": "blocked"},
+            {"id": "TODO-002", "summary": "open second", "priority": "P2", "status": "open"},
+        ],
+    }
+
+    assert gateway_batch_ops.drain_peek_next_todo(state, "939062873", force=False) == gw._drain_peek_next_todo(
+        state,
+        "939062873",
+        force=False,
+    )
+
+
+def test_queue_engine_matches_gateway_and_scheduler_next_selection(tmp_path: Path) -> None:
+    state = _empty_state()
+    team = tmp_path / "Local" / ".aoe-team"
+    team.mkdir(parents=True, exist_ok=True)
+    (team / "orchestrator.json").write_text("{}", encoding="utf-8")
+
+    state["projects"]["local"] = {
+        "name": "local",
+        "display_name": "Local",
+        "project_alias": "O3",
+        "project_root": str(tmp_path / "Local"),
+        "team_dir": str(team),
+        "todos": [
+            {"id": "TODO-001", "summary": "blocked first", "priority": "P1", "status": "blocked"},
+            {"id": "TODO-002", "summary": "open second", "priority": "P2", "status": "open"},
+        ],
+    }
+
+    queue_pick = queue_engine.pick_global_next_candidate(state["projects"], ignore_busy=False, skip_paused=True)
+    sched_pick = sched._pick_global_next_candidate(state["projects"], ignore_busy=False, skip_paused=True)
+    gw_pick = gw._drain_peek_next_todo(state, "939062873", force=False)
+
+    assert isinstance(queue_pick, dict)
+    assert isinstance(sched_pick, dict)
+    assert queue_pick["project_key"] == "local"
+    assert queue_pick["todo"]["id"] == "TODO-002"
+    assert sched_pick["project_key"] == queue_pick["project_key"]
+    assert sched_pick["todo"]["id"] == queue_pick["todo"]["id"]
+    assert gw_pick == ("local", "TODO-002", "candidate")
+
+
+def test_transport_module_matches_gateway_transport_exports() -> None:
+    previous = os.environ.get("AOE_TG_COMMAND_PREFIXES")
+    os.environ["AOE_TG_COMMAND_PREFIXES"] = "!/"
+    try:
+        body = "alpha\nbeta\n" + ("z" * 300)
+        assert gw.split_text(body, 120) == transport.split_text(body, 120)
+        assert gw.preferred_command_prefix() == transport.preferred_command_prefix() == "!"
+        assert gw.build_quick_reply_keyboard() == transport.build_quick_reply_keyboard()
+    finally:
+        if previous is None:
+            os.environ.pop("AOE_TG_COMMAND_PREFIXES", None)
+        else:
+            os.environ["AOE_TG_COMMAND_PREFIXES"] = previous
+
+
+def test_runtime_core_matches_gateway_path_and_default_state_helpers(tmp_path: Path) -> None:
+    project_root = runtime_core.resolve_project_root(str(tmp_path))
+    team_dir = runtime_core.resolve_team_dir(project_root, None)
+    state_file = runtime_core.resolve_state_file(project_root, None)
+
+    assert gw.resolve_project_root(str(tmp_path)) == project_root
+    assert gw.resolve_team_dir(project_root, None) == team_dir
+    assert gw.resolve_state_file(project_root, None) == state_file
+
+    expected = runtime_core.default_manager_state(project_root, team_dir, now_iso=gw.now_iso)
+    actual = gw.default_manager_state(project_root, team_dir)
+    assert actual == expected
+
+
+def test_gateway_events_module_matches_gateway_task_identifiers() -> None:
+    task = {"short_id": "T-001", "alias": "demo"}
+    assert gw.task_identifiers(task) == gateway_events.task_identifiers(task)
+
+
+def test_runtime_core_matches_gateway_default_project_registration(tmp_path: Path) -> None:
+    state_a = {"active": "missing", "projects": {"demo": {"name": "demo", "project_alias": "O2"}}}
+    state_b = copy.deepcopy(state_a)
+    project_root = tmp_path
+    team_dir = tmp_path / ".aoe-team"
+
+    gw.ensure_default_project_registered(state_a, project_root, team_dir)
+    runtime_core.ensure_default_project_registered(
+        state_b,
+        project_root,
+        team_dir,
+        now_iso=gw.now_iso,
+        bool_from_json=gw.bool_from_json,
+        normalize_project_alias=gw.normalize_project_alias,
+        normalize_project_name=gw.normalize_project_name,
+        sanitize_project_lock_row=gw.sanitize_project_lock_row,
+        ensure_project_aliases=gw.ensure_project_aliases,
+        backfill_task_aliases=gw.backfill_task_aliases,
+    )
+
+    assert state_a == state_b
 
 
 def test_orch_map_reply_markup_contains_use_focus_status_todo_and_active_sync_actions() -> None:
@@ -2887,6 +4289,180 @@ def test_enforce_dispatch_policies_planning_gate_adds_project_quick_actions() ->
     assert "/map" in buttons
 
 
+def test_run_guards_module_matches_run_guard_exports() -> None:
+    assert run_handlers._confirm_required_reply_markup() == run_guards.confirm_required_reply_markup()
+    assert run_handlers._rate_limit_reply_markup({"project_alias": "O2"}, "twinpaper") == run_guards.rate_limit_reply_markup({"project_alias": "O2"}, "twinpaper")
+    assert run_handlers._rate_limit_reply_markup(None, "") == run_guards.rate_limit_reply_markup(None, "")
+
+    guard_run = run_handlers._resolve_effective_run_options(
+        p_args=argparse.Namespace(priority="P2", orch_timeout_sec=120, no_wait=False),
+        run_priority_override="P1",
+        run_timeout_override=30,
+        run_no_wait_override=True,
+    )
+    guard_mod = run_guards.resolve_effective_run_options(
+        p_args=argparse.Namespace(priority="P2", orch_timeout_sec=120, no_wait=False),
+        run_priority_override="P1",
+        run_timeout_override=30,
+        run_no_wait_override=True,
+    )
+    assert guard_run == guard_mod
+
+    preview_run = run_handlers._build_dry_run_preview(
+        key="twinpaper",
+        dispatch_mode=True,
+        prompt="implement feature",
+        dispatch_roles="Reviewer",
+        require_verifier=True,
+        verifier_roles=["Reviewer"],
+        verifier_added=False,
+        run_control_mode="retry",
+        run_source_request_id="REQ-1",
+        planning_enabled=True,
+        reuse_source_plan=False,
+        plan_data={"subtasks": [{"id": "S1"}]},
+        plan_replans=[{"attempt": 1}],
+        plan_gate_blocked=False,
+        plan_error="",
+        effective_priority="P1",
+        effective_timeout=60,
+        effective_no_wait=False,
+    )
+    preview_mod = run_guards.build_dry_run_preview(
+        key="twinpaper",
+        dispatch_mode=True,
+        prompt="implement feature",
+        dispatch_roles="Reviewer",
+        require_verifier=True,
+        verifier_roles=["Reviewer"],
+        verifier_added=False,
+        run_control_mode="retry",
+        run_source_request_id="REQ-1",
+        planning_enabled=True,
+        reuse_source_plan=False,
+        plan_data={"subtasks": [{"id": "S1"}]},
+        plan_replans=[{"attempt": 1}],
+        plan_gate_blocked=False,
+        plan_error="",
+        effective_priority="P1",
+        effective_timeout=60,
+        effective_no_wait=False,
+    )
+    assert preview_run == preview_mod
+
+    sent_run: list[tuple[str, str, dict | None]] = []
+    sent_mod: list[tuple[str, str, dict | None]] = []
+    logged_run: list[dict] = []
+    logged_mod: list[dict] = []
+    common = dict(
+        cmd="run",
+        args=argparse.Namespace(
+            dry_run=False,
+            manager_state_file=ROOT / ".aoe-team" / "orch_manager_state.json",
+            chat_max_running=1,
+            chat_daily_cap=20,
+        ),
+        manager_state=_empty_state(),
+        chat_id="939062873",
+        key="twinpaper",
+        entry={"project_alias": "O2"},
+        run_auto_source="default",
+        run_force_mode="dispatch",
+        orch_target="O2",
+        prompt="implement feature",
+        summarize_chat_usage=lambda manager_state, chat_id: (1, 0),
+        detect_high_risk_prompt=lambda prompt: "",
+        set_confirm_action=lambda *args, **kwargs: None,
+        save_manager_state=lambda path, manager_state: None,
+    )
+    handled_run = run_handlers._handle_run_rate_limit_and_confirm(
+        send=lambda body, **kwargs: sent_run.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda **kwargs: logged_run.append(kwargs),
+        **common,
+    )
+    handled_mod = run_guards.handle_run_rate_limit_and_confirm(
+        send=lambda body, **kwargs: sent_mod.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda **kwargs: logged_mod.append(kwargs),
+        **common,
+    )
+    assert handled_run == handled_mod == True
+    assert sent_run == sent_mod
+    assert logged_run == logged_mod
+
+    policy_sent_run: list[tuple[str, str, dict | None]] = []
+    policy_sent_mod: list[tuple[str, str, dict | None]] = []
+    policy_run = run_handlers._enforce_dispatch_policies(
+        dispatch_mode=True,
+        args=argparse.Namespace(require_verifier=False),
+        key="twinpaper",
+        entry={"project_alias": "O2"},
+        selected_roles=["Local-Dev"],
+        available_roles=["Local-Dev", "Reviewer"],
+        verifier_candidates=["Reviewer"],
+        plan_gate_blocked=True,
+        plan_gate_reason="critic unresolved after auto-replan",
+        plan_replans=[{"attempt": 1}],
+        ensure_verifier_roles=lambda **kwargs: (["Local-Dev"], ["Reviewer"], False, ["Reviewer"]),
+        dispatch_roles="Local-Dev",
+        send=lambda body, **kwargs: policy_sent_run.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+    )
+    policy_mod = run_guards.enforce_dispatch_policies(
+        dispatch_mode=True,
+        args=argparse.Namespace(require_verifier=False),
+        key="twinpaper",
+        entry={"project_alias": "O2"},
+        selected_roles=["Local-Dev"],
+        available_roles=["Local-Dev", "Reviewer"],
+        verifier_candidates=["Reviewer"],
+        plan_gate_blocked=True,
+        plan_gate_reason="critic unresolved after auto-replan",
+        plan_replans=[{"attempt": 1}],
+        ensure_verifier_roles=lambda **kwargs: (["Local-Dev"], ["Reviewer"], False, ["Reviewer"]),
+        dispatch_roles="Local-Dev",
+        send=lambda body, **kwargs: policy_sent_mod.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+    )
+    assert policy_run == policy_mod
+    assert policy_sent_run == policy_sent_mod
+
+    confirm_state_a = _empty_state()
+    confirm_state_b = copy.deepcopy(confirm_state_a)
+    gw.set_confirm_action(confirm_state_a, chat_id="939062873", mode="dispatch", prompt="rm -rf /tmp/demo", risk="destructive_delete")
+    gw.set_confirm_action(confirm_state_b, chat_id="939062873", mode="dispatch", prompt="rm -rf /tmp/demo", risk="destructive_delete")
+    saved_a: list[Path] = []
+    saved_b: list[Path] = []
+    confirm_sent_a: list[tuple[str, dict]] = []
+    confirm_sent_b: list[tuple[str, dict]] = []
+
+    result_a = run_handlers.resolve_confirm_run_transition(
+        cmd="confirm-run",
+        args=argparse.Namespace(dry_run=False, manager_state_file=ROOT / ".aoe-team" / "orch_manager_state.json", confirm_ttl_sec=300),
+        manager_state=confirm_state_a,
+        chat_id="939062873",
+        orch_target="O2",
+        send=lambda body, **kwargs: confirm_sent_a.append((body, kwargs)) or True,
+        get_confirm_action=gw.get_confirm_action,
+        parse_iso_ts=gw.parse_iso_ts,
+        clear_confirm_action=gw.clear_confirm_action,
+        save_manager_state=lambda path, manager_state: saved_a.append(path),
+    )
+    result_b = run_guards.resolve_confirm_run_transition(
+        cmd="confirm-run",
+        args=argparse.Namespace(dry_run=False, manager_state_file=ROOT / ".aoe-team" / "orch_manager_state.json", confirm_ttl_sec=300),
+        manager_state=confirm_state_b,
+        chat_id="939062873",
+        orch_target="O2",
+        send=lambda body, **kwargs: confirm_sent_b.append((body, kwargs)) or True,
+        get_confirm_action=gw.get_confirm_action,
+        parse_iso_ts=gw.parse_iso_ts,
+        clear_confirm_action=gw.clear_confirm_action,
+        save_manager_state=lambda path, manager_state: saved_b.append(path),
+    )
+    assert result_a == result_b
+    assert confirm_state_a == confirm_state_b
+    assert confirm_sent_a == confirm_sent_b
+    assert saved_a == saved_b
+
+
 def test_send_dispatch_result_adds_project_quick_actions_for_confirmed_result() -> None:
     sent: list[tuple[str, str, dict | None]] = []
 
@@ -3046,6 +4622,90 @@ def test_send_dispatch_exception_adds_project_quick_actions() -> None:
     assert "/sync preview O2 1h" in buttons
     assert "/queue" in buttons
     assert "/map" in buttons
+
+
+def test_exec_results_module_matches_run_response_exports() -> None:
+    entry = {"project_alias": "O2"}
+    assert run_handlers._confirmed_result_reply_markup(entry, "twinpaper") == exec_results.confirmed_result_reply_markup(entry, "twinpaper")
+    assert run_handlers._early_gate_reply_markup(entry, "twinpaper") == exec_results.early_gate_reply_markup(entry, "twinpaper")
+    assert run_handlers._intervention_reply_markup(entry, "twinpaper", "REQ-9") == exec_results.intervention_reply_markup(entry, "twinpaper", "REQ-9")
+
+    sent_run: list[tuple[str, str, dict | None]] = []
+    sent_mod: list[tuple[str, str, dict | None]] = []
+    run_handlers._send_exec_critic_intervention(
+        entry=entry,
+        key="twinpaper",
+        final_req_id="REQ-7",
+        verdict="retry",
+        reason="critic unresolved after repair",
+        exec_attempt=2,
+        exec_max_attempts=3,
+        send=lambda body, **kwargs: sent_run.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+    )
+    exec_results.send_exec_critic_intervention(
+        entry=entry,
+        key="twinpaper",
+        final_req_id="REQ-7",
+        verdict="retry",
+        reason="critic unresolved after repair",
+        exec_attempt=2,
+        exec_max_attempts=3,
+        send=lambda body, **kwargs: sent_mod.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+    )
+    assert sent_run == sent_mod
+
+    exc_run: list[tuple[str, str, dict | None]] = []
+    exc_mod: list[tuple[str, str, dict | None]] = []
+    run_handlers._send_dispatch_exception(
+        entry=entry,
+        key="twinpaper",
+        todo_id="TODO-001",
+        reason="missing orchestrator.json",
+        send=lambda body, **kwargs: exc_run.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+    )
+    exec_results.send_dispatch_exception(
+        entry=entry,
+        key="twinpaper",
+        todo_id="TODO-001",
+        reason="missing orchestrator.json",
+        send=lambda body, **kwargs: exc_mod.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+    )
+    assert exc_run == exc_mod
+
+    result_run: list[tuple[str, str, dict | None]] = []
+    result_mod: list[tuple[str, str, dict | None]] = []
+    log_run: list[dict] = []
+    log_mod: list[dict] = []
+    common = dict(
+        args=argparse.Namespace(require_verifier=False),
+        key="twinpaper",
+        entry=entry,
+        p_args=argparse.Namespace(),
+        prompt="dangerous but approved",
+        state={"complete": True, "replies": [{"role": "Reviewer", "text": "ok"}]},
+        req_id="REQ-1",
+        task=None,
+        run_control_mode="normal",
+        run_source_request_id="",
+        run_auto_source="confirmed",
+        summarize_task_lifecycle=lambda key, task: "",
+        synthesize_orchestrator_response=lambda p_args, prompt, state: "synthed",
+        render_run_response=lambda state, task=None: "run result",
+        finalize_request_reply_messages=lambda args, req_id: {},
+    )
+    handled_run = run_handlers._send_dispatch_result(
+        send=lambda body, **kwargs: result_run.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda **kwargs: log_run.append(kwargs),
+        **common,
+    )
+    handled_mod = exec_results.send_dispatch_result(
+        send=lambda body, **kwargs: result_mod.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda **kwargs: log_mod.append(kwargs),
+        **common,
+    )
+    assert handled_run == handled_mod == True
+    assert result_run == result_mod
+    assert log_run == log_mod
 
 
 def test_handle_run_or_unknown_command_sends_dispatch_exception_and_returns_true(tmp_path: Path) -> None:
@@ -3463,6 +5123,200 @@ def test_capture_todo_proposals_merges_and_alerts() -> None:
     assert any(evt.get("event") == "todo_proposals_created" for evt in logged)
 
 
+def test_exec_pipeline_module_matches_run_terminal_todo_helpers() -> None:
+    entry_a = {
+        "project_alias": "O4",
+        "todos": [
+            {
+                "id": "TODO-004",
+                "summary": "need owner input",
+                "priority": "P1",
+                "status": "blocked",
+                "blocked_count": 2,
+                "blocked_bucket": "manual_followup",
+                "blocked_reason": "critic unresolved after repair",
+            }
+        ],
+        "pending_todo": {
+            "todo_id": "TODO-004",
+            "chat_id": "939062873",
+            "selected_at": "2026-03-06T23:43:25+0900",
+        },
+    }
+    entry_b = copy.deepcopy(entry_a)
+    sent_a: list[tuple[str, str, dict | None]] = []
+    sent_b: list[tuple[str, str, dict | None]] = []
+
+    changed_a = run_handlers._cleanup_terminal_todo_gate(
+        entry=entry_a,
+        chat_id="939062873",
+        todo_id="",
+        pending_todo_used=False,
+        run_auto_source="todo:next",
+        reason="plan gate: critic unresolved after auto-replan",
+        now_iso=lambda: "2026-03-07T00:00:00+0900",
+    )
+    changed_b = exec_pipeline.cleanup_terminal_todo_gate(
+        entry=entry_b,
+        chat_id="939062873",
+        todo_id="",
+        pending_todo_used=False,
+        run_auto_source="todo:next",
+        reason="plan gate: critic unresolved after auto-replan",
+        now_iso=lambda: "2026-03-07T00:00:00+0900",
+        manual_followup_threshold=2,
+    )
+
+    assert changed_a == changed_b
+    assert entry_a == entry_b
+
+    first_a = run_handlers._maybe_send_manual_followup_alert(
+        entry=entry_a,
+        todo_id="TODO-004",
+        project_key="local_map_analysis",
+        send=lambda body, **kwargs: sent_a.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+        now_iso=lambda: "2026-03-07T00:30:00+0900",
+    )
+    first_b = exec_pipeline.maybe_send_manual_followup_alert(
+        entry=entry_b,
+        todo_id="TODO-004",
+        project_key="local_map_analysis",
+        send=lambda body, **kwargs: sent_b.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+        now_iso=lambda: "2026-03-07T00:30:00+0900",
+    )
+
+    assert first_a == first_b == True
+    assert sent_a == sent_b
+    assert entry_a == entry_b
+
+
+def test_exec_pipeline_module_matches_run_dispatch_sync_and_proposal_capture() -> None:
+    entry_a = {"project_alias": "O2", "last_request_id": ""}
+    entry_b = copy.deepcopy(entry_a)
+    manager_state_a = {"projects": {"twinpaper": entry_a}}
+    manager_state_b = {"projects": {"twinpaper": entry_b}}
+    touches_a: list[tuple] = []
+    touches_b: list[tuple] = []
+    selects_a: list[tuple] = []
+    selects_b: list[tuple] = []
+
+    def _run_aoe_orch(*_args, **_kwargs):
+        return {"request_id": "REQ-123", "complete": False, "replies": []}
+
+    def _sync_task_lifecycle(**kwargs):
+        return {
+            "request_id": kwargs["request_data"]["request_id"],
+            "status": "running",
+            "stages": {"verification": "pending"},
+        }
+
+    result_a = run_handlers._dispatch_and_sync_task(
+        p_args=argparse.Namespace(),
+        dispatch_prompt="dispatch prompt",
+        chat_id="939062873",
+        dispatch_roles="Reviewer",
+        run_priority_override=None,
+        run_timeout_override=None,
+        run_no_wait_override=None,
+        key="twinpaper",
+        entry=entry_a,
+        manager_state=manager_state_a,
+        prompt="original prompt",
+        selected_roles=["Reviewer"],
+        verifier_roles=[],
+        require_verifier=False,
+        verifier_candidates=[],
+        run_aoe_orch=_run_aoe_orch,
+        touch_chat_recent_task_ref=lambda *args: touches_a.append(args),
+        set_chat_selected_task_ref=lambda *args: selects_a.append(args),
+        now_iso=lambda: "2026-03-11T10:00:00+09:00",
+        sync_task_lifecycle=_sync_task_lifecycle,
+    )
+    result_b = exec_pipeline.dispatch_and_sync_task(
+        p_args=argparse.Namespace(),
+        dispatch_prompt="dispatch prompt",
+        chat_id="939062873",
+        dispatch_roles="Reviewer",
+        run_priority_override=None,
+        run_timeout_override=None,
+        run_no_wait_override=None,
+        key="twinpaper",
+        entry=entry_b,
+        manager_state=manager_state_b,
+        prompt="original prompt",
+        selected_roles=["Reviewer"],
+        verifier_roles=[],
+        require_verifier=False,
+        verifier_candidates=[],
+        run_aoe_orch=_run_aoe_orch,
+        touch_chat_recent_task_ref=lambda *args: touches_b.append(args),
+        set_chat_selected_task_ref=lambda *args: selects_b.append(args),
+        now_iso=lambda: "2026-03-11T10:00:00+09:00",
+        sync_task_lifecycle=_sync_task_lifecycle,
+    )
+
+    assert result_a == result_b
+    assert entry_a == entry_b
+    assert touches_a == touches_b
+    assert selects_a == selects_b
+
+    proposal_entry_a = {
+        "project_alias": "O2",
+        "todos": [{"id": "TODO-010", "summary": "existing task", "priority": "P2", "status": "done"}],
+        "todo_seq": 10,
+        "todo_proposals": [],
+        "todo_proposal_seq": 0,
+    }
+    proposal_entry_b = copy.deepcopy(proposal_entry_a)
+    sent_a: list[tuple[str, str, dict | None]] = []
+    sent_b: list[tuple[str, str, dict | None]] = []
+    logged_a: list[dict] = []
+    logged_b: list[dict] = []
+
+    common_kwargs = dict(
+        args=argparse.Namespace(dry_run=False),
+        key="twinpaper",
+        p_args=argparse.Namespace(),
+        prompt="run release prep",
+        state={
+            "complete": True,
+            "replies": [{"role": "Local-Writer", "body": "Release note draft is done. We still need a deployment checklist."}],
+        },
+        req_id="REQ-900",
+        task={"todo_id": "TODO-010", "short_id": "T-900"},
+        todo_id="TODO-010",
+        now_iso=lambda: "2026-03-09T10:00:00+0900",
+        extract_todo_proposals=lambda *args, **kwargs: [
+            {
+                "summary": "prepare deployment checklist",
+                "priority": "P1",
+                "kind": "handoff",
+                "reason": "release note mentions it is still missing",
+                "confidence": 0.88,
+            }
+        ],
+        merge_todo_proposals=todo_handlers.merge_todo_proposals,
+    )
+
+    proposals_a = run_handlers._maybe_capture_todo_proposals(
+        entry=proposal_entry_a,
+        send=lambda body, **kwargs: sent_a.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda **kwargs: logged_a.append(kwargs),
+        **common_kwargs,
+    )
+    proposals_b = exec_pipeline.maybe_capture_todo_proposals(
+        entry=proposal_entry_b,
+        send=lambda body, **kwargs: sent_b.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda **kwargs: logged_b.append(kwargs),
+        **common_kwargs,
+    )
+
+    assert proposals_a == proposals_b
+    assert proposal_entry_a == proposal_entry_b
+    assert sent_a == sent_b
+    assert logged_a == logged_b
+
+
 def test_apply_scenario_items_to_entry_prunes_stale_sync_open_todos() -> None:
     entry = {
         "todos": [
@@ -3846,6 +5700,190 @@ def _call_management_status_with_markup(
     return sent[-1]
 
 
+def _management_control_kwargs(
+    *,
+    tmp_path: Path,
+    manager_state: dict,
+    cmd: str,
+    rest: str,
+    sent: list[tuple[str, dict | None]],
+) -> dict:
+    team_dir = tmp_path / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    return dict(
+        cmd=cmd,
+        args=argparse.Namespace(
+            dry_run=True,
+            team_dir=team_dir,
+            manager_state_file=team_dir / "orch_manager_state.json",
+            default_report_level="normal",
+        ),
+        manager_state=manager_state,
+        chat_id="939062873",
+        chat_role="admin",
+        rest=rest,
+        send=lambda body, **kwargs: sent.append((body, kwargs.get("reply_markup"))) or True,
+        get_default_mode=gw.get_default_mode,
+        get_pending_mode=gw.get_pending_mode,
+        get_chat_report_level=gw.get_chat_report_level,
+        get_chat_room=gw.get_chat_room,
+        set_default_mode=gw.set_default_mode,
+        set_chat_report_level=gw.set_chat_report_level,
+        set_chat_room=gw.set_chat_room,
+        clear_default_mode=gw.clear_default_mode,
+        clear_pending_mode=gw.clear_pending_mode,
+        clear_confirm_action=gw.clear_confirm_action,
+        clear_chat_report_level=gw.clear_chat_report_level,
+        save_manager_state=lambda *args, **kwargs: None,
+        resolve_project_entry=mgmt_handlers._resolve_project_entry,
+        project_lock_row=mgmt_handlers._project_lock_row,
+        project_lock_label=mgmt_handlers._project_lock_label,
+        parse_replace_sync_flag=mgmt_handlers._parse_replace_sync_flag,
+        normalize_prefetch_token=mgmt_handlers._normalize_prefetch_token,
+        prefetch_display=mgmt_handlers._prefetch_display,
+        compact_reason=mgmt_handlers._compact_reason,
+        status_report_level=mgmt_handlers._status_report_level,
+        focused_project_snapshot_lines=mgmt_handlers._focused_project_snapshot_lines,
+        ops_scope_summary=mgmt_handlers._ops_scope_summary,
+        ops_scope_compact_lines=lambda state, limit, detail_level: mgmt_handlers._ops_scope_compact_lines(
+            state, limit=limit, detail_level=detail_level
+        ),
+        offdesk_prepare_targets=mgmt_handlers._offdesk_prepare_targets,
+        offdesk_prepare_project_report=mgmt_handlers._offdesk_prepare_project_report,
+        offdesk_review_reply_markup=lambda flagged, clean=False: mgmt_handlers._offdesk_review_reply_markup(
+            flagged, clean=clean
+        ),
+        offdesk_prepare_reply_markup=lambda reports, blocked_count=0, clean=False: mgmt_handlers._offdesk_prepare_reply_markup(
+            reports, blocked_count=blocked_count, clean=clean
+        ),
+        auto_state_path=mgmt_handlers._auto_state_path,
+        offdesk_state_path=mgmt_handlers._offdesk_state_path,
+        load_auto_state=mgmt_handlers._load_auto_state,
+        save_auto_state=mgmt_handlers._save_auto_state,
+        load_offdesk_state=mgmt_handlers._load_offdesk_state,
+        save_offdesk_state=mgmt_handlers._save_offdesk_state,
+        scheduler_session_name=mgmt_handlers._scheduler_session_name,
+        tmux_has_session=mgmt_handlers._tmux_has_session,
+        tmux_auto_command=mgmt_handlers._tmux_auto_command,
+        now_iso=mgmt_handlers._now_iso,
+        default_auto_interval_sec=mgmt_handlers.DEFAULT_AUTO_INTERVAL_SEC,
+        default_auto_idle_sec=mgmt_handlers.DEFAULT_AUTO_IDLE_SEC,
+        default_auto_max_failures=mgmt_handlers.DEFAULT_AUTO_MAX_FAILURES,
+        default_offdesk_command=mgmt_handlers.DEFAULT_OFFDESK_COMMAND,
+        default_offdesk_prefetch=mgmt_handlers.DEFAULT_OFFDESK_PREFETCH,
+        default_offdesk_prefetch_since=mgmt_handlers.DEFAULT_OFFDESK_PREFETCH_SINCE,
+        default_offdesk_report_level=mgmt_handlers.DEFAULT_OFFDESK_REPORT_LEVEL,
+        default_offdesk_room=mgmt_handlers.DEFAULT_OFFDESK_ROOM,
+    )
+
+
+def _management_chat_kwargs(
+    *,
+    tmp_path: Path,
+    manager_state: dict,
+    cmd: str,
+    sent: list[tuple[str, dict | None]],
+    mode_setting=None,
+    lang_setting=None,
+    report_setting=None,
+    chat_role="admin",
+) -> dict:
+    team_dir = tmp_path / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    return dict(
+        cmd=cmd,
+        args=argparse.Namespace(
+            dry_run=True,
+            team_dir=team_dir,
+            manager_state_file=team_dir / "orch_manager_state.json",
+            default_lang="ko",
+            default_report_level="normal",
+        ),
+        manager_state=manager_state,
+        chat_id="939062873",
+        chat_role=chat_role,
+        mode_setting=mode_setting,
+        lang_setting=lang_setting,
+        report_setting=report_setting,
+        send=lambda body, **kwargs: sent.append((body, kwargs.get("reply_markup"))) or True,
+        get_default_mode=gw.get_default_mode,
+        get_pending_mode=gw.get_pending_mode,
+        get_chat_lang=gw.get_chat_lang,
+        get_chat_report_level=gw.get_chat_report_level,
+        set_default_mode=gw.set_default_mode,
+        set_pending_mode=gw.set_pending_mode,
+        set_chat_lang=gw.set_chat_lang,
+        set_chat_report_level=gw.set_chat_report_level,
+        clear_default_mode=gw.clear_default_mode,
+        clear_pending_mode=gw.clear_pending_mode,
+        clear_confirm_action=gw.clear_confirm_action,
+        clear_chat_report_level=gw.clear_chat_report_level,
+        save_manager_state=lambda *args, **kwargs: None,
+        cmd_prefix=mgmt_handlers._cmd_prefix,
+    )
+
+
+def _management_acl_kwargs(
+    *,
+    tmp_path: Path,
+    manager_state: dict,
+    cmd: str,
+    rest: str,
+    sent: list[tuple[str, dict | None]],
+    current_chat_alias="owner",
+    came_from_slash=True,
+    acl_grant_scope=None,
+    acl_grant_chat_id=None,
+    acl_revoke_scope=None,
+    acl_revoke_chat_id=None,
+    args_override: argparse.Namespace | None = None,
+) -> dict:
+    team_dir = tmp_path / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    args_obj = args_override or argparse.Namespace(
+        dry_run=True,
+        team_dir=team_dir,
+        manager_state_file=team_dir / "orch_manager_state.json",
+        default_lang="ko",
+        default_report_level="normal",
+        allow_chat_ids=set(),
+        admin_chat_ids=set(),
+        readonly_chat_ids=set(),
+        deny_by_default=False,
+        owner_only=False,
+        owner_chat_id="939062873",
+        owner_bootstrap_mode="dispatch",
+    )
+    return dict(
+        cmd=cmd,
+        args=args_obj,
+        manager_state=manager_state,
+        chat_id="939062873",
+        current_chat_alias=current_chat_alias,
+        rest=rest,
+        came_from_slash=came_from_slash,
+        acl_grant_scope=acl_grant_scope,
+        acl_grant_chat_id=acl_grant_chat_id,
+        acl_revoke_scope=acl_revoke_scope,
+        acl_revoke_chat_id=acl_revoke_chat_id,
+        send=lambda body, **kwargs: sent.append((body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda *args, **kwargs: None,
+        get_default_mode=gw.get_default_mode,
+        get_pending_mode=gw.get_pending_mode,
+        get_chat_lang=gw.get_chat_lang,
+        get_chat_report_level=gw.get_chat_report_level,
+        resolve_chat_role=gw.resolve_chat_role,
+        is_owner_chat=gw.is_owner_chat,
+        ensure_chat_aliases=gw.ensure_chat_aliases,
+        find_chat_alias=lambda aliases, chat_ref: "",
+        alias_table_summary=lambda aliases: "",
+        resolve_chat_ref=lambda aliases, chat_ref: (str(chat_ref), ""),
+        ensure_chat_alias=lambda *args, **kwargs: "owner",
+        sync_acl_env_file=lambda args: None,
+        project_lock_label=mgmt_handlers._project_lock_label,
+    )
+
+
 def _button_texts(markup: dict | None) -> list[str]:
     if not isinstance(markup, dict):
         return []
@@ -3888,6 +5926,591 @@ def test_offdesk_status_includes_focused_project_snapshot(tmp_path: Path) -> Non
     assert "- blocked_head: TODO-3 x2 [manual_followup]" in text
     assert "- last_sync: scenario " in text
     assert "- last_task: T-101 Review schema and summarize result [running]" in text
+
+
+def test_scheduler_control_module_matches_management_focus_transition(tmp_path: Path) -> None:
+    state_a = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+    state_b = copy.deepcopy(state_a)
+    twin_root = tmp_path / "TwinPaper"
+    twin_team = twin_root / ".aoe-team"
+    twin_team.mkdir(parents=True, exist_ok=True)
+    state_a["projects"]["twinpaper"] = {
+        "name": "twinpaper",
+        "display_name": "TwinPaper",
+        "project_alias": "O2",
+        "project_root": str(twin_root),
+        "team_dir": str(twin_team),
+        "todos": [],
+    }
+    state_b["projects"]["twinpaper"] = copy.deepcopy(state_a["projects"]["twinpaper"])
+
+    sent_a: list[tuple[str, dict | None]] = []
+    sent_b: list[tuple[str, dict | None]] = []
+
+    ok_a = mgmt_handlers.handle_management_command(
+        cmd="focus",
+        args=argparse.Namespace(
+            dry_run=True,
+            team_dir=tmp_path / ".aoe-team",
+            manager_state_file=tmp_path / ".aoe-team" / "orch_manager_state.json",
+            default_report_level="normal",
+        ),
+        manager_state=state_a,
+        chat_id="939062873",
+        chat_role="admin",
+        current_chat_alias="owner",
+        mode_setting=None,
+        lang_setting=None,
+        report_setting=None,
+        rest="O2",
+        came_from_slash=True,
+        acl_grant_scope=None,
+        acl_grant_chat_id=None,
+        acl_revoke_scope=None,
+        acl_revoke_chat_id=None,
+        send=lambda body, **kwargs: sent_a.append((body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda *args, **kwargs: None,
+        help_text=lambda: "help",
+        get_default_mode=gw.get_default_mode,
+        get_pending_mode=gw.get_pending_mode,
+        get_chat_lang=gw.get_chat_lang,
+        get_chat_report_level=gw.get_chat_report_level,
+        get_chat_room=gw.get_chat_room,
+        set_default_mode=gw.set_default_mode,
+        set_pending_mode=gw.set_pending_mode,
+        set_chat_lang=gw.set_chat_lang,
+        set_chat_report_level=gw.set_chat_report_level,
+        set_chat_room=gw.set_chat_room,
+        clear_default_mode=gw.clear_default_mode,
+        clear_pending_mode=gw.clear_pending_mode,
+        clear_confirm_action=gw.clear_confirm_action,
+        clear_chat_report_level=gw.clear_chat_report_level,
+        save_manager_state=lambda *args, **kwargs: None,
+        resolve_chat_role=gw.resolve_chat_role,
+        is_owner_chat=gw.is_owner_chat,
+        ensure_chat_aliases=gw.ensure_chat_aliases,
+        find_chat_alias=lambda aliases, chat_ref: "",
+        alias_table_summary=lambda aliases: "",
+        resolve_chat_ref=lambda aliases, chat_ref: (str(chat_ref), ""),
+        ensure_chat_alias=lambda *args, **kwargs: "owner",
+        sync_acl_env_file=lambda args: None,
+    )
+    ok_b = scheduler_control.handle_scheduler_control_command(
+        **_management_control_kwargs(
+            tmp_path=tmp_path,
+            manager_state=state_b,
+            cmd="focus",
+            rest="O2",
+            sent=sent_b,
+        )
+    )
+
+    assert ok_a == ok_b == True
+    assert state_a == state_b
+    assert sent_a == sent_b
+
+
+def test_scheduler_control_module_matches_management_offdesk_prepare_and_panic(tmp_path: Path) -> None:
+    state_a = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+    state_b = copy.deepcopy(state_a)
+    project_root = tmp_path / "TwinPaper"
+    team_dir = project_root / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (project_root / "TODO.md").write_text("# Tasks\n- [ ] phase1 rerun\n", encoding="utf-8")
+    (team_dir / "AOE_TODO.md").write_text("@include ../TODO.md\n", encoding="utf-8")
+    (team_dir / "orchestrator.json").write_text("{}", encoding="utf-8")
+    project_entry = {
+        "name": "twinpaper",
+        "display_name": "TwinPaper",
+        "project_alias": "O2",
+        "project_root": str(project_root),
+        "team_dir": str(team_dir),
+        "runtime_ready": True,
+        "todos": [
+            {"id": "TODO-001", "summary": "phase1 rerun", "status": "open"},
+            {"id": "TODO-002", "summary": "need owner input", "status": "blocked", "blocked_count": 2, "blocked_bucket": "manual_followup"},
+        ],
+        "todo_proposals": [{"id": "PROP-001", "summary": "shadow gate follow-up", "status": "open"}],
+        "last_sync_at": "2026-03-07T20:00:00+0900",
+        "last_sync_mode": "scenario",
+    }
+    state_a["projects"]["twinpaper"] = copy.deepcopy(project_entry)
+    state_b["projects"]["twinpaper"] = copy.deepcopy(project_entry)
+
+    sent_prepare_a: list[tuple[str, dict | None]] = []
+    sent_prepare_b: list[tuple[str, dict | None]] = []
+    body_a, markup_a = _call_management_status_with_markup(
+        tmp_path=tmp_path,
+        manager_state=state_a,
+        cmd="offdesk",
+        rest="prepare O2",
+    )
+    ok_b = scheduler_control.handle_scheduler_control_command(
+        **_management_control_kwargs(
+            tmp_path=tmp_path,
+            manager_state=state_b,
+            cmd="offdesk",
+            rest="prepare O2",
+            sent=sent_prepare_b,
+        )
+    )
+    assert ok_b is True
+    assert sent_prepare_b
+    body_b, markup_b = sent_prepare_b[-1]
+    assert body_a == body_b
+    assert markup_a == markup_b
+
+    sent_panic_a: list[tuple[str, dict | None]] = []
+    sent_panic_b: list[tuple[str, dict | None]] = []
+    state_c = copy.deepcopy(state_a)
+    state_d = copy.deepcopy(state_b)
+    ok_a2 = mgmt_handlers.handle_management_command(
+        cmd="panic",
+        args=argparse.Namespace(
+            dry_run=True,
+            team_dir=tmp_path / ".aoe-team",
+            manager_state_file=tmp_path / ".aoe-team" / "orch_manager_state.json",
+            default_report_level="normal",
+        ),
+        manager_state=state_c,
+        chat_id="939062873",
+        chat_role="admin",
+        current_chat_alias="owner",
+        mode_setting=None,
+        lang_setting=None,
+        report_setting=None,
+        rest="status",
+        came_from_slash=True,
+        acl_grant_scope=None,
+        acl_grant_chat_id=None,
+        acl_revoke_scope=None,
+        acl_revoke_chat_id=None,
+        send=lambda body, **kwargs: sent_panic_a.append((body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda *args, **kwargs: None,
+        help_text=lambda: "help",
+        get_default_mode=gw.get_default_mode,
+        get_pending_mode=gw.get_pending_mode,
+        get_chat_lang=gw.get_chat_lang,
+        get_chat_report_level=gw.get_chat_report_level,
+        get_chat_room=gw.get_chat_room,
+        set_default_mode=gw.set_default_mode,
+        set_pending_mode=gw.set_pending_mode,
+        set_chat_lang=gw.set_chat_lang,
+        set_chat_report_level=gw.set_chat_report_level,
+        set_chat_room=gw.set_chat_room,
+        clear_default_mode=gw.clear_default_mode,
+        clear_pending_mode=gw.clear_pending_mode,
+        clear_confirm_action=gw.clear_confirm_action,
+        clear_chat_report_level=gw.clear_chat_report_level,
+        save_manager_state=lambda *args, **kwargs: None,
+        resolve_chat_role=gw.resolve_chat_role,
+        is_owner_chat=gw.is_owner_chat,
+        ensure_chat_aliases=gw.ensure_chat_aliases,
+        find_chat_alias=lambda aliases, chat_ref: "",
+        alias_table_summary=lambda aliases: "",
+        resolve_chat_ref=lambda aliases, chat_ref: (str(chat_ref), ""),
+        ensure_chat_alias=lambda *args, **kwargs: "owner",
+        sync_acl_env_file=lambda args: None,
+    )
+    ok_b2 = scheduler_control.handle_scheduler_control_command(
+        **_management_control_kwargs(
+            tmp_path=tmp_path,
+            manager_state=state_d,
+            cmd="panic",
+            rest="status",
+            sent=sent_panic_b,
+        )
+    )
+    assert ok_a2 == ok_b2 == True
+    assert state_c == state_d
+    assert sent_panic_a == sent_panic_b
+
+
+def test_management_chat_module_matches_management_handler_modes(tmp_path: Path) -> None:
+    state_a = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+    state_b = copy.deepcopy(state_a)
+
+    sent_a: list[tuple[str, dict | None]] = []
+    sent_b: list[tuple[str, dict | None]] = []
+
+    ok_a = mgmt_handlers.handle_management_command(
+        cmd="mode",
+        args=argparse.Namespace(
+            dry_run=True,
+            team_dir=tmp_path / ".aoe-team",
+            manager_state_file=tmp_path / ".aoe-team" / "orch_manager_state.json",
+            default_lang="ko",
+            default_report_level="normal",
+        ),
+        manager_state=state_a,
+        chat_id="939062873",
+        chat_role="admin",
+        current_chat_alias="owner",
+        mode_setting="dispatch",
+        lang_setting=None,
+        report_setting=None,
+        rest="",
+        came_from_slash=True,
+        acl_grant_scope=None,
+        acl_grant_chat_id=None,
+        acl_revoke_scope=None,
+        acl_revoke_chat_id=None,
+        send=lambda body, **kwargs: sent_a.append((body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda *args, **kwargs: None,
+        help_text=lambda: "help",
+        get_default_mode=gw.get_default_mode,
+        get_pending_mode=gw.get_pending_mode,
+        get_chat_lang=gw.get_chat_lang,
+        get_chat_report_level=gw.get_chat_report_level,
+        get_chat_room=gw.get_chat_room,
+        set_default_mode=gw.set_default_mode,
+        set_pending_mode=gw.set_pending_mode,
+        set_chat_lang=gw.set_chat_lang,
+        set_chat_report_level=gw.set_chat_report_level,
+        set_chat_room=gw.set_chat_room,
+        clear_default_mode=gw.clear_default_mode,
+        clear_pending_mode=gw.clear_pending_mode,
+        clear_confirm_action=gw.clear_confirm_action,
+        clear_chat_report_level=gw.clear_chat_report_level,
+        save_manager_state=lambda *args, **kwargs: None,
+        resolve_chat_role=gw.resolve_chat_role,
+        is_owner_chat=gw.is_owner_chat,
+        ensure_chat_aliases=gw.ensure_chat_aliases,
+        find_chat_alias=lambda aliases, chat_ref: "",
+        alias_table_summary=lambda aliases: "",
+        resolve_chat_ref=lambda aliases, chat_ref: (str(chat_ref), ""),
+        ensure_chat_alias=lambda *args, **kwargs: "owner",
+        sync_acl_env_file=lambda args: None,
+    )
+    ok_b = mgmt_chat.handle_chat_management_command(
+        **_management_chat_kwargs(
+            tmp_path=tmp_path,
+            manager_state=state_b,
+            cmd="mode",
+            mode_setting="dispatch",
+            sent=sent_b,
+        )
+    )
+
+    assert ok_a == ok_b == True
+    assert state_a == state_b
+    assert sent_a == sent_b
+
+
+def test_management_chat_module_matches_management_handler_tutorial_and_cancel(tmp_path: Path) -> None:
+    state_a = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+    state_b = copy.deepcopy(state_a)
+    gw.set_pending_mode(state_a, "939062873", "dispatch")
+    gw.set_pending_mode(state_b, "939062873", "dispatch")
+    gw.set_confirm_action(state_a, chat_id="939062873", mode="dispatch", prompt="ship it", risk="high")
+    gw.set_confirm_action(state_b, chat_id="939062873", mode="dispatch", prompt="ship it", risk="high")
+
+    sent_tut_a: list[tuple[str, dict | None]] = []
+    sent_tut_b: list[tuple[str, dict | None]] = []
+    ok_tut_a = mgmt_handlers.handle_management_command(
+        cmd="tutorial",
+        args=argparse.Namespace(
+            dry_run=True,
+            team_dir=tmp_path / ".aoe-team",
+            manager_state_file=tmp_path / ".aoe-team" / "orch_manager_state.json",
+            default_lang="ko",
+            default_report_level="normal",
+        ),
+        manager_state=state_a,
+        chat_id="939062873",
+        chat_role="admin",
+        current_chat_alias="owner",
+        mode_setting=None,
+        lang_setting=None,
+        report_setting=None,
+        rest="",
+        came_from_slash=True,
+        acl_grant_scope=None,
+        acl_grant_chat_id=None,
+        acl_revoke_scope=None,
+        acl_revoke_chat_id=None,
+        send=lambda body, **kwargs: sent_tut_a.append((body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda *args, **kwargs: None,
+        help_text=lambda: "help",
+        get_default_mode=gw.get_default_mode,
+        get_pending_mode=gw.get_pending_mode,
+        get_chat_lang=gw.get_chat_lang,
+        get_chat_report_level=gw.get_chat_report_level,
+        get_chat_room=gw.get_chat_room,
+        set_default_mode=gw.set_default_mode,
+        set_pending_mode=gw.set_pending_mode,
+        set_chat_lang=gw.set_chat_lang,
+        set_chat_report_level=gw.set_chat_report_level,
+        set_chat_room=gw.set_chat_room,
+        clear_default_mode=gw.clear_default_mode,
+        clear_pending_mode=gw.clear_pending_mode,
+        clear_confirm_action=gw.clear_confirm_action,
+        clear_chat_report_level=gw.clear_chat_report_level,
+        save_manager_state=lambda *args, **kwargs: None,
+        resolve_chat_role=gw.resolve_chat_role,
+        is_owner_chat=gw.is_owner_chat,
+        ensure_chat_aliases=gw.ensure_chat_aliases,
+        find_chat_alias=lambda aliases, chat_ref: "",
+        alias_table_summary=lambda aliases: "",
+        resolve_chat_ref=lambda aliases, chat_ref: (str(chat_ref), ""),
+        ensure_chat_alias=lambda *args, **kwargs: "owner",
+        sync_acl_env_file=lambda args: None,
+    )
+    ok_tut_b = mgmt_chat.handle_chat_management_command(
+        **_management_chat_kwargs(
+            tmp_path=tmp_path,
+            manager_state=state_b,
+            cmd="tutorial",
+            sent=sent_tut_b,
+        )
+    )
+    assert ok_tut_a == ok_tut_b == True
+    assert sent_tut_a == sent_tut_b
+
+    sent_cancel_a: list[tuple[str, dict | None]] = []
+    sent_cancel_b: list[tuple[str, dict | None]] = []
+    state_c = copy.deepcopy(state_a)
+    state_d = copy.deepcopy(state_b)
+    ok_cancel_a = mgmt_handlers.handle_management_command(
+        cmd="cancel-pending",
+        args=argparse.Namespace(
+            dry_run=True,
+            team_dir=tmp_path / ".aoe-team",
+            manager_state_file=tmp_path / ".aoe-team" / "orch_manager_state.json",
+            default_lang="ko",
+            default_report_level="normal",
+        ),
+        manager_state=state_c,
+        chat_id="939062873",
+        chat_role="admin",
+        current_chat_alias="owner",
+        mode_setting=None,
+        lang_setting=None,
+        report_setting=None,
+        rest="",
+        came_from_slash=True,
+        acl_grant_scope=None,
+        acl_grant_chat_id=None,
+        acl_revoke_scope=None,
+        acl_revoke_chat_id=None,
+        send=lambda body, **kwargs: sent_cancel_a.append((body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda *args, **kwargs: None,
+        help_text=lambda: "help",
+        get_default_mode=gw.get_default_mode,
+        get_pending_mode=gw.get_pending_mode,
+        get_chat_lang=gw.get_chat_lang,
+        get_chat_report_level=gw.get_chat_report_level,
+        get_chat_room=gw.get_chat_room,
+        set_default_mode=gw.set_default_mode,
+        set_pending_mode=gw.set_pending_mode,
+        set_chat_lang=gw.set_chat_lang,
+        set_chat_report_level=gw.set_chat_report_level,
+        set_chat_room=gw.set_chat_room,
+        clear_default_mode=gw.clear_default_mode,
+        clear_pending_mode=gw.clear_pending_mode,
+        clear_confirm_action=gw.clear_confirm_action,
+        clear_chat_report_level=gw.clear_chat_report_level,
+        save_manager_state=lambda *args, **kwargs: None,
+        resolve_chat_role=gw.resolve_chat_role,
+        is_owner_chat=gw.is_owner_chat,
+        ensure_chat_aliases=gw.ensure_chat_aliases,
+        find_chat_alias=lambda aliases, chat_ref: "",
+        alias_table_summary=lambda aliases: "",
+        resolve_chat_ref=lambda aliases, chat_ref: (str(chat_ref), ""),
+        ensure_chat_alias=lambda *args, **kwargs: "owner",
+        sync_acl_env_file=lambda args: None,
+    )
+    ok_cancel_b = mgmt_chat.handle_chat_management_command(
+        **_management_chat_kwargs(
+            tmp_path=tmp_path,
+            manager_state=state_d,
+            cmd="cancel-pending",
+            sent=sent_cancel_b,
+        )
+    )
+
+    assert ok_cancel_a == ok_cancel_b == True
+    assert state_c == state_d
+    assert sent_cancel_a == sent_cancel_b
+
+
+def test_management_acl_module_matches_management_handler_identity_and_grant(tmp_path: Path) -> None:
+    state_a = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+    state_b = copy.deepcopy(state_a)
+
+    sent_a: list[tuple[str, dict | None]] = []
+    sent_b: list[tuple[str, dict | None]] = []
+    args_a = argparse.Namespace(
+        dry_run=True,
+        team_dir=tmp_path / ".aoe-team",
+        manager_state_file=tmp_path / ".aoe-team" / "orch_manager_state.json",
+        default_lang="ko",
+        default_report_level="normal",
+        allow_chat_ids=set(),
+        admin_chat_ids=set(),
+        readonly_chat_ids=set(),
+        deny_by_default=False,
+        owner_only=False,
+        owner_chat_id="939062873",
+        owner_bootstrap_mode="dispatch",
+    )
+    args_b = copy.deepcopy(args_a)
+
+    ok_a = mgmt_handlers.handle_management_command(
+        cmd="grant",
+        args=args_a,
+        manager_state=state_a,
+        chat_id="939062873",
+        chat_role="admin",
+        current_chat_alias="owner",
+        mode_setting=None,
+        lang_setting=None,
+        report_setting=None,
+        rest="admin 12345",
+        came_from_slash=True,
+        acl_grant_scope=None,
+        acl_grant_chat_id=None,
+        acl_revoke_scope=None,
+        acl_revoke_chat_id=None,
+        send=lambda body, **kwargs: sent_a.append((body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda *args, **kwargs: None,
+        help_text=lambda: "help",
+        get_default_mode=gw.get_default_mode,
+        get_pending_mode=gw.get_pending_mode,
+        get_chat_lang=gw.get_chat_lang,
+        get_chat_report_level=gw.get_chat_report_level,
+        get_chat_room=gw.get_chat_room,
+        set_default_mode=gw.set_default_mode,
+        set_pending_mode=gw.set_pending_mode,
+        set_chat_lang=gw.set_chat_lang,
+        set_chat_report_level=gw.set_chat_report_level,
+        set_chat_room=gw.set_chat_room,
+        clear_default_mode=gw.clear_default_mode,
+        clear_pending_mode=gw.clear_pending_mode,
+        clear_confirm_action=gw.clear_confirm_action,
+        clear_chat_report_level=gw.clear_chat_report_level,
+        save_manager_state=lambda *args, **kwargs: None,
+        resolve_chat_role=gw.resolve_chat_role,
+        is_owner_chat=gw.is_owner_chat,
+        ensure_chat_aliases=gw.ensure_chat_aliases,
+        find_chat_alias=lambda aliases, chat_ref: "",
+        alias_table_summary=lambda aliases: "",
+        resolve_chat_ref=lambda aliases, chat_ref: (str(chat_ref), ""),
+        ensure_chat_alias=lambda *args, **kwargs: "owner",
+        sync_acl_env_file=lambda args: None,
+    )
+    ok_b = mgmt_acl.handle_acl_management_command(
+        **_management_acl_kwargs(
+            tmp_path=tmp_path,
+            manager_state=state_b,
+            cmd="grant",
+            rest="admin 12345",
+            sent=sent_b,
+            args_override=args_b,
+        )
+    )
+
+    assert ok_a == ok_b == True
+    assert args_a.allow_chat_ids == args_b.allow_chat_ids
+    assert args_a.admin_chat_ids == args_b.admin_chat_ids
+    assert args_a.readonly_chat_ids == args_b.readonly_chat_ids
+    assert sent_a == sent_b
+
+    sent_who_a: list[tuple[str, dict | None]] = []
+    sent_who_b: list[tuple[str, dict | None]] = []
+    ok_who_a = mgmt_handlers.handle_management_command(
+        cmd="whoami",
+        args=args_a,
+        manager_state=state_a,
+        chat_id="939062873",
+        chat_role="admin",
+        current_chat_alias="owner",
+        mode_setting=None,
+        lang_setting=None,
+        report_setting=None,
+        rest="",
+        came_from_slash=True,
+        acl_grant_scope=None,
+        acl_grant_chat_id=None,
+        acl_revoke_scope=None,
+        acl_revoke_chat_id=None,
+        send=lambda body, **kwargs: sent_who_a.append((body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda *args, **kwargs: None,
+        help_text=lambda: "help",
+        get_default_mode=gw.get_default_mode,
+        get_pending_mode=gw.get_pending_mode,
+        get_chat_lang=gw.get_chat_lang,
+        get_chat_report_level=gw.get_chat_report_level,
+        get_chat_room=gw.get_chat_room,
+        set_default_mode=gw.set_default_mode,
+        set_pending_mode=gw.set_pending_mode,
+        set_chat_lang=gw.set_chat_lang,
+        set_chat_report_level=gw.set_chat_report_level,
+        set_chat_room=gw.set_chat_room,
+        clear_default_mode=gw.clear_default_mode,
+        clear_pending_mode=gw.clear_pending_mode,
+        clear_confirm_action=gw.clear_confirm_action,
+        clear_chat_report_level=gw.clear_chat_report_level,
+        save_manager_state=lambda *args, **kwargs: None,
+        resolve_chat_role=gw.resolve_chat_role,
+        is_owner_chat=gw.is_owner_chat,
+        ensure_chat_aliases=gw.ensure_chat_aliases,
+        find_chat_alias=lambda aliases, chat_ref: "",
+        alias_table_summary=lambda aliases: "",
+        resolve_chat_ref=lambda aliases, chat_ref: (str(chat_ref), ""),
+        ensure_chat_alias=lambda *args, **kwargs: "owner",
+        sync_acl_env_file=lambda args: None,
+    )
+    ok_who_b = mgmt_acl.handle_acl_management_command(
+        **_management_acl_kwargs(
+            tmp_path=tmp_path,
+            manager_state=state_b,
+            cmd="whoami",
+            rest="",
+            sent=sent_who_b,
+            args_override=args_b,
+        )
+    )
+    assert ok_who_a == ok_who_b == True
+    assert sent_who_a == sent_who_b
+def test_offdesk_flow_module_matches_management_prepare_report_and_markup(tmp_path: Path) -> None:
+    project_root = tmp_path / "Proj3"
+    team_dir = project_root / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (project_root / "TODO.md").write_text("- [ ] P1: review schema\n", encoding="utf-8")
+    (team_dir / "AOE_TODO.md").write_text("@include ../TODO.md\n", encoding="utf-8")
+    (team_dir / "orchestrator.json").write_text("{}", encoding="utf-8")
+
+    state = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+    state["projects"]["proj3"] = {
+        "name": "proj3",
+        "display_name": "Proj3",
+        "project_alias": "O3",
+        "project_root": str(project_root),
+        "team_dir": str(team_dir),
+        "todos": [
+            {"id": "TODO-1", "summary": "review schema", "status": "open", "priority": "P1"},
+            {
+                "id": "TODO-2",
+                "summary": "manual item",
+                "status": "blocked",
+                "blocked_bucket": "manual_followup",
+                "blocked_count": 2,
+                "blocked_reason": "need review",
+            },
+        ],
+        "todo_proposals": [{"id": "PROP-1", "summary": "follow up", "status": "open"}],
+        "last_sync_mode": "scenario",
+        "last_sync_at": "2026-03-11T09:30:00+0900",
+    }
+    entry = state["projects"]["proj3"]
+
+    report_a = mgmt_handlers._offdesk_prepare_project_report(state, "proj3", entry)
+    report_b = offdesk_flow.offdesk_prepare_project_report(state, "proj3", entry)
+
+    assert report_a == report_b
+    assert mgmt_handlers._offdesk_review_reply_markup([report_a]) == offdesk_flow.offdesk_review_reply_markup([report_b])
+    assert mgmt_handlers._offdesk_prepare_reply_markup([report_a], blocked_count=1) == offdesk_flow.offdesk_prepare_reply_markup([report_b], blocked_count=1)
 
 
 def test_auto_status_includes_active_project_snapshot_without_lock(tmp_path: Path) -> None:

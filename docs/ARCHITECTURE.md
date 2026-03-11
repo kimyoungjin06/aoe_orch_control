@@ -173,21 +173,39 @@ This layer covers:
 Todo discovery, sync, queue operations, and offdesk scheduling are handled by:
 
 - `scripts/gateway/aoe_tg_scheduler_handlers.py`
+- `scripts/gateway/aoe_tg_sync_sources.py`
+- `scripts/gateway/aoe_tg_sync_merge.py`
+- `scripts/gateway/aoe_tg_queue_engine.py`
 
-This layer covers:
+These modules are split by responsibility:
 
-- `/sync`
-- salvage/bootstrap
-- replace/prune
-- `/queue`
-- `/next`
-- `/fanout`
+- `scripts/gateway/aoe_tg_scheduler_handlers.py`
+  - command UX orchestration for `/sync`, `/queue`, `/next`, `/fanout`
+  - replay/preview argument handling
+  - operator-facing diagnostics and reply markup
+- `scripts/gateway/aoe_tg_sync_sources.py`
+  - scenario include parsing
+  - source classification and sync policy application
+  - todo/recent/salvage discovery
+  - provenance tagging and extraction heuristics
+- `scripts/gateway/aoe_tg_sync_merge.py`
+  - replace/prune behavior
+  - sync metadata stamping
+  - scenario item application
+- `scripts/gateway/aoe_tg_queue_engine.py`
+  - todo sorting and status counting
+  - next candidate selection
+  - drain peek helpers
 
 ### 5.4 Management and orchestration UX
 
 Operator-facing management flows are handled by:
 
 - `scripts/gateway/aoe_tg_management_handlers.py`
+- `scripts/gateway/aoe_tg_scheduler_control_handlers.py`
+- `scripts/gateway/aoe_tg_offdesk_flow.py`
+- `scripts/gateway/aoe_tg_management_chat.py`
+- `scripts/gateway/aoe_tg_management_acl.py`
 - `scripts/gateway/aoe_tg_orch_overview_handlers.py`
 - `scripts/gateway/aoe_tg_orch_task_handlers.py`
 - `scripts/gateway/aoe_tg_todo_handlers.py`
