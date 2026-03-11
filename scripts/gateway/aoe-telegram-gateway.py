@@ -169,6 +169,7 @@ from aoe_tg_task_state import (
     parse_task_seq_from_short_id as parse_task_seq_from_short_id_state,
     rebuild_task_alias_index as rebuild_task_alias_index_state,
     resolve_task_request_id as resolve_task_request_id_state,
+    sanitize_task_record as sanitize_task_record_state,
     summarize_task_monitor as summarize_task_monitor_state,
     sync_task_lifecycle as sync_task_lifecycle_state,
     trim_project_tasks as trim_project_tasks_state,
@@ -765,168 +766,22 @@ def default_manager_state(project_root: Path, team_dir: Path) -> Dict[str, Any]:
 
 
 def sanitize_task_record(raw_task: Dict[str, Any], req_id: str) -> Dict[str, Any]:
-    task = dict(raw_task or {})
-    rid = str(req_id or task.get("request_id", "")).strip()
-    task["request_id"] = rid
-    task["mode"] = str(task.get("mode", "dispatch")).strip().lower() or "dispatch"
-    if task["mode"] not in {"dispatch", "direct"}:
-        task["mode"] = "dispatch"
-    task["prompt"] = str(task.get("prompt", "")).strip()
-    task["roles"] = dedupe_roles(task.get("roles") or [])
-    task["verifier_roles"] = dedupe_roles(task.get("verifier_roles") or [])
-    task["require_verifier"] = bool(task.get("require_verifier", False))
-
-    raw_stages = task.get("stages")
-    stages: Dict[str, str] = {}
-    if isinstance(raw_stages, dict):
-        for stage_name in LIFECYCLE_STAGES:
-            stages[stage_name] = normalize_stage_status(raw_stages.get(stage_name, "pending"))
-    else:
-        for stage_name in LIFECYCLE_STAGES:
-            stages[stage_name] = "pending"
-    task["stages"] = stages
-
-    stage = str(task.get("stage", "")).strip().lower()
-    if stage not in LIFECYCLE_STAGES:
-        stage = "intake"
-        for stage_name in LIFECYCLE_STAGES:
-            if stages.get(stage_name) in {"running", "done", "failed"}:
-                stage = stage_name
-    task["stage"] = stage
-
-    history_in = task.get("history")
-    history: List[Dict[str, Any]] = []
-    if isinstance(history_in, list):
-        for item in history_in[-DEFAULT_TASK_HISTORY_LIMIT:]:
-            if not isinstance(item, dict):
-                continue
-            row_stage = str(item.get("stage", "")).strip().lower()
-            if row_stage not in LIFECYCLE_STAGES:
-                continue
-            row_status = normalize_stage_status(item.get("status", "pending"))
-            row: Dict[str, Any] = {
-                "at": str(item.get("at", "")).strip() or now_iso(),
-                "stage": row_stage,
-                "status": row_status,
-            }
-            note = str(item.get("note", "")).strip()
-            if note:
-                row["note"] = note[:400]
-            history.append(row)
-    task["history"] = history
-
-    task["status"] = normalize_task_status(task.get("status", "pending"))
-    task["created_at"] = str(task.get("created_at", "")).strip() or now_iso()
-    task["updated_at"] = str(task.get("updated_at", "")).strip() or now_iso()
-    result = task.get("result")
-    task["result"] = result if isinstance(result, dict) else {}
-
-    short_id = str(task.get("short_id", "")).strip().upper()
-    alias = str(task.get("alias", "")).strip()
-    if short_id:
-        task["short_id"] = short_id
-    if alias:
-        task["alias"] = alias
-
-    control_mode = str(task.get("control_mode", "")).strip().lower()
-    if control_mode:
-        task["control_mode"] = control_mode[:32]
-    source_request_id = str(task.get("source_request_id", "")).strip()
-    if source_request_id:
-        task["source_request_id"] = source_request_id[:128]
-    retry_of = str(task.get("retry_of", "")).strip()
-    if retry_of:
-        task["retry_of"] = retry_of[:128]
-    replan_of = str(task.get("replan_of", "")).strip()
-    if replan_of:
-        task["replan_of"] = replan_of[:128]
-
-    for child_key in ("retry_children", "replan_children"):
-        raw_children = task.get(child_key)
-        if isinstance(raw_children, list):
-            normalized_children = []
-            seen_children: Set[str] = set()
-            for item in raw_children:
-                token = str(item or "").strip()
-                if not token or token in seen_children:
-                    continue
-                seen_children.add(token)
-                normalized_children.append(token[:128])
-            if normalized_children:
-                task[child_key] = normalized_children
-
-    initiator_chat_id = str(task.get("initiator_chat_id", "")).strip()
-    if initiator_chat_id:
-        task["initiator_chat_id"] = initiator_chat_id[:64]
-    todo_id = str(task.get("todo_id", "")).strip()
-    if todo_id:
-        task["todo_id"] = todo_id[:64]
-
-    todo_priority = str(task.get("todo_priority", "")).strip().upper()
-    if todo_priority in {"P1", "P2", "P3"}:
-        task["todo_priority"] = todo_priority
-    todo_status = str(task.get("todo_status", "")).strip().lower()
-    if todo_status:
-        task["todo_status"] = todo_status[:32]
-
-    plan = task.get("plan")
-    if isinstance(plan, dict):
-        workers = []
-        raw_meta = plan.get("meta")
-        if isinstance(raw_meta, dict) and isinstance(raw_meta.get("worker_roles"), list):
-            for row in raw_meta.get("worker_roles") or []:
-                token = str(row or "").strip()
-                if token and token not in workers:
-                    workers.append(token)
-        if not workers:
-            workers = dedupe_roles((task.get("plan_roles") or []) + (task.get("roles") or [])) or ["Worker"]
-        max_subtasks = 0
-        raw_subtasks = plan.get("subtasks")
-        if isinstance(raw_subtasks, list):
-            max_subtasks = len(raw_subtasks)
-        task["plan"] = normalize_task_plan_schema(
-            plan,
-            user_prompt=str(task.get("prompt", "")).strip(),
-            workers=workers,
-            max_subtasks=max_subtasks or 4,
-        )
-    plan_critic = task.get("plan_critic")
-    if isinstance(plan_critic, dict):
-        task["plan_critic"] = normalize_plan_critic_payload(plan_critic, max_items=8)
-    plan_roles = task.get("plan_roles")
-    if isinstance(plan_roles, list):
-        task["plan_roles"] = dedupe_roles(plan_roles)
-    plan_replans = task.get("plan_replans")
-    if isinstance(plan_replans, list):
-        task["plan_replans"] = normalize_plan_replans_payload(plan_replans, keep=DEFAULT_TASK_HISTORY_LIMIT)
-    if isinstance(task.get("plan_gate_passed"), bool):
-        task["plan_gate_passed"] = bool(task.get("plan_gate_passed"))
-    plan_gate_reason = str(task.get("plan_gate_reason", "")).strip()
-    if plan_gate_reason:
-        task["plan_gate_reason"] = plan_gate_reason[:240]
-    elif task.get("plan_gate_passed") is False and isinstance(task.get("plan_critic"), dict):
-        lead_issue = plan_critic_primary_issue(task["plan_critic"], limit=240)
-        if lead_issue:
-            task["plan_gate_reason"] = lead_issue
-
-    exec_critic = task.get("exec_critic")
-    if isinstance(exec_critic, dict):
-        task["exec_critic"] = normalize_exec_critic_payload(
-            exec_critic,
-            attempt_no=int(exec_critic.get("attempt", 1) or 1),
-            max_attempts=int(exec_critic.get("max_attempts", 1) or 1),
-            at=str(exec_critic.get("at", "")).strip() or now_iso(),
-        )
-
-    context = build_task_context(
-        request_id=rid,
-        task=task,
-        extra=(task.get("context") if isinstance(task.get("context"), dict) else None),
+    return sanitize_task_record_state(
+        raw_task,
+        req_id,
+        dedupe_roles=dedupe_roles,
+        lifecycle_stages=LIFECYCLE_STAGES,
+        normalize_stage_status=normalize_stage_status,
+        normalize_task_status=normalize_task_status,
+        now_iso=now_iso,
+        history_limit=DEFAULT_TASK_HISTORY_LIMIT,
+        normalize_task_plan_schema=normalize_task_plan_schema,
+        normalize_plan_critic_payload=normalize_plan_critic_payload,
+        normalize_plan_replans_payload=normalize_plan_replans_payload,
+        plan_critic_primary_issue=plan_critic_primary_issue,
+        normalize_exec_critic_payload=normalize_exec_critic_payload,
+        build_task_context=build_task_context,
     )
-    if context:
-        task["context"] = context
-
-    return task
 
 
 def load_manager_state(path: Path, project_root: Path, team_dir: Path) -> Dict[str, Any]:

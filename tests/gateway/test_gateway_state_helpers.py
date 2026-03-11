@@ -1914,6 +1914,73 @@ def test_task_state_snapshot_and_sync_match_gateway() -> None:
     assert task_b["stages"] == task_a["stages"]
 
 
+def test_task_state_sanitize_task_record_matches_gateway(monkeypatch) -> None:
+    monkeypatch.setattr(gw, "now_iso", lambda: "2026-03-11T10:00:00+0900")
+    raw_task = {
+        "mode": "weird",
+        "prompt": "  Review the output  ",
+        "roles": ["Local-Dev", "Reviewer", "Local-Dev"],
+        "verifier_roles": ["Reviewer", "Reviewer"],
+        "require_verifier": 1,
+        "stages": {"planning": "complete", "execution": "active", "garbage": "bad"},
+        "stage": "unknown",
+        "history": [
+            {"at": "", "stage": "planning", "status": "success", "note": "ready"},
+            {"at": "", "stage": "bad", "status": "oops"},
+        ],
+        "status": "done",
+        "short_id": "t-008",
+        "alias": " review-output ",
+        "control_mode": "DISPATCH",
+        "source_request_id": "REQ-00123456789",
+        "retry_of": "REQ-0001",
+        "replan_of": "REQ-0002",
+        "retry_children": ["REQ-010", "REQ-010", ""],
+        "replan_children": ["REQ-020", "REQ-021", "REQ-020"],
+        "initiator_chat_id": "939062873",
+        "todo_id": "TODO-004",
+        "todo_priority": "p2",
+        "todo_status": "RUNNING",
+        "plan": {
+            "summary": "demo",
+            "meta": {"worker_roles": ["Reviewer", "Local-Dev", "Reviewer"]},
+            "subtasks": [{"id": "S1", "title": "check", "owner_role": "Reviewer"}],
+        },
+        "plan_critic": {"approved": False, "issues": ["missing acceptance"]},
+        "plan_roles": ["Reviewer", "Local-Dev", "Reviewer"],
+        "plan_replans": [{"attempt": "2", "critic": "retry", "subtasks": "3"}],
+        "plan_gate_passed": False,
+        "exec_critic": {
+            "verdict": "success",
+            "action": "none",
+            "attempt": 1,
+            "max_attempts": 3,
+            "at": "",
+        },
+        "context": {"project_key": "demo"},
+    }
+
+    expected = gw.sanitize_task_record(copy.deepcopy(raw_task), "REQ-777")
+    actual = task_state.sanitize_task_record(
+        copy.deepcopy(raw_task),
+        "REQ-777",
+        dedupe_roles=gw.dedupe_roles,
+        lifecycle_stages=gw.LIFECYCLE_STAGES,
+        normalize_stage_status=gw.normalize_stage_status,
+        normalize_task_status=gw.normalize_task_status,
+        now_iso=gw.now_iso,
+        history_limit=gw.DEFAULT_TASK_HISTORY_LIMIT,
+        normalize_task_plan_schema=gw.normalize_task_plan_schema,
+        normalize_plan_critic_payload=gw.normalize_plan_critic_payload,
+        normalize_plan_replans_payload=gw.normalize_plan_replans_payload,
+        plan_critic_primary_issue=gw.plan_critic_primary_issue,
+        normalize_exec_critic_payload=gw.normalize_exec_critic_payload,
+        build_task_context=gw.build_task_context,
+    )
+
+    assert actual == expected
+
+
 def test_tf_worker_specs_use_request_scoped_session_and_logs(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     team_dir = project_root / ".aoe-team"
