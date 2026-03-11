@@ -164,7 +164,9 @@ Completed technical gates:
 
 - sandbox wiring for backend runtime event mirroring into existing gateway/operator logs
 - controlled backend selection for one sandbox TF profile only
+- read-only sandbox runner over canonical `TODO.md`
+- one TwinPaper sandbox pilot with mirrored project/root event traces
 
 Next technical milestone:
 
-- bind one sandbox TF profile to `autogen_core` and review the mirrored event trace manually before any broader pilot
+- run a second read-only pilot on another task shape before any broader pilot

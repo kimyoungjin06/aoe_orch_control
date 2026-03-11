@@ -174,6 +174,12 @@ Goal:
 
 - enable `autogen_core` only for one sandbox TF profile
 
+Current status:
+
+- sandbox-only backend selection is live
+- read-only AutoGen Core runner is implemented
+- one TwinPaper sandbox pilot completed against canonical `TODO.md`
+
 Not for:
 
 - offdesk global fanout
@@ -301,3 +307,5 @@ If not, keep the current local backend and continue improving:
 - [x] define proposal extraction parity test between local and AutoGen backend
 - [x] add gateway log mirroring helper for normalized backend runtime events
 - [x] wire backend runtime event mirroring into a sandbox-only execution path
+- [x] implement read-only `autogen_core` sandbox runner against canonical `TODO.md`
+- [x] execute one TwinPaper sandbox pilot and verify mirrored runtime events
