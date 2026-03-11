@@ -62,6 +62,7 @@ import aoe_tg_task_state as task_state
 import aoe_tg_task_view as task_view
 import aoe_tg_tf_backend as tf_backend
 import aoe_tg_tf_backend_autogen as tf_backend_autogen
+import aoe_tg_tf_event_schema as tf_event_schema
 import aoe_tg_tf_backend_local as tf_backend_local
 import aoe_tg_tf_exec as tf_exec
 import aoe_tg_todo_handlers as todo_handlers
@@ -77,6 +78,12 @@ _auto_spec = importlib.util.spec_from_file_location("aoe_auto_scheduler_mod", AU
 assert _auto_spec and _auto_spec.loader
 auto_sched = importlib.util.module_from_spec(_auto_spec)
 _auto_spec.loader.exec_module(auto_sched)
+
+COMPARE_FILE = ROOT / "scripts" / "experiments" / "autogen_core_compare.py"
+_compare_spec = importlib.util.spec_from_file_location("aoe_autogen_compare_mod", COMPARE_FILE)
+assert _compare_spec and _compare_spec.loader
+autogen_compare = importlib.util.module_from_spec(_compare_spec)
+_compare_spec.loader.exec_module(autogen_compare)
 
 
 def _empty_state() -> dict:
@@ -7633,6 +7640,64 @@ def test_tf_backend_normalization_and_labels() -> None:
     assert tf_backend.normalize_tf_backend_name("autogen-core") == "autogen_core"
     assert tf_backend.backend_runtime_label("aoe") == "local"
     assert tf_backend.backend_runtime_label("autogen_core") == "autogen_core"
+
+
+def test_tf_runtime_event_schema_normalizes_and_validates() -> None:
+    rows = tf_event_schema.normalize_runtime_events(
+        [
+            {
+                "stage": "request.accepted",
+                "kind": "lifecycle",
+                "status": "info",
+                "summary": "accepted request",
+                "payload": {"project_key": "O3"},
+            },
+            {
+                "source": "reviewer",
+                "stage": "verdict.emitted",
+                "kind": "verdict",
+                "status": "success",
+                "summary": "review verdict emitted",
+                "payload": {"verdict": "success"},
+            },
+        ],
+        default_backend="local",
+        default_source="gateway",
+        now_iso=lambda: "2026-03-11T00:00:00+0000",
+    )
+
+    assert rows[0]["backend"] == "local"
+    assert rows[0]["source"] == "gateway"
+    assert rows[0]["seq"] == 1
+    assert rows[1]["seq"] == 2
+    assert tf_event_schema.tf_runtime_event_schema()["required_fields"] == list(tf_event_schema.RUNTIME_EVENT_REQUIRED_FIELDS)
+    assert tf_event_schema.validate_runtime_events(rows) == [[], []]
+
+
+def test_autogen_compare_includes_runtime_event_contract() -> None:
+    case = {
+        "id": "demo_case",
+        "project_key": "O3",
+        "task": "Summarize latest analysis findings and propose next steps",
+        "roles": ["Local-Analyst", "Reviewer"],
+        "retry_budget": 3,
+        "approval_required": False,
+    }
+
+    result = autogen_compare.run_case(case)
+    comparison = result["comparison"]
+    summary = autogen_compare.build_summary([result])
+
+    assert comparison["output_contract_match"]["runtime_event_schema"] is True
+    assert comparison["runtime_event_contract"]["local_valid"] is True
+    assert comparison["runtime_event_contract"]["autogen_valid"] is True
+    assert comparison["runtime_event_contract"]["local_event_count"] > 0
+    assert comparison["runtime_event_contract"]["autogen_event_count"] > 0
+    assert comparison["proposal_contract"]["local_valid"] is True
+    assert comparison["proposal_contract"]["autogen_valid"] is True
+    assert comparison["proposal_contract"]["exact_payload_match"] is True
+    assert summary["runtime_event_contract_cases"] == 1
+    assert summary["proposal_contract_cases"] == 1
 
 
 def test_local_tf_backend_delegates_to_run_aoe_orch() -> None:
