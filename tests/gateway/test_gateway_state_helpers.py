@@ -23,6 +23,7 @@ if str(GW_DIR) not in sys.path:
 import aoe_tg_command_resolver as resolver
 import aoe_tg_blocked_state as blocked_state
 import aoe_tg_chat_aliases as chat_aliases
+import aoe_tg_cli as cli_mod
 import aoe_tg_chat_state as chat_state
 import aoe_tg_exec_pipeline as exec_pipeline
 import aoe_tg_exec_results as exec_results
@@ -309,6 +310,102 @@ def test_gateway_state_module_matches_gateway_poll_and_replay_helpers(tmp_path: 
         normalize_failed_queue=gw.normalize_failed_queue,
     )
     assert gw.load_state(path_a) == gw.load_state(path_b)
+
+
+def test_cli_module_matches_gateway_parser_defaults_and_args() -> None:
+    argv = [
+        "--simulate-text",
+        "hello",
+        "--simulate-chat-id",
+        "test",
+        "--allow-chat-ids",
+        "1,2",
+        "--chat-daily-cap",
+        "5",
+    ]
+
+    assert vars(gw.build_parser().parse_args(argv)) == vars(cli_mod.build_parser(deps=gw.__dict__).parse_args(argv))
+
+
+def test_cli_module_normalizes_main_args_like_gateway_flow(tmp_path: Path) -> None:
+    project_root = tmp_path / "proj"
+    team_dir = project_root / ".aoe-team"
+    alias_file = tmp_path / "aliases.json"
+    project_root.mkdir(parents=True, exist_ok=True)
+    team_dir.mkdir(parents=True, exist_ok=True)
+    alias_file.write_text("{}", encoding="utf-8")
+
+    base_args = argparse.Namespace(
+        project_root=str(project_root),
+        team_dir=None,
+        state_file=None,
+        manager_state_file="",
+        chat_aliases_file=str(alias_file),
+        instance_lock_file="",
+        workspace_root="",
+        owner_chat_id="939062873",
+        owner_bootstrap_mode="Dispatch",
+        default_lang="ko",
+        default_reply_lang="en",
+        default_report_level="LONG",
+        allow_chat_ids="1,2",
+        admin_chat_ids="2,3",
+        readonly_chat_ids="3,4",
+    )
+
+    manual_args = copy.deepcopy(base_args)
+    manual_args.project_root = gw.resolve_project_root(manual_args.project_root)
+    manual_args.team_dir = gw.resolve_team_dir(manual_args.project_root, manual_args.team_dir)
+    manual_args.state_file = gw.resolve_state_file(manual_args.project_root, manual_args.state_file)
+    manual_args.manager_state_file = gw.resolve_manager_state_file(manual_args.team_dir, manual_args.manager_state_file)
+    manual_args.chat_aliases_file = gw.resolve_chat_aliases_file(manual_args.team_dir, manual_args.chat_aliases_file)
+    if str(manual_args.instance_lock_file or "").strip():
+        manual_args.instance_lock_file = Path(str(manual_args.instance_lock_file)).expanduser().resolve()
+    else:
+        manual_args.instance_lock_file = (manual_args.team_dir / ".gateway.instance.lock").resolve()
+    manual_args.workspace_root = gw.resolve_workspace_root(manual_args.workspace_root)
+    manual_args.owner_chat_id = gw.normalize_owner_chat_id(manual_args.owner_chat_id)
+    manual_args.owner_bootstrap_mode = (
+        gw.normalize_mode_token(str(getattr(manual_args, "owner_bootstrap_mode", "") or "").strip())
+        if str(getattr(manual_args, "owner_bootstrap_mode", "") or "").strip()
+        else ""
+    )
+    if manual_args.owner_bootstrap_mode not in {"dispatch", "direct"}:
+        manual_args.owner_bootstrap_mode = ""
+    manual_args.default_lang = gw.normalize_chat_lang_token(manual_args.default_lang, gw.DEFAULT_UI_LANG) or gw.DEFAULT_UI_LANG
+    manual_args.default_reply_lang = (
+        gw.normalize_chat_lang_token(manual_args.default_reply_lang, gw.DEFAULT_REPLY_LANG) or gw.DEFAULT_REPLY_LANG
+    )
+    raw_default_report = gw.normalize_report_token(str(getattr(manual_args, "default_report_level", "") or "").strip())
+    manual_args.default_report_level = (
+        raw_default_report if raw_default_report in {"short", "normal", "long"} else gw.DEFAULT_REPORT_LEVEL
+    )
+    manual_args.allow_chat_ids = gw.parse_csv_set(manual_args.allow_chat_ids)
+    manual_args.admin_chat_ids = gw.parse_csv_set(manual_args.admin_chat_ids)
+    manual_args.readonly_chat_ids = gw.parse_csv_set(manual_args.readonly_chat_ids)
+    manual_args.readonly_chat_ids = {
+        value for value in manual_args.readonly_chat_ids if value not in manual_args.admin_chat_ids
+    }
+    manual_args.chat_alias_cache = gw.load_chat_aliases(manual_args.chat_aliases_file)
+
+    cli_args = cli_mod.normalize_main_args(copy.deepcopy(base_args), deps=gw.__dict__)
+
+    assert cli_args.project_root == manual_args.project_root
+    assert cli_args.team_dir == manual_args.team_dir
+    assert cli_args.state_file == manual_args.state_file
+    assert cli_args.manager_state_file == manual_args.manager_state_file
+    assert cli_args.chat_aliases_file == manual_args.chat_aliases_file
+    assert cli_args.instance_lock_file == manual_args.instance_lock_file
+    assert cli_args.workspace_root == manual_args.workspace_root
+    assert cli_args.owner_chat_id == manual_args.owner_chat_id
+    assert cli_args.owner_bootstrap_mode == manual_args.owner_bootstrap_mode == "dispatch"
+    assert cli_args.default_lang == manual_args.default_lang
+    assert cli_args.default_reply_lang == manual_args.default_reply_lang
+    assert cli_args.default_report_level == manual_args.default_report_level
+    assert cli_args.allow_chat_ids == manual_args.allow_chat_ids
+    assert cli_args.admin_chat_ids == manual_args.admin_chat_ids
+    assert cli_args.readonly_chat_ids == manual_args.readonly_chat_ids
+    assert cli_args.chat_alias_cache == manual_args.chat_alias_cache
 
 
 def test_poll_loop_module_matches_gateway_iter_and_simulation_helpers() -> None:
