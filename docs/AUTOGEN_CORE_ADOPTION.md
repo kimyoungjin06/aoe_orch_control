@@ -177,8 +177,12 @@ Goal:
 Current status:
 
 - sandbox-only backend selection is live
-- read-only AutoGen Core runner is implemented
-- one TwinPaper sandbox pilot completed against canonical `TODO.md`
+- read-only AutoGen Core runner is implemented for analyst/reviewer and writer/reviewer shapes
+- benchmark parity remains green for review, synthesis, and reporting contract cases
+- successful sandbox pilots completed against canonical `TODO.md` in:
+  - `TwinPaper` (`Local-Analyst` + `Reviewer`)
+  - `KISTI_NanoClustering` (`Local-Analyst` + `Reviewer`)
+  - `Local_Map_Analysis` (`Local-Writer` + `Reviewer`)
 
 Not for:
 
@@ -309,3 +313,5 @@ If not, keep the current local backend and continue improving:
 - [x] wire backend runtime event mirroring into a sandbox-only execution path
 - [x] implement read-only `autogen_core` sandbox runner against canonical `TODO.md`
 - [x] execute one TwinPaper sandbox pilot and verify mirrored runtime events
+- [x] execute a second read-only sandbox pilot on a separate canonical backlog
+- [x] execute a writer/report handoff sandbox pilot with mirrored runtime events
