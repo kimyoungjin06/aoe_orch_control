@@ -23,6 +23,7 @@ if str(GW_DIR) not in sys.path:
 import aoe_tg_command_resolver as resolver
 import aoe_tg_blocked_state as blocked_state
 import aoe_tg_exec_pipeline as exec_pipeline
+import aoe_tg_exec_results as exec_results
 import aoe_tg_gateway_events as gateway_events
 import aoe_tg_management_handlers as mgmt_handlers
 import aoe_tg_ops_policy as ops_policy
@@ -3329,6 +3330,90 @@ def test_send_dispatch_exception_adds_project_quick_actions() -> None:
     assert "/sync preview O2 1h" in buttons
     assert "/queue" in buttons
     assert "/map" in buttons
+
+
+def test_exec_results_module_matches_run_response_exports() -> None:
+    entry = {"project_alias": "O2"}
+    assert run_handlers._confirmed_result_reply_markup(entry, "twinpaper") == exec_results.confirmed_result_reply_markup(entry, "twinpaper")
+    assert run_handlers._early_gate_reply_markup(entry, "twinpaper") == exec_results.early_gate_reply_markup(entry, "twinpaper")
+    assert run_handlers._intervention_reply_markup(entry, "twinpaper", "REQ-9") == exec_results.intervention_reply_markup(entry, "twinpaper", "REQ-9")
+
+    sent_run: list[tuple[str, str, dict | None]] = []
+    sent_mod: list[tuple[str, str, dict | None]] = []
+    run_handlers._send_exec_critic_intervention(
+        entry=entry,
+        key="twinpaper",
+        final_req_id="REQ-7",
+        verdict="retry",
+        reason="critic unresolved after repair",
+        exec_attempt=2,
+        exec_max_attempts=3,
+        send=lambda body, **kwargs: sent_run.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+    )
+    exec_results.send_exec_critic_intervention(
+        entry=entry,
+        key="twinpaper",
+        final_req_id="REQ-7",
+        verdict="retry",
+        reason="critic unresolved after repair",
+        exec_attempt=2,
+        exec_max_attempts=3,
+        send=lambda body, **kwargs: sent_mod.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+    )
+    assert sent_run == sent_mod
+
+    exc_run: list[tuple[str, str, dict | None]] = []
+    exc_mod: list[tuple[str, str, dict | None]] = []
+    run_handlers._send_dispatch_exception(
+        entry=entry,
+        key="twinpaper",
+        todo_id="TODO-001",
+        reason="missing orchestrator.json",
+        send=lambda body, **kwargs: exc_run.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+    )
+    exec_results.send_dispatch_exception(
+        entry=entry,
+        key="twinpaper",
+        todo_id="TODO-001",
+        reason="missing orchestrator.json",
+        send=lambda body, **kwargs: exc_mod.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+    )
+    assert exc_run == exc_mod
+
+    result_run: list[tuple[str, str, dict | None]] = []
+    result_mod: list[tuple[str, str, dict | None]] = []
+    log_run: list[dict] = []
+    log_mod: list[dict] = []
+    common = dict(
+        args=argparse.Namespace(require_verifier=False),
+        key="twinpaper",
+        entry=entry,
+        p_args=argparse.Namespace(),
+        prompt="dangerous but approved",
+        state={"complete": True, "replies": [{"role": "Reviewer", "text": "ok"}]},
+        req_id="REQ-1",
+        task=None,
+        run_control_mode="normal",
+        run_source_request_id="",
+        run_auto_source="confirmed",
+        summarize_task_lifecycle=lambda key, task: "",
+        synthesize_orchestrator_response=lambda p_args, prompt, state: "synthed",
+        render_run_response=lambda state, task=None: "run result",
+        finalize_request_reply_messages=lambda args, req_id: {},
+    )
+    handled_run = run_handlers._send_dispatch_result(
+        send=lambda body, **kwargs: result_run.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda **kwargs: log_run.append(kwargs),
+        **common,
+    )
+    handled_mod = exec_results.send_dispatch_result(
+        send=lambda body, **kwargs: result_mod.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda **kwargs: log_mod.append(kwargs),
+        **common,
+    )
+    assert handled_run == handled_mod == True
+    assert result_run == result_mod
+    assert log_run == log_mod
 
 
 def test_handle_run_or_unknown_command_sends_dispatch_exception_and_returns_true(tmp_path: Path) -> None:

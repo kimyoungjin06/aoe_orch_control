@@ -20,6 +20,14 @@ from aoe_tg_exec_pipeline import (
     project_alias as exec_project_alias,
     task_label_for_todo as exec_task_label_for_todo,
 )
+from aoe_tg_exec_results import (
+    confirmed_result_reply_markup as exec_confirmed_result_reply_markup,
+    early_gate_reply_markup as exec_early_gate_reply_markup,
+    intervention_reply_markup as exec_intervention_reply_markup,
+    send_dispatch_exception as exec_send_dispatch_exception,
+    send_dispatch_result as exec_send_dispatch_result,
+    send_exec_critic_intervention as exec_send_exec_critic_intervention,
+)
 from aoe_tg_plan_pipeline import (
     DispatchModeResult,
     PlanMeta,
@@ -136,51 +144,15 @@ def _rate_limit_reply_markup(entry: Optional[Dict[str, Any]] = None, key: str = 
 
 
 def _confirmed_result_reply_markup(entry: Dict[str, Any], key: str) -> Dict[str, Any]:
-    alias = _project_alias(entry, key)
-    return {
-        "keyboard": [
-            [{"text": f"/todo {alias}"}, {"text": f"/orch status {alias}"}, {"text": "/monitor"}],
-            [{"text": f"/sync preview {alias} 1h"}, {"text": "/queue"}, {"text": "/map"}],
-        ],
-        "resize_keyboard": True,
-        "one_time_keyboard": False,
-        "input_field_placeholder": f"예: /todo {alias} 또는 /orch status {alias}",
-    }
+    return exec_confirmed_result_reply_markup(entry, key)
 
 
 def _early_gate_reply_markup(entry: Dict[str, Any], key: str) -> Dict[str, Any]:
-    alias = _project_alias(entry, key)
-    return {
-        "keyboard": [
-            [{"text": f"/orch status {alias}"}, {"text": f"/todo {alias}"}, {"text": "/monitor"}],
-            [{"text": f"/sync preview {alias} 1h"}, {"text": "/queue"}, {"text": "/map"}],
-        ],
-        "resize_keyboard": True,
-        "one_time_keyboard": False,
-        "input_field_placeholder": f"예: /orch status {alias} 또는 /todo {alias}",
-    }
+    return exec_early_gate_reply_markup(entry, key)
 
 
 def _intervention_reply_markup(entry: Dict[str, Any], key: str, req_id: str = "") -> Dict[str, Any]:
-    alias = _project_alias(entry, key)
-    keyboard: List[List[Dict[str, str]]] = []
-    req_token = str(req_id or "").strip()
-    if req_token:
-        keyboard.append(
-            [
-                {"text": f"/task {req_token}"},
-                {"text": f"/replan {req_token}"},
-                {"text": f"/retry {req_token}"},
-            ]
-        )
-    keyboard.append([{"text": f"/todo {alias}"}, {"text": f"/orch status {alias}"}, {"text": "/monitor"}])
-    keyboard.append([{"text": "/queue"}, {"text": "/map"}, {"text": "/help"}])
-    return {
-        "keyboard": keyboard,
-        "resize_keyboard": True,
-        "one_time_keyboard": False,
-        "input_field_placeholder": f"예: /task {req_token or '-'} 또는 /todo {alias}",
-    }
+    return exec_intervention_reply_markup(entry, key, req_id)
 
 
 def _send_exec_critic_intervention(
@@ -194,19 +166,15 @@ def _send_exec_critic_intervention(
     exec_max_attempts: int,
     send: Callable[..., bool],
 ) -> None:
-    send(
-        "exec critic: intervention needed\n"
-        f"- verdict: {verdict}\n"
-        f"- reason: {reason or '-'}\n"
-        f"- attempts: {exec_attempt}/{exec_max_attempts}\n"
-        f"- last_request_id: {final_req_id or '-'}\n"
-        "next:\n"
-        f"- /task {final_req_id}\n"
-        f"- /replan {final_req_id}\n"
-        f"- /retry {final_req_id}",
-        context="exec-critic",
-        with_menu=True,
-        reply_markup=_intervention_reply_markup(entry, key, final_req_id),
+    exec_send_exec_critic_intervention(
+        entry=entry,
+        key=key,
+        final_req_id=final_req_id,
+        verdict=verdict,
+        reason=reason,
+        exec_attempt=exec_attempt,
+        exec_max_attempts=exec_max_attempts,
+        send=send,
     )
 
 
@@ -218,28 +186,12 @@ def _send_dispatch_exception(
     reason: str,
     send: Callable[..., bool],
 ) -> None:
-    alias = _project_alias(entry, key)
-    lines = [
-        "dispatch failed before request start",
-        f"- orch: {key} ({alias})",
-        f"- reason: {reason or 'dispatch_failed'}",
-    ]
-    token = str(todo_id or "").strip()
-    if token:
-        lines.append(f"- todo: {token}")
-    lines.extend(
-        [
-            "next:",
-            f"- /orch status {alias}",
-            f"- /todo {alias}",
-            f"- /sync preview {alias} 1h",
-        ]
-    )
-    send(
-        "\n".join(lines),
-        context="dispatch-exception",
-        with_menu=True,
-        reply_markup=_early_gate_reply_markup(entry, key),
+    exec_send_dispatch_exception(
+        entry=entry,
+        key=key,
+        todo_id=todo_id,
+        reason=reason,
+        send=send,
     )
 
 
@@ -947,64 +899,25 @@ def _send_dispatch_result(
     render_run_response: Callable[..., str],
     finalize_request_reply_messages: Callable[..., Dict[str, Any]],
 ) -> bool:
-    reply_markup = _confirmed_result_reply_markup(entry, key) if str(run_auto_source or "").strip().lower() == "confirmed" else None
-    if task is not None:
-        ver_status = str((task.get("stages") or {}).get("verification", "pending"))
-        if bool(args.require_verifier) and ver_status == "failed":
-            send(
-                summarize_task_lifecycle(key, task),
-                context="verifier-gate failed",
-                reply_markup=_intervention_reply_markup(entry, key, req_id),
-            )
-            log_event(
-                event="dispatch_failed",
-                project=key,
-                request_id=req_id,
-                task=task,
-                stage="verification",
-                status="failed",
-                error_code="E_GATE",
-                detail="verifier_gate_failed",
-            )
-            return True
-
-    if bool(state.get("complete", False)) and (state.get("replies") or []):
-        try:
-            send(synthesize_orchestrator_response(p_args, prompt, state), context="synth", reply_markup=reply_markup)
-            if req_id:
-                try:
-                    finalize_request_reply_messages(args, req_id)
-                except Exception:
-                    pass
-            log_event(
-                event="dispatch_completed",
-                project=key,
-                request_id=req_id,
-                task=task,
-                stage=str((task or {}).get("stage", "close")),
-                status=str((task or {}).get("status", "completed")),
-                detail=f"control_mode={run_control_mode or 'normal'} source_request_id={run_source_request_id or '-'}",
-            )
-            return True
-        except Exception:
-            pass
-
-    send(render_run_response(state, task=task), context="result", reply_markup=reply_markup)
-    if bool(state.get("complete", False)) and req_id:
-        try:
-            finalize_request_reply_messages(args, req_id)
-        except Exception:
-            pass
-    log_event(
-        event="dispatch_result",
-        project=key,
-        request_id=req_id,
+    return exec_send_dispatch_result(
+        args=args,
+        key=key,
+        entry=entry,
+        p_args=p_args,
+        prompt=prompt,
+        state=state,
+        req_id=req_id,
         task=task,
-        stage=str((task or {}).get("stage", "close")),
-        status=str((task or {}).get("status", "running" if not bool(state.get("complete", False)) else "completed")),
-        detail=f"control_mode={run_control_mode or 'normal'} source_request_id={run_source_request_id or '-'}",
+        run_control_mode=run_control_mode,
+        run_source_request_id=run_source_request_id,
+        run_auto_source=run_auto_source,
+        send=send,
+        log_event=log_event,
+        summarize_task_lifecycle=summarize_task_lifecycle,
+        synthesize_orchestrator_response=synthesize_orchestrator_response,
+        render_run_response=render_run_response,
+        finalize_request_reply_messages=finalize_request_reply_messages,
     )
-    return True
 
 
 def _enforce_dispatch_policies(
