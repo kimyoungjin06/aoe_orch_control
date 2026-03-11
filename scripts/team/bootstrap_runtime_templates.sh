@@ -126,6 +126,10 @@ if [[ -f "$TEMPLATE_DIR/sync_policy.sample.json" ]]; then
   copy_file_if_needed "$TEMPLATE_DIR/sync_policy.sample.json" "$TEAM_DIR/sync_policy.sample.json"
 fi
 
+if [[ -f "$TEMPLATE_DIR/tf_backend.sample.json" ]]; then
+  copy_file_if_needed "$TEMPLATE_DIR/tf_backend.sample.json" "$TEAM_DIR/tf_backend.sample.json"
+fi
+
 for f in "$TEMPLATE_DIR"/workers/*.json; do
   copy_file_if_needed "$f" "$TEAM_DIR/workers/$(basename "$f")"
 done

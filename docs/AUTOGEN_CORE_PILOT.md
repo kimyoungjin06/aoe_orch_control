@@ -160,10 +160,11 @@ Store this evidence outside the live control plane until the pilot is accepted.
 
 ## 10. Next Technical Gate
 
-Before any live sandbox pilot, implement:
+Completed technical gates:
 
 - sandbox wiring for backend runtime event mirroring into existing gateway/operator logs
-
-After that, the next technical milestone is:
-
 - controlled backend selection for one sandbox TF profile only
+
+Next technical milestone:
+
+- bind one sandbox TF profile to `autogen_core` and review the mirrored event trace manually before any broader pilot

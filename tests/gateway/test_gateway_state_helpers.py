@@ -62,6 +62,7 @@ import aoe_tg_task_state as task_state
 import aoe_tg_task_view as task_view
 import aoe_tg_tf_backend as tf_backend
 import aoe_tg_tf_backend_autogen as tf_backend_autogen
+import aoe_tg_tf_backend_selection as tf_backend_selection
 import aoe_tg_tf_event_schema as tf_event_schema
 import aoe_tg_tf_backend_local as tf_backend_local
 import aoe_tg_tf_exec as tf_exec
@@ -7748,6 +7749,46 @@ def test_tf_backend_normalization_and_labels() -> None:
     assert tf_backend.backend_runtime_label("autogen_core") == "autogen_core"
 
 
+def test_tf_backend_selection_defaults_to_local_and_enforces_sandbox_guard(tmp_path: Path) -> None:
+    team_dir = tmp_path / ".aoe-team"
+    team_dir.mkdir(parents=True)
+
+    default_row = tf_backend_selection.resolve_effective_tf_backend(team_dir)
+    assert default_row["effective_backend"] == "local"
+    assert default_row["selection_reason"] == "default_local"
+
+    (team_dir / "tf_backend.json").write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "backend": "autogen_core",
+                "profile": "research",
+                "sandbox_only": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    guarded_row = tf_backend_selection.resolve_effective_tf_backend(team_dir)
+    assert guarded_row["backend"] == "autogen_core"
+    assert guarded_row["effective_backend"] == "local"
+    assert guarded_row["selection_reason"] == "sandbox_guard"
+
+    (team_dir / "tf_backend.json").write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "backend": "autogen_core",
+                "profile": "sandbox",
+                "sandbox_only": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    sandbox_row = tf_backend_selection.resolve_effective_tf_backend(team_dir)
+    assert sandbox_row["effective_backend"] == "autogen_core"
+    assert sandbox_row["selection_reason"] == "sandbox_config"
+
+
 def test_tf_runtime_event_schema_normalizes_and_validates() -> None:
     rows = tf_event_schema.normalize_runtime_events(
         [
@@ -7879,3 +7920,168 @@ def test_autogen_backend_reports_availability_and_stays_not_implemented() -> Non
             assert "not wired" in str(exc)
     else:
         assert "not installed" in availability.reason
+
+
+def test_gateway_run_aoe_orch_uses_local_backend_by_default(tmp_path: Path) -> None:
+    team_dir = tmp_path / "project" / ".aoe-team"
+    team_dir.mkdir(parents=True)
+    args = argparse.Namespace(
+        project_root=tmp_path / "project",
+        team_dir=team_dir,
+        aoe_orch_bin="aoe-orch",
+        _aoe_root_team_dir=str(tmp_path / "mother" / ".aoe-team"),
+        _aoe_project_key="o3",
+        _aoe_trace_id="trace-local",
+    )
+    calls: dict = {}
+
+    class _FakeLocalBackend:
+        backend_name = "local"
+
+        def availability(self):
+            return tf_backend.TFBackendAvailability(True, "")
+
+        def run(self, request, deps):
+            calls["request"] = request
+            calls["deps"] = deps
+            return {"request_id": "REQ-LOCAL", "status": "submitted"}
+
+    original_local_backend = gw.tf_backend_local_mod.local_backend
+    original_autogen_backend = gw.tf_backend_autogen_mod.autogen_core_backend
+    gw.tf_backend_local_mod.local_backend = lambda: _FakeLocalBackend()
+    gw.tf_backend_autogen_mod.autogen_core_backend = lambda: (_ for _ in ()).throw(AssertionError("autogen backend should not be selected"))
+    try:
+        result = gw.run_aoe_orch(args, "review this", "chat-1", roles_override="Reviewer")
+    finally:
+        gw.tf_backend_local_mod.local_backend = original_local_backend
+        gw.tf_backend_autogen_mod.autogen_core_backend = original_autogen_backend
+
+    assert result["backend"] == "local"
+    assert result["backend_selection_reason"] == "default_local"
+    assert calls["request"].prompt == "review this"
+    assert calls["request"].roles_override == "Reviewer"
+    assert calls["deps"].default_tf_exec_map_file == gw.DEFAULT_TF_EXEC_MAP_FILE
+
+
+def test_gateway_run_aoe_orch_selects_sandbox_backend_and_mirrors_runtime_events(tmp_path: Path) -> None:
+    team_dir = tmp_path / "project" / ".aoe-team"
+    root_team_dir = tmp_path / "mother" / ".aoe-team"
+    team_dir.mkdir(parents=True)
+    root_team_dir.mkdir(parents=True)
+    (team_dir / "tf_backend.json").write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "backend": "autogen_core",
+                "profile": "sandbox",
+                "sandbox_only": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = argparse.Namespace(
+        project_root=tmp_path / "project",
+        team_dir=team_dir,
+        aoe_orch_bin="aoe-orch",
+        _aoe_root_team_dir=str(root_team_dir),
+        _aoe_project_key="o3",
+        _aoe_trace_id="trace-autogen",
+    )
+
+    class _FakeAutoGenBackend:
+        backend_name = "autogen_core"
+
+        def availability(self):
+            return tf_backend.TFBackendAvailability(True, "installed")
+
+        def run(self, request, deps):
+            return {
+                "request_id": "REQ-AUTOGEN",
+                "status": "submitted",
+                "runtime_events": [
+                    {
+                        "seq": 1,
+                        "ts": "2026-03-11T19:00:00+0900",
+                        "backend": "autogen_core",
+                        "source": "tf_orchestrator",
+                        "stage": "request.accepted",
+                        "kind": "lifecycle",
+                        "status": "info",
+                        "summary": "accepted sandbox request",
+                        "payload": {"project_key": "O3"},
+                    }
+                ],
+            }
+
+    original_local_backend = gw.tf_backend_local_mod.local_backend
+    original_autogen_backend = gw.tf_backend_autogen_mod.autogen_core_backend
+    gw.tf_backend_local_mod.local_backend = lambda: (_ for _ in ()).throw(AssertionError("local backend should not be selected"))
+    gw.tf_backend_autogen_mod.autogen_core_backend = lambda: _FakeAutoGenBackend()
+    try:
+        result = gw.run_aoe_orch(args, "sandbox review", "chat-1")
+    finally:
+        gw.tf_backend_local_mod.local_backend = original_local_backend
+        gw.tf_backend_autogen_mod.autogen_core_backend = original_autogen_backend
+
+    assert result["backend"] == "autogen_core"
+    assert result["backend_profile"] == "sandbox"
+    assert result["backend_selection_reason"] == "sandbox_config"
+
+    project_rows = [
+        json.loads(line)
+        for line in (team_dir / "logs" / "gateway_events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    root_rows = [
+        json.loads(line)
+        for line in (root_team_dir / "logs" / "gateway_events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert project_rows[-1]["event"] == "tf_backend_runtime_event"
+    assert project_rows[-1]["backend"] == "autogen_core"
+    assert root_rows[-1]["project_team_dir"] == str(team_dir.resolve())
+
+
+def test_gateway_run_aoe_orch_raises_when_selected_backend_is_unavailable(tmp_path: Path) -> None:
+    team_dir = tmp_path / "project" / ".aoe-team"
+    team_dir.mkdir(parents=True)
+    (team_dir / "tf_backend.json").write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "backend": "autogen_core",
+                "profile": "sandbox",
+                "sandbox_only": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = argparse.Namespace(
+        project_root=tmp_path / "project",
+        team_dir=team_dir,
+        aoe_orch_bin="aoe-orch",
+        _aoe_root_team_dir=str(tmp_path / "mother" / ".aoe-team"),
+        _aoe_project_key="o3",
+        _aoe_trace_id="trace-fail",
+    )
+
+    class _UnavailableAutoGenBackend:
+        backend_name = "autogen_core"
+
+        def availability(self):
+            return tf_backend.TFBackendAvailability(False, "autogen_core missing")
+
+        def run(self, request, deps):
+            raise AssertionError("run should not be called when backend is unavailable")
+
+    original_autogen_backend = gw.tf_backend_autogen_mod.autogen_core_backend
+    gw.tf_backend_autogen_mod.autogen_core_backend = lambda: _UnavailableAutoGenBackend()
+    try:
+        try:
+            gw.run_aoe_orch(args, "sandbox review", "chat-1")
+            raise AssertionError("expected RuntimeError")
+        except RuntimeError as exc:
+            assert "tf backend unavailable" in str(exc)
+            assert "autogen_core missing" in str(exc)
+    finally:
+        gw.tf_backend_autogen_mod.autogen_core_backend = original_autogen_backend

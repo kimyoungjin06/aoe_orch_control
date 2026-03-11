@@ -88,6 +88,9 @@ import aoe_tg_poll_loop as poll_loop_mod
 import aoe_tg_message_handler as message_handler_mod
 import aoe_tg_request_state as request_state_mod
 import aoe_tg_tf_exec as tf_exec_mod
+import aoe_tg_tf_backend_selection as tf_backend_selection_mod
+import aoe_tg_tf_backend_local as tf_backend_local_mod
+import aoe_tg_tf_backend_autogen as tf_backend_autogen_mod
 from aoe_tg_message_flow import (
     RunTransitionState,
     apply_confirm_transition_to_resolved,
@@ -125,6 +128,14 @@ from aoe_tg_parse import (
     normalize_mode_token,
     normalize_report_token,
     parse_command,
+)
+from aoe_tg_tf_backend import (
+    AUTOGEN_CORE_TF_BACKEND,
+    DEFAULT_TF_BACKEND,
+    availability_tuple,
+    build_tf_backend_deps,
+    build_tf_backend_request,
+    normalize_tf_backend_name,
 )
 from aoe_tg_room_handlers import DEFAULT_MAX_EVENT_CHARS, DEFAULT_MAX_FILE_BYTES, DEFAULT_ROOM_NAME, append_room_event, normalize_room_token
 from aoe_tg_schema import (
@@ -2123,21 +2134,72 @@ def run_aoe_orch(
     timeout_override: Optional[int] = None,
     no_wait_override: Optional[bool] = None,
 ) -> Dict[str, Any]:
-    return tf_exec_mod.run_aoe_orch(
-        args,
-        prompt,
-        chat_id,
+    selection = tf_backend_selection_mod.resolve_effective_tf_backend(Path(str(args.team_dir)))
+    backend_name = normalize_tf_backend_name(selection.get("effective_backend"), default=DEFAULT_TF_BACKEND)
+    adapter = (
+        tf_backend_autogen_mod.autogen_core_backend()
+        if backend_name == AUTOGEN_CORE_TF_BACKEND
+        else tf_backend_local_mod.local_backend()
+    )
+    available, availability_reason = availability_tuple(adapter.availability())
+    if not available:
+        config_path = str(selection.get("config_path", "") or "").strip()
+        config_hint = f" config={config_path}" if config_path else ""
+        raise RuntimeError(
+            f"tf backend unavailable: backend={backend_name}"
+            f" reason={availability_reason or 'unavailable'}"
+            f" selection={selection.get('selection_reason', 'default_local')}{config_hint}"
+        )
+
+    request = build_tf_backend_request(
+        args=args,
+        prompt=prompt,
+        chat_id=chat_id,
+        roles_override=roles_override,
+        priority_override=priority_override,
+        timeout_override=timeout_override,
+        no_wait_override=no_wait_override,
+        metadata={
+            "backend": backend_name,
+            "selection_reason": str(selection.get("selection_reason", "") or ""),
+            "profile": str(selection.get("profile", "") or ""),
+            "sandbox_only": bool(selection.get("sandbox_only", True)),
+            "config_path": str(selection.get("config_path", "") or ""),
+        },
+    )
+    deps = build_tf_backend_deps(
         default_tf_exec_mode=DEFAULT_TF_EXEC_MODE,
         default_tf_work_root_name=DEFAULT_TF_WORK_ROOT_NAME,
         default_tf_exec_map_file=DEFAULT_TF_EXEC_MAP_FILE,
         default_tf_worker_startup_grace_sec=DEFAULT_TF_WORKER_STARTUP_GRACE_SEC,
         now_iso=now_iso,
         run_command=run_command,
-        roles_override=roles_override,
-        priority_override=priority_override,
-        timeout_override=timeout_override,
-        no_wait_override=no_wait_override,
     )
+    result = adapter.run(request, deps)
+    if not isinstance(result, dict):
+        result = {"result": result}
+    result = dict(result)
+    result["backend"] = backend_name
+    result["backend_profile"] = str(selection.get("profile", "") or "")
+    result["backend_selection_reason"] = str(selection.get("selection_reason", "") or "")
+    result["backend_config_path"] = str(selection.get("config_path", "") or "")
+    result["backend_availability_reason"] = str(availability_reason or "")
+
+    runtime_events = result.get("runtime_events")
+    if not isinstance(runtime_events, list):
+        runtime_events = result.get("events")
+    if isinstance(runtime_events, list) and runtime_events:
+        mirror_tf_backend_runtime_events(
+            team_dir=Path(str(args.team_dir)),
+            backend=backend_name,
+            runtime_events=runtime_events,
+            trace_id=str(getattr(args, "_aoe_trace_id", "") or ""),
+            project=str(getattr(args, "_aoe_project_key", "") or ""),
+            request_id=str(result.get("request_id", "") or ""),
+            task=result.get("task") if isinstance(result.get("task"), dict) else None,
+            mirror_team_dir=Path(str(getattr(args, "_aoe_root_team_dir", args.team_dir))),
+        )
+    return result
 
 
 def run_aoe_add_role(
