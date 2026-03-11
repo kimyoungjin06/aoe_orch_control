@@ -31,6 +31,8 @@ import aoe_tg_gateway_state as gateway_state
 import aoe_tg_management_handlers as mgmt_handlers
 import aoe_tg_ops_policy as ops_policy
 import aoe_tg_ops_view as ops_view
+import aoe_tg_orch_registry as orch_registry
+import aoe_tg_orch_roles as orch_roles
 import aoe_tg_orch_overview_handlers as overview
 import aoe_tg_orch_task_handlers as orch_task_handlers
 import aoe_tg_parse as tg_parse
@@ -160,6 +162,49 @@ def test_chat_aliases_module_matches_gateway_exports(tmp_path: Path) -> None:
     assert gw.ensure_chat_aliases(args_a, ["939062876", "939062877"]) == chat_aliases.ensure_chat_aliases(args_b, ["939062876", "939062877"])
     assert gw.resolve_chat_ref(args_a, "1") == chat_aliases.resolve_chat_ref(args_b, "1")
     assert gw.alias_table_summary(args_a) == chat_aliases.alias_table_summary(args_b)
+
+
+def test_orch_roles_module_matches_gateway_exports(tmp_path: Path) -> None:
+    team_dir = tmp_path / ".aoe-team"
+    (team_dir / "agents" / "Reviewer").mkdir(parents=True, exist_ok=True)
+    (team_dir / "agents" / "Local-Dev").mkdir(parents=True, exist_ok=True)
+    (team_dir / "agents" / "Reviewer" / "AGENTS.md").write_text(
+        "# AGENTS.md - Reviewer\n\n## Mission\nFind risks, regressions, and missing tests before merge.\n",
+        encoding="utf-8",
+    )
+    (team_dir / "agents" / "Local-Dev" / "AGENTS.md").write_text(
+        "# AGENTS.md - Local-Dev\n\n## Mission\nImplement code changes and fix application bugs.\n",
+        encoding="utf-8",
+    )
+    (team_dir / "orchestrator.json").write_text(
+        json.dumps(
+            {
+                "coordinator": {"role": "Orchestrator"},
+                "agents": [{"role": "Reviewer"}, {"role": "Local-Dev"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert gw.parse_roles_csv("Reviewer, Local-Dev,Reviewer") == orch_roles.parse_roles_csv("Reviewer, Local-Dev,Reviewer")
+    assert gw.load_orchestrator_roles(team_dir) == orch_roles.load_orchestrator_roles(team_dir)
+    assert gw.load_orchestrator_role_profiles(team_dir) == orch_roles.load_orchestrator_role_profiles(team_dir)
+    assert gw.resolve_verifier_candidates("") == orch_roles.resolve_verifier_candidates("", default_verifier_roles=gw.DEFAULT_VERIFIER_ROLES)
+    assert gw.ensure_verifier_roles(["Local-Dev"], ["Reviewer", "Local-Dev"], ["Reviewer"]) == orch_roles.ensure_verifier_roles(
+        ["Local-Dev"],
+        ["Reviewer", "Local-Dev"],
+        ["Reviewer"],
+    )
+    assert gw.choose_auto_dispatch_roles(
+        "로그인 버그를 수정하고 회귀 리스크도 같이 검토해줘.",
+        available_roles=["Local-Dev", "Reviewer"],
+        team_dir=team_dir,
+    ) == orch_roles.choose_auto_dispatch_roles(
+        "로그인 버그를 수정하고 회귀 리스크도 같이 검토해줘.",
+        available_roles=["Local-Dev", "Reviewer"],
+        team_dir=team_dir,
+    )
+    assert gw.available_worker_roles([]) == orch_roles.available_worker_roles([])
 
 
 def test_gateway_state_module_matches_gateway_poll_and_replay_helpers(tmp_path: Path) -> None:
@@ -1823,6 +1868,57 @@ def test_summarize_orch_registry_marks_unready_project(tmp_path: Path) -> None:
 
     assert "O2 TwinPaper [UNREADY]" in text
     assert "runtime=missing orchestrator.json" in text
+
+
+def test_orch_registry_module_matches_gateway_summary_and_status(tmp_path: Path, monkeypatch) -> None:
+    state = _empty_state()
+    team_dir = tmp_path / "TwinPaper" / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    state["projects"]["twinpaper"] = {
+        "name": "twinpaper",
+        "display_name": "TwinPaper",
+        "project_alias": "O2",
+        "project_root": str(tmp_path / "TwinPaper"),
+        "team_dir": str(team_dir),
+        "last_sync_mode": "scenario",
+        "todos": [{"id": "TODO-001", "summary": "first", "priority": "P1", "status": "open"}],
+        "tasks": {},
+    }
+    state["active"] = "twinpaper"
+
+    gw_text = gw.summarize_orch_registry(state)
+    mod_text = orch_registry.summarize_orch_registry(
+        state,
+        ensure_project_aliases=gw.ensure_project_aliases,
+        project_alias_for_key=gw.project_alias_for_key,
+        project_lock_label=gw.project_lock_label,
+        extract_project_alias_index=gw.extract_project_alias_index,
+        bool_from_json=gw.bool_from_json,
+        task_display_label=gw.task_display_label,
+        normalize_task_status=gw.normalize_task_status,
+    )
+    assert gw_text == mod_text
+
+    args = argparse.Namespace(
+        aoe_orch_bin="aoe-orch",
+        project_root=tmp_path / "TwinPaper",
+        team_dir=team_dir,
+        state_file=tmp_path / "gateway_state.json",
+    )
+
+    class Proc:
+        returncode = 0
+        stdout = "status ok"
+        stderr = ""
+
+    monkeypatch.setattr(gw, "run_command", lambda cmd, env, timeout_sec: Proc())
+    monkeypatch.setattr(gw, "summarize_gateway_poll_state", lambda path: "poll-summary")
+
+    assert gw.run_aoe_status(args) == orch_registry.run_aoe_status(
+        args,
+        run_command=lambda cmd, env, timeout_sec: Proc(),
+        summarize_gateway_poll_state=lambda path: "poll-summary",
+    )
 
 
 def test_drain_peek_next_todo_skips_unready_project_and_selects_ready_one(tmp_path: Path) -> None:
