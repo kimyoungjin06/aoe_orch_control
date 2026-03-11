@@ -33,6 +33,7 @@ import aoe_tg_gateway_batch_ops as gateway_batch_ops
 import aoe_tg_gateway_state as gateway_state
 import aoe_tg_management_handlers as mgmt_handlers
 import aoe_tg_message_handler as message_handler
+import aoe_tg_offdesk_flow as offdesk_flow
 import aoe_tg_ops_policy as ops_policy
 import aoe_tg_ops_view as ops_view
 import aoe_tg_room_runtime as room_runtime
@@ -702,6 +703,33 @@ def test_gateway_batch_ops_module_matches_gateway_parse_helpers() -> None:
     assert gateway_batch_ops.parse_drain_args("all") == gw._parse_drain_args("all")
     assert gateway_batch_ops.parse_fanout_args("3 force") == gw._parse_fanout_args("3 force")
     assert gateway_batch_ops.parse_fanout_args("") == gw._parse_fanout_args("")
+
+
+def test_offdesk_flow_module_matches_management_prefetch_and_state_helpers(tmp_path: Path, monkeypatch) -> None:
+    previous = os.environ.get("AOE_TG_COMMAND_PREFIXES")
+    os.environ["AOE_TG_COMMAND_PREFIXES"] = "!/"
+    monkeypatch.setattr(offdesk_flow, "now_iso", lambda: "2026-03-11T10:00:00+0900")
+    try:
+        args = argparse.Namespace(team_dir=tmp_path / ".aoe-team", project_root=tmp_path)
+        assert offdesk_flow.cmd_prefix() == mgmt_handlers._cmd_prefix() == "!"
+        assert offdesk_flow.normalize_prefetch_token("recent_docs") == mgmt_handlers._normalize_prefetch_token("recent_docs")
+        assert offdesk_flow.parse_replace_sync_flag(["replace-sync"]) == mgmt_handlers._parse_replace_sync_flag(["replace-sync"])
+        assert offdesk_flow.prefetch_display("sync_recent", "3h", True) == mgmt_handlers._prefetch_display("sync_recent", "3h", True)
+        assert offdesk_flow.status_report_level(["status", "long"], "short") == mgmt_handlers._status_report_level(["status", "long"], "short")
+        assert offdesk_flow.auto_state_path(args, filename=mgmt_handlers.AUTO_STATE_FILENAME) == mgmt_handlers._auto_state_path(args)
+        assert offdesk_flow.offdesk_state_path(args, filename=mgmt_handlers.OFFDESK_STATE_FILENAME) == mgmt_handlers._offdesk_state_path(args)
+
+        state_a = tmp_path / "a.json"
+        state_b = tmp_path / "b.json"
+        payload = {"enabled": True, "chat_id": "939062873"}
+        mgmt_handlers._save_auto_state(state_a, payload)
+        offdesk_flow.save_auto_state(state_b, payload)
+        assert mgmt_handlers._load_auto_state(state_a) == offdesk_flow.load_auto_state(state_b)
+    finally:
+        if previous is None:
+            os.environ.pop("AOE_TG_COMMAND_PREFIXES", None)
+        else:
+            os.environ["AOE_TG_COMMAND_PREFIXES"] = previous
 
 
 def test_room_runtime_module_builds_expected_autopublish_event() -> None:
@@ -5711,6 +5739,46 @@ def test_offdesk_status_includes_focused_project_snapshot(tmp_path: Path) -> Non
     assert "- blocked_head: TODO-3 x2 [manual_followup]" in text
     assert "- last_sync: scenario " in text
     assert "- last_task: T-101 Review schema and summarize result [running]" in text
+
+
+def test_offdesk_flow_module_matches_management_prepare_report_and_markup(tmp_path: Path) -> None:
+    project_root = tmp_path / "Proj3"
+    team_dir = project_root / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (project_root / "TODO.md").write_text("- [ ] P1: review schema\n", encoding="utf-8")
+    (team_dir / "AOE_TODO.md").write_text("@include ../TODO.md\n", encoding="utf-8")
+    (team_dir / "orchestrator.json").write_text("{}", encoding="utf-8")
+
+    state = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+    state["projects"]["proj3"] = {
+        "name": "proj3",
+        "display_name": "Proj3",
+        "project_alias": "O3",
+        "project_root": str(project_root),
+        "team_dir": str(team_dir),
+        "todos": [
+            {"id": "TODO-1", "summary": "review schema", "status": "open", "priority": "P1"},
+            {
+                "id": "TODO-2",
+                "summary": "manual item",
+                "status": "blocked",
+                "blocked_bucket": "manual_followup",
+                "blocked_count": 2,
+                "blocked_reason": "need review",
+            },
+        ],
+        "todo_proposals": [{"id": "PROP-1", "summary": "follow up", "status": "open"}],
+        "last_sync_mode": "scenario",
+        "last_sync_at": "2026-03-11T09:30:00+0900",
+    }
+    entry = state["projects"]["proj3"]
+
+    report_a = mgmt_handlers._offdesk_prepare_project_report(state, "proj3", entry)
+    report_b = offdesk_flow.offdesk_prepare_project_report(state, "proj3", entry)
+
+    assert report_a == report_b
+    assert mgmt_handlers._offdesk_review_reply_markup([report_a]) == offdesk_flow.offdesk_review_reply_markup([report_b])
+    assert mgmt_handlers._offdesk_prepare_reply_markup([report_a], blocked_count=1) == offdesk_flow.offdesk_prepare_reply_markup([report_b], blocked_count=1)
 
 
 def test_auto_status_includes_active_project_snapshot_without_lock(tmp_path: Path) -> None:

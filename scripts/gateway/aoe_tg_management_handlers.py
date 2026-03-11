@@ -24,6 +24,7 @@ from aoe_tg_ops_view import (
     render_ops_scope_compact_lines,
     render_project_snapshot_lines,
 )
+import aoe_tg_offdesk_flow as offdesk_flow_mod
 from aoe_tg_package_paths import team_tmux_script
 from aoe_tg_project_runtime import project_hidden_from_ops, project_runtime_issue, project_runtime_label
 from aoe_tg_todo_state import preview_syncback_plan
@@ -42,39 +43,19 @@ _SCENARIO_INCLUDE_PREFIX = "@include"
 
 
 def _cmd_prefix() -> str:
-    raw = str(os.environ.get("AOE_TG_COMMAND_PREFIXES", "/") or "/").strip()
-    for ch in raw:
-        if ch in {"/", "!"}:
-            return ch
-    return "/"
+    return offdesk_flow_mod.cmd_prefix()
 
 
 def _normalize_prefetch_token(raw: Any) -> str:
-    token = str(raw or "").strip().lower()
-    if token in {"recent", "recent_docs", "sync-recent"}:
-        token = "sync_recent"
-    return token if token in {"sync_recent"} else ""
+    return offdesk_flow_mod.normalize_prefetch_token(raw)
 
 
 def _parse_replace_sync_flag(tokens: List[str]) -> Optional[bool]:
-    result: Optional[bool] = None
-    for tok in tokens:
-        low = str(tok or "").strip().lower()
-        if low in {"replace-sync", "sync-replace", "replace_prefetch", "prefetch-replace"}:
-            result = True
-        elif low in {"no-replace-sync", "safe-sync", "no-sync-replace"}:
-            result = False
-    return result
+    return offdesk_flow_mod.parse_replace_sync_flag(tokens)
 
 
 def _prefetch_display(prefetch: Any, prefetch_since: Any, replace_sync: bool) -> str:
-    token = _normalize_prefetch_token(prefetch)
-    since_disp = str(prefetch_since or "").strip() or "-"
-    if token == "sync_recent" and replace_sync:
-        return "sync_recent+replace (full-scope; since ignored)"
-    if token == "sync_recent":
-        return f"sync_recent+salvage (since={since_disp})"
-    return "-"
+    return offdesk_flow_mod.prefetch_display(prefetch, prefetch_since, replace_sync)
 
 
 def _compact_age_label(raw_ts: str) -> str:
@@ -82,39 +63,15 @@ def _compact_age_label(raw_ts: str) -> str:
 
 
 def _compact_reason(raw: Any, limit: int = 120) -> str:
-    text = " ".join(str(raw or "").strip().split())
-    if len(text) > limit:
-        return text[: max(0, limit - 3)].rstrip() + "..."
-    return text
+    return offdesk_flow_mod.compact_reason(raw, limit=limit)
 
 
 def _status_report_level(tokens: List[str], fallback: str) -> str:
-    explicit = ""
-    for tok in tokens[1:]:
-        low = str(tok or "").strip().lower()
-        if low in {"short", "brief", "compact", "간단", "짧게", "요약"}:
-            explicit = "short"
-        elif low in {"long", "detail", "detailed", "verbose", "full", "상세", "자세히"}:
-            explicit = "long"
-    if explicit:
-        return explicit
-    base = str(fallback or "").strip().lower()
-    return "long" if base == "long" else "short"
+    return offdesk_flow_mod.status_report_level(tokens, fallback)
 
 
 def _focused_project_entry(manager_state: Dict[str, Any]) -> Tuple[str, Dict[str, Any], bool]:
-    projects = manager_state.get("projects") if isinstance(manager_state, dict) else {}
-    if not isinstance(projects, dict) or not projects:
-        return "", {}, False
-    row = _project_lock_row(manager_state)
-    locked = bool(row)
-    key = str(row.get("project_key", "")).strip().lower()
-    if not key:
-        key = str(manager_state.get("active", "default") or "default").strip().lower()
-    entry = projects.get(key)
-    if not isinstance(entry, dict):
-        return "", {}, locked
-    return key, entry, locked
+    return offdesk_flow_mod.focused_project_entry(manager_state, project_lock_row=_project_lock_row)
 
 
 def _blocked_reason_preview(raw: Any, limit: int = 72) -> str:
@@ -140,315 +97,55 @@ def _blocked_bucket_count(todos: Any, bucket: str) -> int:
 
 
 def _focused_project_snapshot_lines(manager_state: Dict[str, Any]) -> List[str]:
-    key, entry, locked = _focused_project_entry(manager_state)
-    if not key or not entry:
-        return []
-    return render_project_snapshot_lines(key=key, entry=entry, locked=locked)
+    return offdesk_flow_mod.focused_project_snapshot_lines(
+        manager_state,
+        project_lock_row=_project_lock_row,
+    )
 
 
 def _ops_scope_summary(manager_state: Dict[str, Any]) -> Dict[str, List[str]]:
-    projects = manager_state.get("projects") if isinstance(manager_state, dict) else {}
-    return summarize_ops_scope(projects)
+    return offdesk_flow_mod.ops_scope_summary(manager_state)
 
 
 def _ops_scope_compact_lines(manager_state: Dict[str, Any], *, limit: int = 4, detail_level: str = "short") -> List[str]:
-    projects = manager_state.get("projects") if isinstance(manager_state, dict) else {}
-    return render_ops_scope_compact_lines(projects, limit=limit, detail_level=detail_level)
+    return offdesk_flow_mod.ops_scope_compact_lines(manager_state, limit=limit, detail_level=detail_level)
 
 
 def _canonical_todo_path(entry: Dict[str, Any]) -> Path:
-    root = Path(str(entry.get("project_root", "")).strip() or ".").expanduser()
-    return (root / "TODO.md").resolve()
+    return offdesk_flow_mod.canonical_todo_path(entry)
 
 
 def _scenario_path(entry: Dict[str, Any]) -> Path:
-    root = Path(str(entry.get("project_root", "")).strip() or ".").expanduser()
-    return (root / ".aoe-team" / "AOE_TODO.md").resolve()
+    return offdesk_flow_mod.scenario_path(entry)
 
 
 def _scenario_include_targets(entry: Dict[str, Any]) -> List[Tuple[str, bool]]:
-    path = _scenario_path(entry)
-    if not path.exists():
-        return []
-    try:
-        text = path.read_text(encoding="utf-8")
-    except Exception:
-        return []
-    out: List[Tuple[str, bool]] = []
-    for raw_line in text.splitlines():
-        stripped = str(raw_line or "").strip()
-        if not stripped.lower().startswith(_SCENARIO_INCLUDE_PREFIX):
-            continue
-        payload = stripped[len(_SCENARIO_INCLUDE_PREFIX) :].strip()
-        if payload.startswith(":"):
-            payload = payload[1:].strip()
-        if not payload:
-            continue
-        target = Path(payload).expanduser()
-        resolved = target if target.is_absolute() else (path.parent / target).resolve()
-        rel = payload
-        try:
-            rel = str(resolved.relative_to(path.parent.parent))
-        except Exception:
-            rel = payload
-        out.append((rel, resolved.exists()))
-    return out
+    return offdesk_flow_mod.scenario_include_targets(entry, include_prefix=_SCENARIO_INCLUDE_PREFIX)
 
 
 def _parse_iso_datetime(raw: str) -> Optional[datetime]:
-    text = str(raw or "").strip()
-    if not text:
-        return None
-    normalized = text
-    if normalized.endswith("Z"):
-        normalized = normalized[:-1] + "+00:00"
-    if re.search(r"[+-]\d{4}$", normalized):
-        normalized = normalized[:-2] + ":" + normalized[-2:]
-    try:
-        return datetime.fromisoformat(normalized)
-    except Exception:
-        return None
+    return offdesk_flow_mod.parse_iso_datetime(raw)
 
 
 def _alias_index(alias: str) -> int:
-    token = str(alias or "").strip().upper()
-    if token.startswith("O"):
-        token = token[1:]
-    return int(token) if token.isdigit() else 10**9
+    return offdesk_flow_mod.alias_index(alias)
 
 
 def _offdesk_prepare_targets(manager_state: Dict[str, Any], raw_target: str) -> List[Tuple[str, Dict[str, Any]]]:
-    token = str(raw_target or "").strip()
-    locked = _project_lock_row(manager_state)
-    if token:
-        if token.lower() == "all":
-            if locked:
-                key = str(locked.get("project_key", "")).strip().lower()
-                projects = manager_state.get("projects") if isinstance(manager_state, dict) else {}
-                entry = projects.get(key) if isinstance(projects, dict) else None
-                return [(key, entry)] if isinstance(entry, dict) else []
-            projects = manager_state.get("projects") if isinstance(manager_state, dict) else {}
-            rows = list_ops_projects(projects)
-            rows.sort(key=lambda kv: _alias_index(str(kv[1].get("project_alias", "")).strip() or str(kv[0])))
-            return rows
-        key, entry = _resolve_project_entry(manager_state, token)
-        return [(key, entry)]
-
-    if locked:
-        key = str(locked.get("project_key", "")).strip().lower()
-        projects = manager_state.get("projects") if isinstance(manager_state, dict) else {}
-        entry = projects.get(key) if isinstance(projects, dict) else None
-        return [(key, entry)] if isinstance(entry, dict) else []
-
-    projects = manager_state.get("projects") if isinstance(manager_state, dict) else {}
-    rows = list_ops_projects(projects)
-    rows.sort(key=lambda kv: _alias_index(str(kv[1].get("project_alias", "")).strip() or str(kv[0])))
-    return rows
+    return offdesk_flow_mod.offdesk_prepare_targets(
+        manager_state,
+        raw_target,
+        project_lock_row=_project_lock_row,
+        resolve_project_entry=_resolve_project_entry,
+    )
 
 
 def _offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entry: Dict[str, Any]) -> Dict[str, Any]:
-    alias = str(entry.get("project_alias", "")).strip().upper() or key
-    display = str(entry.get("display_name", "")).strip() or key
-    todos = entry.get("todos") if isinstance(entry.get("todos"), list) else []
-    proposals = entry.get("todo_proposals") if isinstance(entry.get("todo_proposals"), list) else []
-    counts = {name: 0 for name in ["open", "running", "blocked", "done", "canceled"]}
-    for row in todos:
-        if not isinstance(row, dict):
-            continue
-        status = str(row.get("status", "open")).strip().lower() or "open"
-        if status not in counts:
-            status = "open"
-        counts[status] += 1
-    open_proposals = sum(
-        1
-        for row in proposals
-        if isinstance(row, dict) and str(row.get("status", "open")).strip().lower() == "open"
-    )
-    pending = entry.get("pending_todo")
-    pending_flag = bool(isinstance(pending, dict) and str(pending.get("todo_id", "")).strip())
-    runtime_issue = project_runtime_issue(entry)
-    runtime_label = project_runtime_label(entry) if runtime_issue else "ready"
-    canonical_path = _canonical_todo_path(entry)
-    canonical_exists = canonical_path.exists()
-    scenario = _scenario_path(entry)
-    scenario_exists = scenario.exists()
-    includes = _scenario_include_targets(entry)
-    canonical_rel = "TODO.md"
-    include_ok = False
-    include_display = "-"
-    syncback_counts = {"done": 0, "reopen": 0, "append": 0, "blocked": 0}
-    syncback_pending = False
-    syncback_error = ""
-    if includes:
-        include_display = ", ".join(f"{rel}{'' if exists else ' (missing)'}" for rel, exists in includes[:3])
-        for rel, exists in includes:
-            if exists and (rel == canonical_rel or rel.endswith("/TODO.md")):
-                include_ok = True
-                break
-    if canonical_exists:
-        try:
-            plan = preview_syncback_plan(entry)
-            syncback_counts = {
-                "done": int(plan.get("done_count", 0) or 0),
-                "reopen": int(plan.get("reopen_count", 0) or 0),
-                "append": int(plan.get("append_count", 0) or 0),
-                "blocked": int(plan.get("blocked_count", 0) or 0),
-            }
-            syncback_pending = any(syncback_counts.values())
-        except Exception as exc:
-            syncback_error = " ".join(str(exc).strip().split())[:180]
-    last_sync_mode = str(entry.get("last_sync_mode", "")).strip() or "never"
-    last_sync_at = str(entry.get("last_sync_at", "")).strip()
-    last_sync_disp = _compact_age_label(last_sync_at)
-    last_sync_dt = _parse_iso_datetime(last_sync_at)
-    sync_stale = False
-    if last_sync_dt is not None:
-        now = datetime.now(last_sync_dt.tzinfo or timezone.utc)
-        try:
-            sync_stale = (now - last_sync_dt).total_seconds() > 24 * 3600
-        except Exception:
-            sync_stale = False
-    manual_followup_count = _blocked_bucket_count(todos, "manual_followup")
-    blocked_head = _blocked_head_summary(todos)
-    notes: List[str] = []
-    status = "ready"
-    if runtime_issue:
-        status = "blocked"
-        notes.append(f"runtime not ready: {runtime_label}")
-    if not scenario_exists:
-        status = "blocked"
-        notes.append("missing .aoe-team/AOE_TODO.md")
-    if not canonical_exists:
-        status = "warn" if status == "ready" else status
-        notes.append("missing canonical TODO.md")
-    if canonical_exists and not include_ok:
-        status = "warn" if status == "ready" else status
-        notes.append("AOE_TODO.md does not include canonical TODO.md")
-    if counts["open"] == 0 and counts["running"] == 0 and counts["blocked"] == 0 and open_proposals == 0:
-        status = "blocked" if status == "ready" else status
-        notes.append("no runnable backlog")
-    if pending_flag:
-        status = "warn" if status == "ready" else status
-        notes.append("pending todo awaiting dispatch/approval")
-    if counts["running"] > 0:
-        status = "warn" if status == "ready" else status
-        notes.append("task already running")
-    if counts["blocked"] > 0:
-        status = "warn" if status == "ready" else status
-        notes.append(f"blocked backlog present ({counts['blocked']})")
-    if manual_followup_count > 0:
-        status = "warn" if status == "ready" else status
-        notes.append(f"manual follow-up backlog present ({manual_followup_count})")
-    if open_proposals > 0:
-        status = "warn" if status == "ready" else status
-        notes.append(f"open todo proposals pending review ({open_proposals})")
-    if syncback_pending:
-        status = "warn" if status == "ready" else status
-        notes.append(
-            "syncback pending "
-            f"(done={syncback_counts['done']} reopen={syncback_counts['reopen']} "
-            f"append={syncback_counts['append']} blocked_notes={syncback_counts['blocked']})"
-        )
-    if syncback_error:
-        status = "warn" if status == "ready" else status
-        notes.append(f"syncback preview failed: {syncback_error}")
-    if last_sync_mode == "never" or not last_sync_at:
-        status = "warn" if status == "ready" else status
-        notes.append("queue has not been synced yet")
-    elif sync_stale:
-        status = "warn" if status == "ready" else status
-        notes.append(f"last sync is stale ({last_sync_disp})")
-
-    lines = [
-        f"- {alias} {display} [{status}]",
-        f"  runtime: {runtime_label}",
-        f"  canonical: {canonical_rel if canonical_exists else 'missing TODO.md'}",
-        f"  scenario_include: {include_display}",
-        f"  queue: open={counts['open']} running={counts['running']} blocked={counts['blocked']} followup={manual_followup_count} pending={'yes' if pending_flag else 'no'} proposals={open_proposals}",
-        f"  syncback: done={syncback_counts['done']} reopen={syncback_counts['reopen']} append={syncback_counts['append']} blocked_notes={syncback_counts['blocked']}",
-        f"  last_sync: {last_sync_mode} {last_sync_disp}".rstrip(),
-    ]
-    if blocked_head:
-        head = f"  blocked_head: {blocked_head.get('id', '-')} x{blocked_head.get('count', 1)}"
-        bucket = str(blocked_head.get("bucket", "")).strip()
-        reason = str(blocked_head.get("reason", "")).strip()
-        if bucket:
-            head += f" [{bucket}]"
-        if reason:
-            head += f" | {reason}"
-        lines.append(head)
-    if notes:
-        lines.append("  notes:")
-        for note in notes[:4]:
-            lines.append(f"    - {note}")
-    return {
-        "status": status,
-        "lines": lines,
-        "alias": alias,
-        "display": display,
-        "open": counts["open"],
-        "running": counts["running"],
-        "blocked_count": counts["blocked"],
-        "followup_count": manual_followup_count,
-        "proposals": open_proposals,
-        "syncback_pending": syncback_pending,
-        "syncback_counts": dict(syncback_counts),
-        "pending_flag": pending_flag,
-        "notes": list(notes),
-    }
+    return offdesk_flow_mod.offdesk_prepare_project_report(manager_state, key, entry)
 
 
 def _offdesk_review_reply_markup(flagged: List[Dict[str, Any]], *, clean: bool = False) -> Dict[str, Any]:
-    keyboard: List[List[Dict[str, str]]] = []
-    if clean:
-        keyboard.extend(
-            [
-                [{"text": "/offdesk on"}, {"text": "/auto status"}],
-                [{"text": "/offdesk prepare"}, {"text": "/map"}, {"text": "/help"}],
-            ]
-        )
-        return {
-            "keyboard": keyboard,
-            "resize_keyboard": True,
-            "one_time_keyboard": False,
-            "input_field_placeholder": "예: /offdesk on",
-        }
-
-    for row in flagged[:3]:
-        alias = str(row.get("alias", "")).strip() or "-"
-        primary: List[Dict[str, str]] = []
-        secondary: List[Dict[str, str]] = []
-        if bool(row.get("syncback_pending", False)):
-            primary.append({"text": f"/todo {alias} syncback preview"})
-        if int(row.get("proposals", 0) or 0) > 0 and len(primary) < 3:
-            primary.append({"text": f"/todo {alias} proposals"})
-        if int(row.get("followup_count", 0) or 0) > 0 and len(primary) < 3:
-            primary.append({"text": f"/todo {alias} followup"})
-        if primary:
-            keyboard.append(primary[:3])
-
-        if int(row.get("blocked_count", 0) or 0) > 0 or int(row.get("open", 0) or 0) == 0:
-            secondary.append({"text": f"/sync preview {alias} 24h"})
-        secondary.append({"text": f"/orch status {alias}"})
-        secondary.append({"text": f"/todo {alias}"})
-        seen: set[str] = set()
-        deduped_secondary: List[Dict[str, str]] = []
-        for btn in secondary:
-            text = str(btn.get("text", "")).strip()
-            if not text or text in seen:
-                continue
-            seen.add(text)
-            deduped_secondary.append(btn)
-        if deduped_secondary:
-            keyboard.append(deduped_secondary[:3])
-
-    keyboard.append([{"text": "/offdesk prepare"}, {"text": "/map"}, {"text": "/help"}])
-    return {
-        "keyboard": keyboard,
-        "resize_keyboard": True,
-        "one_time_keyboard": False,
-        "input_field_placeholder": "예: /todo O3 syncback preview",
-    }
+    return offdesk_flow_mod.offdesk_review_reply_markup(flagged, clean=clean)
 
 
 def _offdesk_prepare_reply_markup(
@@ -457,54 +154,7 @@ def _offdesk_prepare_reply_markup(
     blocked_count: int = 0,
     clean: bool = False,
 ) -> Dict[str, Any]:
-    keyboard: List[List[Dict[str, str]]] = []
-    if clean:
-        keyboard.extend(
-            [
-                [{"text": "/offdesk on"}, {"text": "/offdesk review"}, {"text": "/auto status"}],
-                [{"text": "/map"}, {"text": "/queue"}, {"text": "/help"}],
-            ]
-        )
-        return {
-            "keyboard": keyboard,
-            "resize_keyboard": True,
-            "one_time_keyboard": False,
-            "input_field_placeholder": "예: /offdesk on",
-        }
-
-    flagged = [row for row in reports if str(row.get("status", "")).strip().lower() in {"warn", "blocked"}]
-    for row in flagged[:3]:
-        alias = str(row.get("alias", "")).strip() or "-"
-        primary: List[Dict[str, str]] = []
-        secondary: List[Dict[str, str]] = []
-
-        if bool(row.get("syncback_pending", False)):
-            primary.append({"text": f"/todo {alias} syncback preview"})
-        if int(row.get("proposals", 0) or 0) > 0 and len(primary) < 3:
-            primary.append({"text": f"/todo {alias} proposals"})
-        if int(row.get("followup_count", 0) or 0) > 0 and len(primary) < 3:
-            primary.append({"text": f"/todo {alias} followup"})
-        if primary:
-            keyboard.append(primary[:3])
-
-        secondary.append({"text": f"/sync preview {alias} 24h"})
-        secondary.append({"text": f"/orch status {alias}"})
-        secondary.append({"text": f"/todo {alias}"})
-        keyboard.append(secondary[:3])
-
-    footer: List[Dict[str, str]] = []
-    if blocked_count == 0:
-        footer.append({"text": "/offdesk on"})
-    footer.append({"text": "/offdesk review"})
-    footer.append({"text": "/help"})
-    keyboard.append(footer[:3])
-    keyboard.append([{"text": "/map"}, {"text": "/queue"}])
-    return {
-        "keyboard": keyboard,
-        "resize_keyboard": True,
-        "one_time_keyboard": False,
-        "input_field_placeholder": "예: /offdesk review",
-    }
+    return offdesk_flow_mod.offdesk_prepare_reply_markup(reports, blocked_count=blocked_count, clean=clean)
 
 
 def _clear_usage() -> str:
@@ -698,85 +348,43 @@ def _tutorial_text(*, lang: str) -> str:
 
 
 def _now_iso() -> str:
-    # Avoid importing gateway helpers here; keep this module standalone.
-    import time as _time
-
-    return _time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    return offdesk_flow_mod.now_iso()
 
 
 def _auto_state_path(args: Any) -> Path:
-    team_dir = getattr(args, "team_dir", None)
-    if isinstance(team_dir, Path):
-        return (team_dir / AUTO_STATE_FILENAME).resolve()
-    return Path(str(team_dir or ".")).expanduser().resolve() / AUTO_STATE_FILENAME
+    return offdesk_flow_mod.auto_state_path(args, filename=AUTO_STATE_FILENAME)
 
 
 def _offdesk_state_path(args: Any) -> Path:
-    team_dir = getattr(args, "team_dir", None)
-    if isinstance(team_dir, Path):
-        return (team_dir / OFFDESK_STATE_FILENAME).resolve()
-    return Path(str(team_dir or ".")).expanduser().resolve() / OFFDESK_STATE_FILENAME
+    return offdesk_flow_mod.offdesk_state_path(args, filename=OFFDESK_STATE_FILENAME)
 
 
 def _load_auto_state(path: Path) -> Dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return data if isinstance(data, dict) else {}
+    return offdesk_flow_mod.load_auto_state(path)
 
 
 def _save_auto_state(path: Path, state: Dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = dict(state)
-    payload["updated_at"] = _now_iso()
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    return offdesk_flow_mod.save_auto_state(path, state)
 
 
 def _load_offdesk_state(path: Path) -> Dict[str, Any]:
-    return _load_auto_state(path)
+    return offdesk_flow_mod.load_offdesk_state(path)
 
 
 def _save_offdesk_state(path: Path, state: Dict[str, Any]) -> None:
-    _save_auto_state(path, state)
+    return offdesk_flow_mod.save_offdesk_state(path, state)
 
 
 def _scheduler_session_name() -> str:
-    return (os.environ.get("AOE_TMUX_SCHEDULER_SESSION") or "aoe_mo_scheduler").strip() or "aoe_mo_scheduler"
+    return offdesk_flow_mod.scheduler_session_name()
 
 
 def _tmux_has_session(session_name: str) -> bool:
-    token = str(session_name or "").strip()
-    if not token:
-        return False
-    try:
-        proc = subprocess.run(["tmux", "has-session", "-t", token], capture_output=True, text=True, check=False)
-        return proc.returncode == 0
-    except Exception:
-        return False
+    return offdesk_flow_mod.tmux_has_session(session_name)
 
 
 def _tmux_auto_command(args: Any, action: str) -> Tuple[bool, str]:
-    script = team_tmux_script().resolve()
-    if not script.exists():
-        return False, f"tmux script not found: {script}"
-    if not os.access(script, os.X_OK):
-        return False, f"tmux script not executable: {script}"
-    try:
-        env = dict(os.environ)
-        project_root = Path(str(getattr(args, "project_root", ".") or ".")).expanduser().resolve()
-        team_dir = Path(str(getattr(args, "team_dir", project_root / ".aoe-team") or (project_root / ".aoe-team"))).expanduser().resolve()
-        env["AOE_PROJECT_ROOT"] = str(project_root)
-        env["AOE_TEAM_DIR"] = str(team_dir)
-        proc = subprocess.run([str(script), "auto", action], capture_output=True, text=True, check=False, env=env)
-        out = (proc.stdout or proc.stderr or "").strip()
-        return proc.returncode == 0, out
-    except Exception as e:
-        return False, str(e)
+    return offdesk_flow_mod.tmux_auto_command(args, action)
 
 
 def handle_management_command(
