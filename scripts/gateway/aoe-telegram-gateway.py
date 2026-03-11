@@ -24,6 +24,19 @@ from aoe_tg_acl import (
     parse_csv_set,
     resolve_role_from_acl_sets,
 )
+from aoe_tg_chat_aliases import (
+    alias_table_summary,
+    ensure_chat_alias,
+    ensure_chat_aliases,
+    find_chat_alias,
+    load_chat_aliases,
+    merged_chat_aliases,
+    next_chat_alias,
+    resolve_chat_aliases_file,
+    resolve_chat_ref,
+    save_chat_aliases,
+    update_chat_alias_cache,
+)
 from aoe_tg_chat_state import (
     clear_chat_report_level,
     clear_confirm_action,
@@ -62,6 +75,7 @@ from aoe_tg_gateway_events import (
     log_gateway_event as gateway_log_gateway_event,
     task_identifiers as gateway_task_identifiers,
 )
+import aoe_tg_gateway_state as gateway_state_mod
 from aoe_tg_message_flow import (
     RunTransitionState,
     apply_confirm_transition_to_resolved,
@@ -260,297 +274,47 @@ def sync_acl_env_file(args: argparse.Namespace) -> None:
         upsert_env_var(env_path, "AOE_OWNER_BOOTSTRAP_MODE", owner_bootstrap_mode)
 
 
-def resolve_chat_aliases_file(team_dir: Path, explicit_path: Optional[str]) -> Path:
-    if explicit_path:
-        return Path(explicit_path).expanduser().resolve()
-    env_path = (os.environ.get("AOE_CHAT_ALIASES_FILE") or "").strip()
-    if env_path:
-        return Path(env_path).expanduser().resolve()
-    return team_dir / "telegram_chat_aliases.json"
-
-
-def load_chat_aliases(path: Path) -> Dict[str, str]:
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    if not isinstance(data, dict):
-        return {}
-
-    out: Dict[str, str] = {}
-    seen_chat_ids: Set[str] = set()
-    for key in sorted(data.keys(), key=lambda x: int(x) if str(x).isdigit() else 10**9):
-        alias = str(key or "").strip()
-        chat_id = str(data.get(key) or "").strip()
-        if not is_valid_chat_alias(alias):
-            continue
-        if not is_valid_chat_id(chat_id):
-            continue
-        if chat_id in seen_chat_ids:
-            continue
-        out[alias] = chat_id
-        seen_chat_ids.add(chat_id)
-    return out
-
-
-def save_chat_aliases(path: Path, aliases: Dict[str, str]) -> None:
-    sanitized: Dict[str, str] = {}
-    seen_chat_ids: Set[str] = set()
-    for alias in sorted(aliases.keys(), key=lambda x: int(str(x)) if str(x).isdigit() else 10**9):
-        a = str(alias or "").strip()
-        chat_id = str(aliases.get(alias) or "").strip()
-        if not is_valid_chat_alias(a):
-            continue
-        if not is_valid_chat_id(chat_id):
-            continue
-        if chat_id in seen_chat_ids:
-            continue
-        sanitized[a] = chat_id
-        seen_chat_ids.add(chat_id)
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(sanitized, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
-
-
-def merged_chat_aliases(args: argparse.Namespace) -> Dict[str, str]:
-    rows = load_chat_aliases(args.chat_aliases_file)
-    cache = getattr(args, "chat_alias_cache", {})
-    if not isinstance(cache, dict):
-        return rows
-    seen = set(rows.values())
-    for alias in sorted(cache.keys(), key=lambda x: int(str(x)) if str(x).isdigit() else 10**9):
-        a = str(alias or "").strip()
-        chat_id = str(cache.get(alias) or "").strip()
-        if not is_valid_chat_alias(a):
-            continue
-        if not is_valid_chat_id(chat_id):
-            continue
-        if a in rows:
-            continue
-        if chat_id in seen:
-            continue
-        rows[a] = chat_id
-        seen.add(chat_id)
-    return rows
-
-
-def update_chat_alias_cache(args: argparse.Namespace, aliases: Dict[str, str]) -> None:
-    args.chat_alias_cache = dict(aliases)
-
-
-def find_chat_alias(aliases: Dict[str, str], chat_id: str) -> str:
-    cid = str(chat_id or "").strip()
-    for alias, mapped in aliases.items():
-        if str(mapped).strip() == cid:
-            return str(alias).strip()
-    return ""
-
-
-def next_chat_alias(aliases: Dict[str, str], max_alias: int = 999) -> str:
-    used = {int(k) for k in aliases.keys() if str(k).isdigit()}
-    for idx in range(1, max_alias + 1):
-        if idx not in used:
-            return str(idx)
-    return ""
-
-
-def ensure_chat_alias(
-    args: argparse.Namespace,
-    chat_id: str,
-    persist: bool = True,
-    aliases: Optional[Dict[str, str]] = None,
-) -> str:
-    cid = str(chat_id or "").strip()
-    if not is_valid_chat_id(cid):
-        return ""
-    rows = aliases if isinstance(aliases, dict) else merged_chat_aliases(args)
-    existing = find_chat_alias(rows, cid)
-    if existing:
-        update_chat_alias_cache(args, rows)
-        return existing
-    alias = next_chat_alias(rows)
-    if not alias:
-        return ""
-    rows[alias] = cid
-    update_chat_alias_cache(args, rows)
-    if persist and (not args.dry_run):
-        save_chat_aliases(args.chat_aliases_file, rows)
-    return alias
-
-
-def ensure_chat_aliases(args: argparse.Namespace, chat_ids: Iterable[str], persist: bool = True) -> Dict[str, str]:
-    aliases = merged_chat_aliases(args)
-    changed = False
-    for raw in chat_ids:
-        cid = str(raw or "").strip()
-        if not is_valid_chat_id(cid):
-            continue
-        if find_chat_alias(aliases, cid):
-            continue
-        alias = next_chat_alias(aliases)
-        if not alias:
-            break
-        aliases[alias] = cid
-        changed = True
-    update_chat_alias_cache(args, aliases)
-    if changed and persist and (not args.dry_run):
-        save_chat_aliases(args.chat_aliases_file, aliases)
-    return aliases
-
-
-def resolve_chat_ref(args: argparse.Namespace, chat_ref: str) -> Tuple[str, str]:
-    token = str(chat_ref or "").strip()
-    if is_valid_chat_id(token):
-        alias = ensure_chat_alias(args, token, persist=(not args.dry_run))
-        return token, alias
-    if is_valid_chat_alias(token):
-        aliases = merged_chat_aliases(args)
-        chat_id = str(aliases.get(token, "")).strip()
-        if is_valid_chat_id(chat_id):
-            return chat_id, token
-        raise RuntimeError(f"unknown chat alias: {token} (use /acl)")
-    raise RuntimeError("chat target must be chat_id or alias")
-
-
-def alias_table_summary(args: argparse.Namespace, limit: int = 30) -> str:
-    aliases = merged_chat_aliases(args)
-    if not aliases:
-        return "(empty)"
-
-    rows: List[str] = []
-    for alias in sorted(aliases.keys(), key=lambda x: int(x)):
-        chat_id = str(aliases.get(alias, "")).strip()
-        if not is_valid_chat_id(chat_id):
-            continue
-        role = resolve_role_from_acl_sets(
-            chat_id=chat_id,
-            allow_chat_ids=args.allow_chat_ids,
-            admin_chat_ids=args.admin_chat_ids,
-            readonly_chat_ids=args.readonly_chat_ids,
-            deny_by_default=bool(args.deny_by_default),
-        )
-        rows.append(f"{alias}:{chat_id}[{role}]")
-        if len(rows) >= max(1, int(limit)):
-            break
-    return ", ".join(rows) if rows else "(empty)"
-
-
 def dedup_keep_limit() -> int:
-    return int_from_env(
-        os.environ.get("AOE_GATEWAY_DEDUP_KEEP"),
-        default=DEFAULT_GATEWAY_DEDUP_KEEP,
-        minimum=100,
-        maximum=20000,
+    return gateway_state_mod.dedup_keep_limit(
+        int_from_env=int_from_env,
+        default_keep=DEFAULT_GATEWAY_DEDUP_KEEP,
     )
 
 
 def failed_queue_keep_limit() -> int:
-    return int_from_env(
-        os.environ.get("AOE_GATEWAY_FAILED_KEEP"),
-        default=DEFAULT_FAILED_QUEUE_KEEP,
-        minimum=10,
-        maximum=5000,
+    return gateway_state_mod.failed_queue_keep_limit(
+        int_from_env=int_from_env,
+        default_keep=DEFAULT_FAILED_QUEUE_KEEP,
     )
 
 
 def failed_queue_ttl_hours() -> int:
-    return int_from_env(
-        os.environ.get("AOE_GATEWAY_FAILED_TTL_HOURS"),
-        default=DEFAULT_FAILED_QUEUE_TTL_HOURS,
-        minimum=0,
-        maximum=8760,
+    return gateway_state_mod.failed_queue_ttl_hours(
+        int_from_env=int_from_env,
+        default_ttl_hours=DEFAULT_FAILED_QUEUE_TTL_HOURS,
     )
 
 
 def normalize_recent_tokens(raw: Any, keep: int) -> List[str]:
-    out: List[str] = []
-    seen: Set[str] = set()
-    if isinstance(raw, list):
-        for item in raw:
-            token = str(item or "").strip()
-            if not token or token in seen:
-                continue
-            seen.add(token)
-            out.append(token)
-    if len(out) > keep:
-        out = out[-keep:]
-    return out
+    return gateway_state_mod.normalize_recent_tokens(raw, keep)
 
 
 def append_recent_token(tokens: List[str], token: str, keep: int) -> None:
-    value = str(token or "").strip()
-    if not value:
-        return
-    try:
-        tokens.remove(value)
-    except ValueError:
-        pass
-    tokens.append(value)
-    if len(tokens) > keep:
-        del tokens[:-keep]
+    return gateway_state_mod.append_recent_token(tokens, token, keep)
 
 
 def message_dedup_key(msg: Dict[str, Any]) -> str:
-    if not isinstance(msg, dict):
-        return ""
-    chat = msg.get("chat")
-    if not isinstance(chat, dict):
-        return ""
-    chat_id = str(chat.get("id", "")).strip()
-    if not chat_id:
-        return ""
-    message_id_raw = msg.get("message_id")
-    message_id = str(message_id_raw if message_id_raw is not None else "").strip()
-    if not message_id:
-        return ""
-    return f"{chat_id}:{message_id}"
+    return gateway_state_mod.message_dedup_key(msg)
 
 
 def normalize_failed_queue(raw: Any, keep: int) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-    ttl_hours = failed_queue_ttl_hours()
-    cutoff_utc: Optional[datetime] = None
-    if ttl_hours > 0:
-        cutoff_utc = datetime.now(timezone.utc) - timedelta(hours=ttl_hours)
-    if isinstance(raw, list):
-        for item in raw:
-            if not isinstance(item, dict):
-                continue
-            fid = str(item.get("id", "")).strip()
-            chat_id = str(item.get("chat_id", "")).strip()
-            text = str(item.get("text", "")).strip()
-            if not fid or not chat_id or not text:
-                continue
-            at_value = str(item.get("at", "")).strip() or now_iso()
-            parsed_at = parse_iso_ts(at_value)
-            if parsed_at is None:
-                at_value = now_iso()
-                parsed_at = parse_iso_ts(at_value)
-            if cutoff_utc is not None and parsed_at is not None:
-                try:
-                    if parsed_at.astimezone(timezone.utc) < cutoff_utc:
-                        continue
-                except Exception:
-                    pass
-            row: Dict[str, Any] = {
-                "id": fid[:64],
-                "at": at_value,
-                "chat_id": chat_id[:64],
-                "text": text[:4000],
-                "trace_id": str(item.get("trace_id", "")).strip()[:120],
-                "error_code": str(item.get("error_code", "")).strip()[:32],
-                "error": str(item.get("error", "")).strip()[:400],
-                "cmd": str(item.get("cmd", "")).strip()[:40],
-            }
-            if row["id"] and row["chat_id"] and row["text"]:
-                out.append(row)
-    if len(out) > keep:
-        out = out[-keep:]
-    return out
+    return gateway_state_mod.normalize_failed_queue(
+        raw,
+        keep,
+        failed_queue_ttl_hours=failed_queue_ttl_hours,
+        now_iso=now_iso,
+        parse_iso_ts=parse_iso_ts,
+    )
 
 
 def enqueue_failed_message(
@@ -563,235 +327,131 @@ def enqueue_failed_message(
     error_detail: str,
     cmd: str = "",
 ) -> Dict[str, Any]:
-    keep = failed_queue_keep_limit()
-    queue = normalize_failed_queue(state.get(STATE_FAILED_QUEUE_KEY), keep)
-    item = {
-        "id": uuid.uuid4().hex[:16],
-        "at": now_iso(),
-        "chat_id": str(chat_id or "").strip(),
-        "text": str(text or "").strip()[:4000],
-        "trace_id": str(trace_id or "").strip()[:120],
-        "error_code": str(error_code or "").strip()[:32],
-        "error": str(error_detail or "").strip()[:400],
-        "cmd": str(cmd or "").strip()[:40],
-    }
-    queue.append(item)
-    if len(queue) > keep:
-        queue = queue[-keep:]
-    state[STATE_FAILED_QUEUE_KEY] = queue
-    return item
-
-
-def failed_queue_for_chat(state: Dict[str, Any], chat_id: str) -> List[Dict[str, Any]]:
-    keep = failed_queue_keep_limit()
-    queue = normalize_failed_queue(state.get(STATE_FAILED_QUEUE_KEY), keep)
-    token = str(chat_id or "").strip()
-    if not token:
-        return []
-    return [row for row in queue if str(row.get("chat_id", "")).strip() == token]
-
-
-def remove_failed_queue_item(state: Dict[str, Any], item_id: str) -> Optional[Dict[str, Any]]:
-    keep = failed_queue_keep_limit()
-    queue = normalize_failed_queue(state.get(STATE_FAILED_QUEUE_KEY), keep)
-    target = str(item_id or "").strip()
-    if not target:
-        state[STATE_FAILED_QUEUE_KEY] = queue
-        return None
-    picked: Optional[Dict[str, Any]] = None
-    kept: List[Dict[str, Any]] = []
-    for row in queue:
-        if picked is None and str(row.get("id", "")).strip() == target:
-            picked = row
-            continue
-        kept.append(row)
-    state[STATE_FAILED_QUEUE_KEY] = kept
-    return picked
-
-
-def purge_failed_queue_for_chat(state: Dict[str, Any], chat_id: str) -> int:
-    keep = failed_queue_keep_limit()
-    queue = normalize_failed_queue(state.get(STATE_FAILED_QUEUE_KEY), keep)
-    token = str(chat_id or "").strip()
-    if not token:
-        state[STATE_FAILED_QUEUE_KEY] = queue
-        return 0
-    removed = 0
-    kept: List[Dict[str, Any]] = []
-    for row in queue:
-        if str(row.get("chat_id", "")).strip() == token:
-            removed += 1
-        else:
-            kept.append(row)
-    state[STATE_FAILED_QUEUE_KEY] = kept
-    return removed
-
-
-def format_failed_queue_item_detail(row: Dict[str, Any]) -> str:
-    text = str(row.get("text", "")).strip()
-    if len(text) > 1200:
-        text = text[:1197] + "..."
-    text = text.replace("\n", "\\n")
-    error_detail = str(row.get("error", "")).strip()
-    if len(error_detail) > 400:
-        error_detail = error_detail[:397] + "..."
-    error_detail = error_detail.replace("\n", "\\n")
-    rid = str(row.get("id", "")).strip() or "-"
-    return (
-        "replay item\n"
-        f"- id: {rid}\n"
-        f"- at: {row.get('at') or '-'}\n"
-        f"- chat: {row.get('chat_id') or '-'}\n"
-        f"- cmd: {row.get('cmd') or '-'}\n"
-        f"- error_code: {row.get('error_code') or '-'}\n"
-        f"- trace_id: {row.get('trace_id') or '-'}\n"
-        f"- text: {text or '-'}\n"
-        f"- error: {error_detail or '-'}\n"
-        f"- run: /replay {rid}"
+    return gateway_state_mod.enqueue_failed_message(
+        state,
+        chat_id=chat_id,
+        text=text,
+        trace_id=trace_id,
+        error_code=error_code,
+        error_detail=error_detail,
+        cmd=cmd,
+        failed_queue_keep_limit=failed_queue_keep_limit,
+        normalize_failed_queue=normalize_failed_queue,
+        failed_queue_key=STATE_FAILED_QUEUE_KEY,
+        now_iso=now_iso,
     )
 
 
+def failed_queue_for_chat(state: Dict[str, Any], chat_id: str) -> List[Dict[str, Any]]:
+    return gateway_state_mod.failed_queue_for_chat(
+        state,
+        chat_id,
+        failed_queue_keep_limit=failed_queue_keep_limit,
+        normalize_failed_queue=normalize_failed_queue,
+        failed_queue_key=STATE_FAILED_QUEUE_KEY,
+    )
+
+
+def remove_failed_queue_item(state: Dict[str, Any], item_id: str) -> Optional[Dict[str, Any]]:
+    return gateway_state_mod.remove_failed_queue_item(
+        state,
+        item_id,
+        failed_queue_keep_limit=failed_queue_keep_limit,
+        normalize_failed_queue=normalize_failed_queue,
+        failed_queue_key=STATE_FAILED_QUEUE_KEY,
+    )
+
+
+def purge_failed_queue_for_chat(state: Dict[str, Any], chat_id: str) -> int:
+    return gateway_state_mod.purge_failed_queue_for_chat(
+        state,
+        chat_id,
+        failed_queue_keep_limit=failed_queue_keep_limit,
+        normalize_failed_queue=normalize_failed_queue,
+        failed_queue_key=STATE_FAILED_QUEUE_KEY,
+    )
+
+
+def format_failed_queue_item_detail(row: Dict[str, Any]) -> str:
+    return gateway_state_mod.format_failed_queue_item_detail(row, replay_usage=REPLAY_USAGE)
+
+
 def summarize_failed_queue(state: Dict[str, Any], chat_id: str, limit: int = 8) -> str:
-    rows = failed_queue_for_chat(state, chat_id)
-    if not rows:
-        return f"replay queue: empty\n{REPLAY_USAGE}"
-    view = list(reversed(rows))
-    cap = max(1, min(30, int(limit)))
-    lines = [f"replay queue: {len(rows)} pending (chat={chat_id})", REPLAY_USAGE]
-    for i, row in enumerate(view[:cap], start=1):
-        body = str(row.get("text", "")).replace("\n", " ").strip()
-        if len(body) > 70:
-            body = body[:67] + "..."
-        lines.append(
-            f"{i}. id={row.get('id')} cmd={row.get('cmd') or '-'} code={row.get('error_code') or '-'} "
-            f"at={row.get('at')} text={body}"
-        )
-    return "\n".join(lines)
+    return gateway_state_mod.summarize_failed_queue(
+        state,
+        chat_id,
+        limit=limit,
+        failed_queue_for_chat=failed_queue_for_chat,
+        replay_usage=REPLAY_USAGE,
+    )
 
 
 def resolve_failed_queue_item(state: Dict[str, Any], chat_id: str, target: str) -> Tuple[Optional[Dict[str, Any]], str]:
-    rows = failed_queue_for_chat(state, chat_id)
-    if not rows:
-        return None, "replay queue: empty"
-    view = list(reversed(rows))
-    token = str(target or "").strip().lower()
-    if token in {"", "latest", "last", "new"}:
-        return view[0], ""
-    if token.isdigit():
-        idx = int(token)
-        if idx < 1 or idx > len(view):
-            return None, f"replay index out of range: {idx} (1..{len(view)})"
-        return view[idx - 1], ""
-    for row in view:
-        if str(row.get("id", "")).strip().lower() == token:
-            return row, ""
-    return None, f"replay target not found: {target}"
+    return gateway_state_mod.resolve_failed_queue_item(
+        state,
+        chat_id,
+        target,
+        failed_queue_for_chat=failed_queue_for_chat,
+    )
 
 
 def load_state(path: Path) -> Dict[str, Any]:
-    base = {
-        "offset": 0,
-        "updated_at": "",
-        "processed": 0,
-        STATE_ACKED_UPDATES_KEY: 0,
-        STATE_HANDLED_MESSAGES_KEY: 0,
-        STATE_DUPLICATE_SKIPPED_KEY: 0,
-        STATE_EMPTY_SKIPPED_KEY: 0,
-        STATE_UNAUTHORIZED_SKIPPED_KEY: 0,
-        STATE_HANDLER_ERRORS_KEY: 0,
-        STATE_FAILED_QUEUE_KEY: [],
-        STATE_SEEN_UPDATE_IDS_KEY: [],
-        STATE_SEEN_MESSAGE_KEYS_KEY: [],
-    }
-    if not path.exists():
-        return base
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return base
-    if not isinstance(data, dict):
-        return base
-
-    out = dict(base)
-    try:
-        out["offset"] = max(0, int(data.get("offset", 0) or 0))
-    except Exception:
-        out["offset"] = 0
-    try:
-        out["processed"] = max(0, int(data.get("processed", 0) or 0))
-    except Exception:
-        out["processed"] = 0
-    processed_legacy = int(out["processed"])
-    for key, fallback in (
-        (STATE_ACKED_UPDATES_KEY, processed_legacy),
-        (STATE_HANDLED_MESSAGES_KEY, processed_legacy),
-        (STATE_DUPLICATE_SKIPPED_KEY, 0),
-        (STATE_EMPTY_SKIPPED_KEY, 0),
-        (STATE_UNAUTHORIZED_SKIPPED_KEY, 0),
-        (STATE_HANDLER_ERRORS_KEY, 0),
-    ):
-        try:
-            out[key] = max(0, int(data.get(key, fallback) or 0))
-        except Exception:
-            out[key] = int(fallback)
-    out["processed"] = int(out.get(STATE_HANDLED_MESSAGES_KEY, processed_legacy))
-    out["updated_at"] = str(data.get("updated_at", "")).strip()
-
-    keep = dedup_keep_limit()
-    out[STATE_SEEN_UPDATE_IDS_KEY] = normalize_recent_tokens(data.get(STATE_SEEN_UPDATE_IDS_KEY), keep)
-    out[STATE_SEEN_MESSAGE_KEYS_KEY] = normalize_recent_tokens(data.get(STATE_SEEN_MESSAGE_KEYS_KEY), keep)
-    out[STATE_FAILED_QUEUE_KEY] = normalize_failed_queue(data.get(STATE_FAILED_QUEUE_KEY), failed_queue_keep_limit())
-    return out
+    return gateway_state_mod.load_state(
+        path,
+        acked_updates_key=STATE_ACKED_UPDATES_KEY,
+        handled_messages_key=STATE_HANDLED_MESSAGES_KEY,
+        duplicate_skipped_key=STATE_DUPLICATE_SKIPPED_KEY,
+        empty_skipped_key=STATE_EMPTY_SKIPPED_KEY,
+        unauthorized_skipped_key=STATE_UNAUTHORIZED_SKIPPED_KEY,
+        handler_errors_key=STATE_HANDLER_ERRORS_KEY,
+        failed_queue_key=STATE_FAILED_QUEUE_KEY,
+        seen_update_ids_key=STATE_SEEN_UPDATE_IDS_KEY,
+        seen_message_keys_key=STATE_SEEN_MESSAGE_KEYS_KEY,
+        dedup_keep_limit=dedup_keep_limit,
+        failed_queue_keep_limit=failed_queue_keep_limit,
+        normalize_recent_tokens=normalize_recent_tokens,
+        normalize_failed_queue=normalize_failed_queue,
+    )
 
 
 def save_state(path: Path, state: Dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    keep = dedup_keep_limit()
-    try:
-        offset = max(0, int(state.get("offset", 0) or 0))
-    except Exception:
-        offset = 0
-    try:
-        handled_messages = max(0, int(state.get(STATE_HANDLED_MESSAGES_KEY, state.get("processed", 0)) or 0))
-    except Exception:
-        handled_messages = 0
-    try:
-        acked_updates = max(0, int(state.get(STATE_ACKED_UPDATES_KEY, handled_messages) or 0))
-    except Exception:
-        acked_updates = handled_messages
-    try:
-        duplicate_skipped = max(0, int(state.get(STATE_DUPLICATE_SKIPPED_KEY, 0) or 0))
-    except Exception:
-        duplicate_skipped = 0
-    try:
-        empty_skipped = max(0, int(state.get(STATE_EMPTY_SKIPPED_KEY, 0) or 0))
-    except Exception:
-        empty_skipped = 0
-    try:
-        unauthorized_skipped = max(0, int(state.get(STATE_UNAUTHORIZED_SKIPPED_KEY, 0) or 0))
-    except Exception:
-        unauthorized_skipped = 0
-    try:
-        handler_errors = max(0, int(state.get(STATE_HANDLER_ERRORS_KEY, 0) or 0))
-    except Exception:
-        handler_errors = 0
-    payload = {
-        "offset": offset,
-        "processed": handled_messages,
-        STATE_ACKED_UPDATES_KEY: acked_updates,
-        STATE_HANDLED_MESSAGES_KEY: handled_messages,
-        STATE_DUPLICATE_SKIPPED_KEY: duplicate_skipped,
-        STATE_EMPTY_SKIPPED_KEY: empty_skipped,
-        STATE_UNAUTHORIZED_SKIPPED_KEY: unauthorized_skipped,
-        STATE_HANDLER_ERRORS_KEY: handler_errors,
-        STATE_FAILED_QUEUE_KEY: normalize_failed_queue(state.get(STATE_FAILED_QUEUE_KEY), failed_queue_keep_limit()),
-        STATE_SEEN_UPDATE_IDS_KEY: normalize_recent_tokens(state.get(STATE_SEEN_UPDATE_IDS_KEY), keep),
-        STATE_SEEN_MESSAGE_KEYS_KEY: normalize_recent_tokens(state.get(STATE_SEEN_MESSAGE_KEYS_KEY), keep),
-        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-    }
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    return gateway_state_mod.save_state(
+        path,
+        state,
+        acked_updates_key=STATE_ACKED_UPDATES_KEY,
+        handled_messages_key=STATE_HANDLED_MESSAGES_KEY,
+        duplicate_skipped_key=STATE_DUPLICATE_SKIPPED_KEY,
+        empty_skipped_key=STATE_EMPTY_SKIPPED_KEY,
+        unauthorized_skipped_key=STATE_UNAUTHORIZED_SKIPPED_KEY,
+        handler_errors_key=STATE_HANDLER_ERRORS_KEY,
+        failed_queue_key=STATE_FAILED_QUEUE_KEY,
+        seen_update_ids_key=STATE_SEEN_UPDATE_IDS_KEY,
+        seen_message_keys_key=STATE_SEEN_MESSAGE_KEYS_KEY,
+        dedup_keep_limit=dedup_keep_limit,
+        failed_queue_keep_limit=failed_queue_keep_limit,
+        normalize_recent_tokens=normalize_recent_tokens,
+        normalize_failed_queue=normalize_failed_queue,
+    )
+
+
+def summarize_gateway_poll_state(state_file: Optional[Any], project_name: str = "") -> str:
+    return gateway_state_mod.summarize_gateway_poll_state(
+        state_file,
+        project_name=project_name,
+        load_state=load_state,
+        acked_updates_key=STATE_ACKED_UPDATES_KEY,
+        handled_messages_key=STATE_HANDLED_MESSAGES_KEY,
+        duplicate_skipped_key=STATE_DUPLICATE_SKIPPED_KEY,
+        empty_skipped_key=STATE_EMPTY_SKIPPED_KEY,
+        unauthorized_skipped_key=STATE_UNAUTHORIZED_SKIPPED_KEY,
+        handler_errors_key=STATE_HANDLER_ERRORS_KEY,
+        failed_queue_key=STATE_FAILED_QUEUE_KEY,
+        seen_update_ids_key=STATE_SEEN_UPDATE_IDS_KEY,
+        seen_message_keys_key=STATE_SEEN_MESSAGE_KEYS_KEY,
+        normalize_recent_tokens=normalize_recent_tokens,
+        dedup_keep_limit=dedup_keep_limit,
+        parse_iso_ts=parse_iso_ts,
+    )
 
 
 def upsert_env_var(path: Path, key: str, value: str) -> None:
@@ -1679,55 +1339,6 @@ def room_autopublish_event(
             "text": text,
         },
         max_file_bytes=max_file_bytes,
-    )
-
-
-def summarize_gateway_poll_state(state_file: Optional[Any], project_name: str = "") -> str:
-    path_raw = str(state_file or "").strip()
-    if path_raw:
-        path = Path(path_raw).expanduser().resolve()
-    else:
-        path = Path(".")
-    if not path_raw:
-        return f"poll_state: unavailable (orch={project_name or '-'}, state_file=unset)"
-    if not path.exists():
-        return f"poll_state: unavailable (orch={project_name or '-'}, state_file_missing={path})"
-
-    state = load_state(path)
-    offset = max(0, int(state.get("offset", 0) or 0))
-    acked = max(0, int(state.get(STATE_ACKED_UPDATES_KEY, state.get("processed", 0)) or 0))
-    handled = max(0, int(state.get(STATE_HANDLED_MESSAGES_KEY, state.get("processed", 0)) or 0))
-    duplicates = max(0, int(state.get(STATE_DUPLICATE_SKIPPED_KEY, 0) or 0))
-    unauthorized = max(0, int(state.get(STATE_UNAUTHORIZED_SKIPPED_KEY, 0) or 0))
-    empty = max(0, int(state.get(STATE_EMPTY_SKIPPED_KEY, 0) or 0))
-    handler_errors = max(0, int(state.get(STATE_HANDLER_ERRORS_KEY, 0) or 0))
-    poll_updated_at = str(state.get("updated_at", "")).strip() or "-"
-    seen_updates = len(normalize_recent_tokens(state.get(STATE_SEEN_UPDATE_IDS_KEY), dedup_keep_limit()))
-    seen_messages = len(normalize_recent_tokens(state.get(STATE_SEEN_MESSAGE_KEYS_KEY), dedup_keep_limit()))
-
-    failed_queue_total = 0
-    last_failed_at = "-"
-    fq = state.get(STATE_FAILED_QUEUE_KEY)
-    if isinstance(fq, list) and fq:
-        failed_queue_total = len(fq)
-        best_ts: Optional[datetime] = None
-        best_raw = ""
-        for row in fq:
-            if not isinstance(row, dict):
-                continue
-            at_raw = str(row.get("at", "")).strip()
-            ts = parse_iso_ts(at_raw) if at_raw else None
-            if ts is not None and (best_ts is None or ts > best_ts):
-                best_ts = ts
-                best_raw = at_raw
-            elif not best_raw and at_raw:
-                best_raw = at_raw
-        last_failed_at = best_raw or last_failed_at
-    return (
-        f"poll_state: acked={acked} handled={handled} duplicates={duplicates} "
-        f"unauthorized={unauthorized} empty={empty} handler_errors={handler_errors} "
-        f"failed_queue_total={failed_queue_total} last_failed_at={last_failed_at}\n"
-        f"poll_cursor: offset={offset} updated_at={poll_updated_at} seen_update_ids={seen_updates} seen_message_keys={seen_messages}"
     )
 
 

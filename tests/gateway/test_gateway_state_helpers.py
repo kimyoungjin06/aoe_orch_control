@@ -22,10 +22,12 @@ if str(GW_DIR) not in sys.path:
 
 import aoe_tg_command_resolver as resolver
 import aoe_tg_blocked_state as blocked_state
+import aoe_tg_chat_aliases as chat_aliases
 import aoe_tg_chat_state as chat_state
 import aoe_tg_exec_pipeline as exec_pipeline
 import aoe_tg_exec_results as exec_results
 import aoe_tg_gateway_events as gateway_events
+import aoe_tg_gateway_state as gateway_state
 import aoe_tg_management_handlers as mgmt_handlers
 import aoe_tg_ops_policy as ops_policy
 import aoe_tg_ops_view as ops_view
@@ -132,6 +134,128 @@ def test_set_recent_and_selected_task_refs_create_chat_session_row() -> None:
     selected = gw.get_chat_selected_task_ref(state, "939062873", "default")
     assert refs[:2] == ["REQ-1", "REQ-2"]
     assert selected == "REQ-2"
+
+
+def test_chat_aliases_module_matches_gateway_exports(tmp_path: Path) -> None:
+    alias_file = tmp_path / "aliases.json"
+    args_a = argparse.Namespace(
+        chat_aliases_file=alias_file,
+        chat_alias_cache={"2": "939062874"},
+        dry_run=False,
+        allow_chat_ids={"939062873", "939062874"},
+        admin_chat_ids=set(),
+        readonly_chat_ids=set(),
+        deny_by_default=False,
+    )
+    args_b = copy.deepcopy(args_a)
+    alias_file.write_text('{"1":"939062873"}\n', encoding="utf-8")
+
+    assert gw.resolve_chat_aliases_file(tmp_path, "") == chat_aliases.resolve_chat_aliases_file(tmp_path, "")
+    assert gw.load_chat_aliases(alias_file) == chat_aliases.load_chat_aliases(alias_file)
+    assert gw.merged_chat_aliases(args_a) == chat_aliases.merged_chat_aliases(args_b)
+    assert gw.find_chat_alias({"1": "939062873"}, "939062873") == chat_aliases.find_chat_alias({"1": "939062873"}, "939062873")
+    assert gw.next_chat_alias({"1": "939062873"}) == chat_aliases.next_chat_alias({"1": "939062873"})
+    assert gw.ensure_chat_alias(args_a, "939062875") == chat_aliases.ensure_chat_alias(args_b, "939062875")
+    assert gw.ensure_chat_aliases(args_a, ["939062876", "939062877"]) == chat_aliases.ensure_chat_aliases(args_b, ["939062876", "939062877"])
+    assert gw.resolve_chat_ref(args_a, "1") == chat_aliases.resolve_chat_ref(args_b, "1")
+    assert gw.alias_table_summary(args_a) == chat_aliases.alias_table_summary(args_b)
+
+
+def test_gateway_state_module_matches_gateway_poll_and_replay_helpers(tmp_path: Path) -> None:
+    state_payload = {
+        "offset": 12,
+        "processed": 3,
+        gw.STATE_ACKED_UPDATES_KEY: 4,
+        gw.STATE_HANDLED_MESSAGES_KEY: 3,
+        gw.STATE_DUPLICATE_SKIPPED_KEY: 1,
+        gw.STATE_EMPTY_SKIPPED_KEY: 1,
+        gw.STATE_UNAUTHORIZED_SKIPPED_KEY: 0,
+        gw.STATE_HANDLER_ERRORS_KEY: 1,
+        gw.STATE_FAILED_QUEUE_KEY: [
+            {
+                "id": "abc",
+                "at": "2026-03-11T12:00:00+0900",
+                "chat_id": "939062873",
+                "text": "retry me",
+                "trace_id": "trace-1",
+                "error_code": "E_INTERNAL",
+                "error": "boom",
+                "cmd": "run",
+            }
+        ],
+        gw.STATE_SEEN_UPDATE_IDS_KEY: ["10", "11", "12"],
+        gw.STATE_SEEN_MESSAGE_KEYS_KEY: ["939062873:1"],
+        "updated_at": "2026-03-11T12:00:00+0900",
+    }
+    path = tmp_path / "gateway_state.json"
+    path.write_text(json.dumps(state_payload), encoding="utf-8")
+
+    gw_loaded = gw.load_state(path)
+    mod_loaded = gateway_state.load_state(
+        path,
+        acked_updates_key=gw.STATE_ACKED_UPDATES_KEY,
+        handled_messages_key=gw.STATE_HANDLED_MESSAGES_KEY,
+        duplicate_skipped_key=gw.STATE_DUPLICATE_SKIPPED_KEY,
+        empty_skipped_key=gw.STATE_EMPTY_SKIPPED_KEY,
+        unauthorized_skipped_key=gw.STATE_UNAUTHORIZED_SKIPPED_KEY,
+        handler_errors_key=gw.STATE_HANDLER_ERRORS_KEY,
+        failed_queue_key=gw.STATE_FAILED_QUEUE_KEY,
+        seen_update_ids_key=gw.STATE_SEEN_UPDATE_IDS_KEY,
+        seen_message_keys_key=gw.STATE_SEEN_MESSAGE_KEYS_KEY,
+        dedup_keep_limit=gw.dedup_keep_limit,
+        failed_queue_keep_limit=gw.failed_queue_keep_limit,
+        normalize_recent_tokens=gw.normalize_recent_tokens,
+        normalize_failed_queue=gw.normalize_failed_queue,
+    )
+    assert gw_loaded == mod_loaded
+    assert gw.normalize_recent_tokens(["1", "2", "2"], 5) == gateway_state.normalize_recent_tokens(["1", "2", "2"], 5)
+    assert gw.message_dedup_key({"chat": {"id": "939062873"}, "message_id": 7}) == gateway_state.message_dedup_key({"chat": {"id": "939062873"}, "message_id": 7})
+    assert gw.summarize_failed_queue(gw_loaded, "939062873") == gateway_state.summarize_failed_queue(
+        mod_loaded,
+        "939062873",
+        failed_queue_for_chat=lambda st, cid: gateway_state.failed_queue_for_chat(
+            st,
+            cid,
+            failed_queue_keep_limit=gw.failed_queue_keep_limit,
+            normalize_failed_queue=gw.normalize_failed_queue,
+            failed_queue_key=gw.STATE_FAILED_QUEUE_KEY,
+        ),
+        replay_usage=gw.REPLAY_USAGE,
+    )
+    assert gw.resolve_failed_queue_item(gw_loaded, "939062873", "latest") == gateway_state.resolve_failed_queue_item(
+        mod_loaded,
+        "939062873",
+        "latest",
+        failed_queue_for_chat=lambda st, cid: gateway_state.failed_queue_for_chat(
+            st,
+            cid,
+            failed_queue_keep_limit=gw.failed_queue_keep_limit,
+            normalize_failed_queue=gw.normalize_failed_queue,
+            failed_queue_key=gw.STATE_FAILED_QUEUE_KEY,
+        ),
+    )
+
+    path_a = tmp_path / "save_a.json"
+    path_b = tmp_path / "save_b.json"
+    gw.save_state(path_a, gw_loaded)
+    gateway_state.save_state(
+        path_b,
+        mod_loaded,
+        acked_updates_key=gw.STATE_ACKED_UPDATES_KEY,
+        handled_messages_key=gw.STATE_HANDLED_MESSAGES_KEY,
+        duplicate_skipped_key=gw.STATE_DUPLICATE_SKIPPED_KEY,
+        empty_skipped_key=gw.STATE_EMPTY_SKIPPED_KEY,
+        unauthorized_skipped_key=gw.STATE_UNAUTHORIZED_SKIPPED_KEY,
+        handler_errors_key=gw.STATE_HANDLER_ERRORS_KEY,
+        failed_queue_key=gw.STATE_FAILED_QUEUE_KEY,
+        seen_update_ids_key=gw.STATE_SEEN_UPDATE_IDS_KEY,
+        seen_message_keys_key=gw.STATE_SEEN_MESSAGE_KEYS_KEY,
+        dedup_keep_limit=gw.dedup_keep_limit,
+        failed_queue_keep_limit=gw.failed_queue_keep_limit,
+        normalize_recent_tokens=gw.normalize_recent_tokens,
+        normalize_failed_queue=gw.normalize_failed_queue,
+    )
+    assert gw.load_state(path_a) == gw.load_state(path_b)
 
 
 def test_chat_state_module_matches_gateway_chat_session_exports() -> None:
