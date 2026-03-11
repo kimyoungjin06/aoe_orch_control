@@ -36,6 +36,7 @@ import aoe_tg_orch_roles as orch_roles
 import aoe_tg_orch_overview_handlers as overview
 import aoe_tg_orch_task_handlers as orch_task_handlers
 import aoe_tg_parse as tg_parse
+import aoe_tg_request_state as request_state
 import aoe_tg_run_guards as run_guards
 import aoe_tg_plan_pipeline as plan_pipeline
 import aoe_tg_project_runtime as runtime_helpers
@@ -1617,6 +1618,82 @@ def test_finalize_request_reply_messages_marks_only_unresolved(monkeypatch, tmp_
     assert result["done"] == ["Reviewer:m_sent:sent"]
     assert "DataEngineer:m_done:done" in result["skipped"]
     assert calls == [("m_sent", "Orchestrator", "gateway integrated reply into final response")]
+
+
+def test_request_state_module_matches_gateway_request_helpers(monkeypatch, tmp_path: Path) -> None:
+    args = argparse.Namespace(
+        aoe_team_bin="aoe-team",
+        team_dir=tmp_path / ".aoe-team",
+        state_file=tmp_path / "gateway_state.json",
+    )
+    args.team_dir.mkdir(parents=True, exist_ok=True)
+
+    class Proc:
+        returncode = 0
+        stdout = json.dumps({"request_id": "REQ-1", "counts": {"messages": 1, "assignments": 1, "replies": 0}})
+        stderr = ""
+
+    monkeypatch.setattr(gw, "run_command", lambda cmd, env, timeout_sec: Proc())
+
+    assert gw.run_request_query(args, "REQ-1") == request_state.run_request_query(
+        args,
+        "REQ-1",
+        run_command=lambda cmd, env, timeout_sec: Proc(),
+    )
+
+    task = {"request_id": "REQ-1", "short_id": "T-001", "alias": "demo", "status": "running"}
+    state = {
+        "request_id": "REQ-1",
+        "complete": False,
+        "counts": {"messages": 1, "assignments": 1, "replies": 0},
+        "roles": [{"role": "Reviewer", "status": "pending", "message_id": "m-1"}],
+        "unresolved_roles": ["Reviewer"],
+    }
+
+    assert gw.summarize_request_state(state, task=task) == request_state.summarize_request_state(
+        state,
+        task=task,
+        task_display_label=gw.task_display_label,
+    )
+    assert gw.render_run_response(state, task=task, report_level="short") == request_state.render_run_response(
+        state,
+        task=task,
+        report_level="short",
+        default_report_level=gw.DEFAULT_REPORT_LEVEL,
+        task_display_label=gw.task_display_label,
+        summarize_state=gw.summarize_state,
+    )
+
+    reply_state = {
+        "request_id": "REQ-1",
+        "reply_messages": [
+            {"id": "m-1", "from": "Reviewer", "status": "sent"},
+            {"id": "m-2", "from": "Reviewer", "status": "done"},
+        ],
+    }
+    done_calls: list[tuple[str, str, str]] = []
+
+    def _done(_args, message_id: str, actor: str, note: str) -> tuple[bool, str]:
+        done_calls.append((message_id, actor, note))
+        return True, "ok"
+
+    monkeypatch.setattr(gw, "run_request_query", lambda _args, _rid: reply_state)
+    monkeypatch.setattr(gw, "run_message_done", _done)
+
+    assert gw.finalize_request_reply_messages(
+        args,
+        "REQ-1",
+        actor="Orchestrator",
+        note="note",
+    ) == request_state.finalize_request_reply_messages(
+        args,
+        "REQ-1",
+        run_request_query=lambda _args, _rid: reply_state,
+        run_message_done=_done,
+        actor="Orchestrator",
+        note="note",
+    )
+    assert done_calls == [("m-1", "Orchestrator", "note"), ("m-1", "Orchestrator", "note")]
 
 
 def test_tf_exec_module_matches_gateway_exec_helpers(tmp_path: Path, monkeypatch) -> None:
