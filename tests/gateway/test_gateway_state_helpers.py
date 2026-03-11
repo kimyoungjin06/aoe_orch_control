@@ -22,6 +22,7 @@ if str(GW_DIR) not in sys.path:
 
 import aoe_tg_command_resolver as resolver
 import aoe_tg_blocked_state as blocked_state
+import aoe_tg_chat_state as chat_state
 import aoe_tg_exec_pipeline as exec_pipeline
 import aoe_tg_exec_results as exec_results
 import aoe_tg_gateway_events as gateway_events
@@ -131,6 +132,55 @@ def test_set_recent_and_selected_task_refs_create_chat_session_row() -> None:
     selected = gw.get_chat_selected_task_ref(state, "939062873", "default")
     assert refs[:2] == ["REQ-1", "REQ-2"]
     assert selected == "REQ-2"
+
+
+def test_chat_state_module_matches_gateway_chat_session_exports() -> None:
+    state_a = _empty_state()
+    state_b = copy.deepcopy(state_a)
+
+    gw.set_default_mode(state_a, "939062873", "dispatch")
+    chat_state.set_default_mode(state_b, "939062873", "dispatch")
+    gw.set_pending_mode(state_a, "939062873", "direct")
+    chat_state.set_pending_mode(state_b, "939062873", "direct")
+    gw.set_chat_lang(state_a, "939062873", "en")
+    chat_state.set_chat_lang(state_b, "939062873", "en")
+    gw.set_chat_report_level(state_a, "939062873", "long")
+    chat_state.set_chat_report_level(state_b, "939062873", "long")
+    gw.set_chat_room(state_a, "939062873", "O3/TF-ALPHA")
+    chat_state.set_chat_room(state_b, "939062873", "O3/TF-ALPHA")
+    gw.set_confirm_action(state_a, "939062873", "dispatch", "rm -rf /tmp/demo", risk="destructive_delete", orch="Twin")
+    chat_state.set_confirm_action(state_b, "939062873", "dispatch", "rm -rf /tmp/demo", risk="destructive_delete", orch="Twin")
+    gw.set_chat_recent_task_refs(state_a, "939062873", "Twin Paper", ["REQ-1", "REQ-2", "REQ-1"])
+    chat_state.set_chat_recent_task_refs(state_b, "939062873", "Twin Paper", ["REQ-1", "REQ-2", "REQ-1"])
+    gw.set_chat_selected_task_ref(state_a, "939062873", "Twin Paper", "REQ-2")
+    chat_state.set_chat_selected_task_ref(state_b, "939062873", "Twin Paper", "REQ-2")
+
+    assert gw.get_default_mode(state_a, "939062873") == chat_state.get_default_mode(state_b, "939062873")
+    assert gw.get_pending_mode(state_a, "939062873") == chat_state.get_pending_mode(state_b, "939062873")
+    assert gw.get_chat_lang(state_a, "939062873", "ko") == chat_state.get_chat_lang(state_b, "939062873", "ko")
+    assert gw.get_chat_report_level(state_a, "939062873", "normal") == chat_state.get_chat_report_level(state_b, "939062873", "normal")
+    assert gw.get_chat_room(state_a, "939062873", "global") == chat_state.get_chat_room(state_b, "939062873", "global")
+    assert gw.get_confirm_action(state_a, "939062873").get("mode") == chat_state.get_confirm_action(state_b, "939062873").get("mode")
+    assert gw.get_chat_recent_task_refs(state_a, "939062873", "Twin Paper") == chat_state.get_chat_recent_task_refs(state_b, "939062873", "Twin Paper")
+    assert gw.get_chat_selected_task_ref(state_a, "939062873", "Twin Paper") == chat_state.get_chat_selected_task_ref(state_b, "939062873", "Twin Paper")
+    assert gw.resolve_chat_task_ref(state_a, "939062873", "Twin Paper", "2") == chat_state.resolve_chat_task_ref(state_b, "939062873", "Twin Paper", "2")
+
+    raw_row = {
+        "pending_mode": "dispatch",
+        "default_mode": "direct",
+        "lang": "한국어",
+        "report_level": "short",
+        "room": "main",
+        "confirm_action": {"mode": "dispatch", "prompt": "echo hi"},
+        "recent_task_refs": {"Twin Paper": ["REQ-1", "REQ-1", "REQ-2"]},
+        "selected_task_refs": {"Twin Paper": "REQ-2"},
+    }
+    assert gw.sanitize_chat_session_row(raw_row) == chat_state.sanitize_chat_session_row(raw_row)
+
+    assert gw.clear_pending_mode(state_a, "939062873") == chat_state.clear_pending_mode(state_b, "939062873")
+    assert gw.clear_default_mode(state_a, "939062873") == chat_state.clear_default_mode(state_b, "939062873")
+    assert gw.clear_chat_report_level(state_a, "939062873") == chat_state.clear_chat_report_level(state_b, "939062873")
+    assert gw.clear_confirm_action(state_a, "939062873") == chat_state.clear_confirm_action(state_b, "939062873")
 
 
 def test_planning_stage_timeout_sec_caps_long_global_timeout() -> None:
