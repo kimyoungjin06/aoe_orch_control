@@ -32,6 +32,7 @@ import aoe_tg_gateway_aux as gateway_aux
 import aoe_tg_gateway_batch_ops as gateway_batch_ops
 import aoe_tg_gateway_state as gateway_state
 import aoe_tg_management_handlers as mgmt_handlers
+import aoe_tg_scheduler_control_handlers as scheduler_control
 import aoe_tg_message_handler as message_handler
 import aoe_tg_offdesk_flow as offdesk_flow
 import aoe_tg_ops_policy as ops_policy
@@ -5697,6 +5698,83 @@ def _call_management_status_with_markup(
     return sent[-1]
 
 
+def _management_control_kwargs(
+    *,
+    tmp_path: Path,
+    manager_state: dict,
+    cmd: str,
+    rest: str,
+    sent: list[tuple[str, dict | None]],
+) -> dict:
+    team_dir = tmp_path / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    return dict(
+        cmd=cmd,
+        args=argparse.Namespace(
+            dry_run=True,
+            team_dir=team_dir,
+            manager_state_file=team_dir / "orch_manager_state.json",
+            default_report_level="normal",
+        ),
+        manager_state=manager_state,
+        chat_id="939062873",
+        chat_role="admin",
+        rest=rest,
+        send=lambda body, **kwargs: sent.append((body, kwargs.get("reply_markup"))) or True,
+        get_default_mode=gw.get_default_mode,
+        get_pending_mode=gw.get_pending_mode,
+        get_chat_report_level=gw.get_chat_report_level,
+        get_chat_room=gw.get_chat_room,
+        set_default_mode=gw.set_default_mode,
+        set_chat_report_level=gw.set_chat_report_level,
+        set_chat_room=gw.set_chat_room,
+        clear_default_mode=gw.clear_default_mode,
+        clear_pending_mode=gw.clear_pending_mode,
+        clear_confirm_action=gw.clear_confirm_action,
+        clear_chat_report_level=gw.clear_chat_report_level,
+        save_manager_state=lambda *args, **kwargs: None,
+        resolve_project_entry=mgmt_handlers._resolve_project_entry,
+        project_lock_row=mgmt_handlers._project_lock_row,
+        project_lock_label=mgmt_handlers._project_lock_label,
+        parse_replace_sync_flag=mgmt_handlers._parse_replace_sync_flag,
+        normalize_prefetch_token=mgmt_handlers._normalize_prefetch_token,
+        prefetch_display=mgmt_handlers._prefetch_display,
+        compact_reason=mgmt_handlers._compact_reason,
+        status_report_level=mgmt_handlers._status_report_level,
+        focused_project_snapshot_lines=mgmt_handlers._focused_project_snapshot_lines,
+        ops_scope_summary=mgmt_handlers._ops_scope_summary,
+        ops_scope_compact_lines=lambda state, limit, detail_level: mgmt_handlers._ops_scope_compact_lines(
+            state, limit=limit, detail_level=detail_level
+        ),
+        offdesk_prepare_targets=mgmt_handlers._offdesk_prepare_targets,
+        offdesk_prepare_project_report=mgmt_handlers._offdesk_prepare_project_report,
+        offdesk_review_reply_markup=lambda flagged, clean=False: mgmt_handlers._offdesk_review_reply_markup(
+            flagged, clean=clean
+        ),
+        offdesk_prepare_reply_markup=lambda reports, blocked_count=0, clean=False: mgmt_handlers._offdesk_prepare_reply_markup(
+            reports, blocked_count=blocked_count, clean=clean
+        ),
+        auto_state_path=mgmt_handlers._auto_state_path,
+        offdesk_state_path=mgmt_handlers._offdesk_state_path,
+        load_auto_state=mgmt_handlers._load_auto_state,
+        save_auto_state=mgmt_handlers._save_auto_state,
+        load_offdesk_state=mgmt_handlers._load_offdesk_state,
+        save_offdesk_state=mgmt_handlers._save_offdesk_state,
+        scheduler_session_name=mgmt_handlers._scheduler_session_name,
+        tmux_has_session=mgmt_handlers._tmux_has_session,
+        tmux_auto_command=mgmt_handlers._tmux_auto_command,
+        now_iso=mgmt_handlers._now_iso,
+        default_auto_interval_sec=mgmt_handlers.DEFAULT_AUTO_INTERVAL_SEC,
+        default_auto_idle_sec=mgmt_handlers.DEFAULT_AUTO_IDLE_SEC,
+        default_auto_max_failures=mgmt_handlers.DEFAULT_AUTO_MAX_FAILURES,
+        default_offdesk_command=mgmt_handlers.DEFAULT_OFFDESK_COMMAND,
+        default_offdesk_prefetch=mgmt_handlers.DEFAULT_OFFDESK_PREFETCH,
+        default_offdesk_prefetch_since=mgmt_handlers.DEFAULT_OFFDESK_PREFETCH_SINCE,
+        default_offdesk_report_level=mgmt_handlers.DEFAULT_OFFDESK_REPORT_LEVEL,
+        default_offdesk_room=mgmt_handlers.DEFAULT_OFFDESK_ROOM,
+    )
+
+
 def _button_texts(markup: dict | None) -> list[str]:
     if not isinstance(markup, dict):
         return []
@@ -5739,6 +5817,204 @@ def test_offdesk_status_includes_focused_project_snapshot(tmp_path: Path) -> Non
     assert "- blocked_head: TODO-3 x2 [manual_followup]" in text
     assert "- last_sync: scenario " in text
     assert "- last_task: T-101 Review schema and summarize result [running]" in text
+
+
+def test_scheduler_control_module_matches_management_focus_transition(tmp_path: Path) -> None:
+    state_a = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+    state_b = copy.deepcopy(state_a)
+    twin_root = tmp_path / "TwinPaper"
+    twin_team = twin_root / ".aoe-team"
+    twin_team.mkdir(parents=True, exist_ok=True)
+    state_a["projects"]["twinpaper"] = {
+        "name": "twinpaper",
+        "display_name": "TwinPaper",
+        "project_alias": "O2",
+        "project_root": str(twin_root),
+        "team_dir": str(twin_team),
+        "todos": [],
+    }
+    state_b["projects"]["twinpaper"] = copy.deepcopy(state_a["projects"]["twinpaper"])
+
+    sent_a: list[tuple[str, dict | None]] = []
+    sent_b: list[tuple[str, dict | None]] = []
+
+    ok_a = mgmt_handlers.handle_management_command(
+        cmd="focus",
+        args=argparse.Namespace(
+            dry_run=True,
+            team_dir=tmp_path / ".aoe-team",
+            manager_state_file=tmp_path / ".aoe-team" / "orch_manager_state.json",
+            default_report_level="normal",
+        ),
+        manager_state=state_a,
+        chat_id="939062873",
+        chat_role="admin",
+        current_chat_alias="owner",
+        mode_setting=None,
+        lang_setting=None,
+        report_setting=None,
+        rest="O2",
+        came_from_slash=True,
+        acl_grant_scope=None,
+        acl_grant_chat_id=None,
+        acl_revoke_scope=None,
+        acl_revoke_chat_id=None,
+        send=lambda body, **kwargs: sent_a.append((body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda *args, **kwargs: None,
+        help_text=lambda: "help",
+        get_default_mode=gw.get_default_mode,
+        get_pending_mode=gw.get_pending_mode,
+        get_chat_lang=gw.get_chat_lang,
+        get_chat_report_level=gw.get_chat_report_level,
+        get_chat_room=gw.get_chat_room,
+        set_default_mode=gw.set_default_mode,
+        set_pending_mode=gw.set_pending_mode,
+        set_chat_lang=gw.set_chat_lang,
+        set_chat_report_level=gw.set_chat_report_level,
+        set_chat_room=gw.set_chat_room,
+        clear_default_mode=gw.clear_default_mode,
+        clear_pending_mode=gw.clear_pending_mode,
+        clear_confirm_action=gw.clear_confirm_action,
+        clear_chat_report_level=gw.clear_chat_report_level,
+        save_manager_state=lambda *args, **kwargs: None,
+        resolve_chat_role=gw.resolve_chat_role,
+        is_owner_chat=gw.is_owner_chat,
+        ensure_chat_aliases=gw.ensure_chat_aliases,
+        find_chat_alias=lambda aliases, chat_ref: "",
+        alias_table_summary=lambda aliases: "",
+        resolve_chat_ref=lambda aliases, chat_ref: (str(chat_ref), ""),
+        ensure_chat_alias=lambda *args, **kwargs: "owner",
+        sync_acl_env_file=lambda args: None,
+    )
+    ok_b = scheduler_control.handle_scheduler_control_command(
+        **_management_control_kwargs(
+            tmp_path=tmp_path,
+            manager_state=state_b,
+            cmd="focus",
+            rest="O2",
+            sent=sent_b,
+        )
+    )
+
+    assert ok_a == ok_b == True
+    assert state_a == state_b
+    assert sent_a == sent_b
+
+
+def test_scheduler_control_module_matches_management_offdesk_prepare_and_panic(tmp_path: Path) -> None:
+    state_a = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+    state_b = copy.deepcopy(state_a)
+    project_root = tmp_path / "TwinPaper"
+    team_dir = project_root / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (project_root / "TODO.md").write_text("# Tasks\n- [ ] phase1 rerun\n", encoding="utf-8")
+    (team_dir / "AOE_TODO.md").write_text("@include ../TODO.md\n", encoding="utf-8")
+    (team_dir / "orchestrator.json").write_text("{}", encoding="utf-8")
+    project_entry = {
+        "name": "twinpaper",
+        "display_name": "TwinPaper",
+        "project_alias": "O2",
+        "project_root": str(project_root),
+        "team_dir": str(team_dir),
+        "runtime_ready": True,
+        "todos": [
+            {"id": "TODO-001", "summary": "phase1 rerun", "status": "open"},
+            {"id": "TODO-002", "summary": "need owner input", "status": "blocked", "blocked_count": 2, "blocked_bucket": "manual_followup"},
+        ],
+        "todo_proposals": [{"id": "PROP-001", "summary": "shadow gate follow-up", "status": "open"}],
+        "last_sync_at": "2026-03-07T20:00:00+0900",
+        "last_sync_mode": "scenario",
+    }
+    state_a["projects"]["twinpaper"] = copy.deepcopy(project_entry)
+    state_b["projects"]["twinpaper"] = copy.deepcopy(project_entry)
+
+    sent_prepare_a: list[tuple[str, dict | None]] = []
+    sent_prepare_b: list[tuple[str, dict | None]] = []
+    body_a, markup_a = _call_management_status_with_markup(
+        tmp_path=tmp_path,
+        manager_state=state_a,
+        cmd="offdesk",
+        rest="prepare O2",
+    )
+    ok_b = scheduler_control.handle_scheduler_control_command(
+        **_management_control_kwargs(
+            tmp_path=tmp_path,
+            manager_state=state_b,
+            cmd="offdesk",
+            rest="prepare O2",
+            sent=sent_prepare_b,
+        )
+    )
+    assert ok_b is True
+    assert sent_prepare_b
+    body_b, markup_b = sent_prepare_b[-1]
+    assert body_a == body_b
+    assert markup_a == markup_b
+
+    sent_panic_a: list[tuple[str, dict | None]] = []
+    sent_panic_b: list[tuple[str, dict | None]] = []
+    state_c = copy.deepcopy(state_a)
+    state_d = copy.deepcopy(state_b)
+    ok_a2 = mgmt_handlers.handle_management_command(
+        cmd="panic",
+        args=argparse.Namespace(
+            dry_run=True,
+            team_dir=tmp_path / ".aoe-team",
+            manager_state_file=tmp_path / ".aoe-team" / "orch_manager_state.json",
+            default_report_level="normal",
+        ),
+        manager_state=state_c,
+        chat_id="939062873",
+        chat_role="admin",
+        current_chat_alias="owner",
+        mode_setting=None,
+        lang_setting=None,
+        report_setting=None,
+        rest="status",
+        came_from_slash=True,
+        acl_grant_scope=None,
+        acl_grant_chat_id=None,
+        acl_revoke_scope=None,
+        acl_revoke_chat_id=None,
+        send=lambda body, **kwargs: sent_panic_a.append((body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda *args, **kwargs: None,
+        help_text=lambda: "help",
+        get_default_mode=gw.get_default_mode,
+        get_pending_mode=gw.get_pending_mode,
+        get_chat_lang=gw.get_chat_lang,
+        get_chat_report_level=gw.get_chat_report_level,
+        get_chat_room=gw.get_chat_room,
+        set_default_mode=gw.set_default_mode,
+        set_pending_mode=gw.set_pending_mode,
+        set_chat_lang=gw.set_chat_lang,
+        set_chat_report_level=gw.set_chat_report_level,
+        set_chat_room=gw.set_chat_room,
+        clear_default_mode=gw.clear_default_mode,
+        clear_pending_mode=gw.clear_pending_mode,
+        clear_confirm_action=gw.clear_confirm_action,
+        clear_chat_report_level=gw.clear_chat_report_level,
+        save_manager_state=lambda *args, **kwargs: None,
+        resolve_chat_role=gw.resolve_chat_role,
+        is_owner_chat=gw.is_owner_chat,
+        ensure_chat_aliases=gw.ensure_chat_aliases,
+        find_chat_alias=lambda aliases, chat_ref: "",
+        alias_table_summary=lambda aliases: "",
+        resolve_chat_ref=lambda aliases, chat_ref: (str(chat_ref), ""),
+        ensure_chat_alias=lambda *args, **kwargs: "owner",
+        sync_acl_env_file=lambda args: None,
+    )
+    ok_b2 = scheduler_control.handle_scheduler_control_command(
+        **_management_control_kwargs(
+            tmp_path=tmp_path,
+            manager_state=state_d,
+            cmd="panic",
+            rest="status",
+            sent=sent_panic_b,
+        )
+    )
+    assert ok_a2 == ok_b2 == True
+    assert state_c == state_d
+    assert sent_panic_a == sent_panic_b
 
 
 def test_offdesk_flow_module_matches_management_prepare_report_and_markup(tmp_path: Path) -> None:
