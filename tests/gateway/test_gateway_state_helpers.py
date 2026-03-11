@@ -60,6 +60,9 @@ import aoe_tg_scheduler_handlers as sched
 import aoe_tg_schema as schema
 import aoe_tg_task_state as task_state
 import aoe_tg_task_view as task_view
+import aoe_tg_tf_backend as tf_backend
+import aoe_tg_tf_backend_autogen as tf_backend_autogen
+import aoe_tg_tf_backend_local as tf_backend_local
 import aoe_tg_tf_exec as tf_exec
 import aoe_tg_todo_handlers as todo_handlers
 import aoe_tg_todo_state as todo_state
@@ -7621,3 +7624,87 @@ def test_sync_records_last_sync_even_when_queue_is_unchanged(tmp_path: Path) -> 
     assert saves == [team_dir / "orch_manager_state.json"]
     assert entry["last_sync_at"] == "2026-03-06T12:00:00+0900"
     assert entry["last_sync_mode"] == "scenario"
+
+
+def test_tf_backend_normalization_and_labels() -> None:
+    assert tf_backend.normalize_tf_backend_name("") == "local"
+    assert tf_backend.normalize_tf_backend_name("default") == "local"
+    assert tf_backend.normalize_tf_backend_name("autogen") == "autogen_core"
+    assert tf_backend.normalize_tf_backend_name("autogen-core") == "autogen_core"
+    assert tf_backend.backend_runtime_label("aoe") == "local"
+    assert tf_backend.backend_runtime_label("autogen_core") == "autogen_core"
+
+
+def test_local_tf_backend_delegates_to_run_aoe_orch() -> None:
+    calls: dict = {}
+
+    def fake_now_iso() -> str:
+        return "2026-03-11T00:00:00+0000"
+
+    def fake_run_command(*args, **kwargs):
+        raise AssertionError("run_command should not be called directly in this wrapper test")
+
+    def fake_run_aoe_orch(args, prompt, chat_id, **kwargs):
+        calls["args"] = args
+        calls["prompt"] = prompt
+        calls["chat_id"] = chat_id
+        calls["kwargs"] = kwargs
+        return {"request_id": "REQ-1", "status": "submitted"}
+
+    original = tf_backend_local.run_aoe_orch
+    tf_backend_local.run_aoe_orch = fake_run_aoe_orch
+    try:
+        request = tf_backend.build_tf_backend_request(
+            args=argparse.Namespace(project_root=str(ROOT), team_dir=str(ROOT / ".aoe-team")),
+            prompt="review this change",
+            chat_id="chat-1",
+            roles_override="Reviewer",
+            priority_override="P1",
+            timeout_override=30,
+            no_wait_override=True,
+        )
+        deps = tf_backend.build_tf_backend_deps(
+            default_tf_exec_mode="local",
+            default_tf_work_root_name=".aoe-tf",
+            default_tf_exec_map_file="tf_exec_map.json",
+            default_tf_worker_startup_grace_sec=45,
+            now_iso=fake_now_iso,
+            run_command=fake_run_command,
+        )
+        result = tf_backend_local.local_backend().run(request, deps)
+    finally:
+        tf_backend_local.run_aoe_orch = original
+
+    assert result["request_id"] == "REQ-1"
+    assert calls["prompt"] == "review this change"
+    assert calls["chat_id"] == "chat-1"
+    assert calls["kwargs"]["roles_override"] == "Reviewer"
+    assert calls["kwargs"]["priority_override"] == "P1"
+    assert calls["kwargs"]["timeout_override"] == 30
+    assert calls["kwargs"]["no_wait_override"] is True
+
+
+def test_autogen_backend_reports_availability_and_stays_not_implemented() -> None:
+    availability = tf_backend_autogen.autogen_core_backend().availability()
+    assert isinstance(availability.available, bool)
+    if availability.available:
+        try:
+            tf_backend_autogen.autogen_core_backend().run(
+                tf_backend.build_tf_backend_request(
+                    args=argparse.Namespace(project_root=str(ROOT), team_dir=str(ROOT / ".aoe-team")),
+                    prompt="test",
+                    chat_id="chat-1",
+                ),
+                tf_backend.build_tf_backend_deps(
+                    default_tf_exec_mode="local",
+                    default_tf_work_root_name=".aoe-tf",
+                    default_tf_exec_map_file="tf_exec_map.json",
+                    default_tf_worker_startup_grace_sec=45,
+                    now_iso=lambda: "2026-03-11T00:00:00+0000",
+                    run_command=lambda *args, **kwargs: None,
+                ),
+            )
+        except NotImplementedError as exc:
+            assert "not wired" in str(exc)
+    else:
+        assert "not installed" in availability.reason
