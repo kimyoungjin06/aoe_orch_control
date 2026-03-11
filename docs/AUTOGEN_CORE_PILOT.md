@@ -162,7 +162,7 @@ Store this evidence outside the live control plane until the pilot is accepted.
 
 Before any live sandbox pilot, implement:
 
-- live event mirroring from backend runtime into existing gateway/operator logs
+- sandbox wiring for backend runtime event mirroring into existing gateway/operator logs
 
 After that, the next technical milestone is:
 
