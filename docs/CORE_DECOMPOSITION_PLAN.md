@@ -12,14 +12,29 @@ The objective is:
 - move domain rules out of handler monoliths
 - preserve current operator behavior while changing internals
 
-## 2. Current Baseline
+## 2. Current Snapshot
 
-Current large cores:
+Current large cores on `task/scheduler-decomposition-1`:
 
-- `scripts/gateway/aoe-telegram-gateway.py` - `7685` lines
-- `scripts/gateway/aoe_tg_scheduler_handlers.py` - `3797` lines
-- `scripts/gateway/aoe_tg_run_handlers.py` - `2391` lines
-- `scripts/gateway/aoe_tg_management_handlers.py` - `2367` lines
+- `scripts/gateway/aoe-telegram-gateway.py` - `2713` lines
+- `scripts/gateway/aoe_tg_scheduler_handlers.py` - `1889` lines
+- `scripts/gateway/aoe_tg_sync_sources.py` - `1680` lines
+- `scripts/gateway/aoe_tg_run_handlers.py` - `1611` lines
+- `scripts/gateway/aoe_tg_scheduler_control_handlers.py` - `1139` lines
+- `scripts/gateway/aoe_tg_management_handlers.py` - `705` lines
+
+Completed cuts already landed on this branch:
+
+- scheduler split into:
+  - `scripts/gateway/aoe_tg_sync_sources.py`
+  - `scripts/gateway/aoe_tg_sync_merge.py`
+  - `scripts/gateway/aoe_tg_queue_engine.py`
+- management split into:
+  - `scripts/gateway/aoe_tg_offdesk_flow.py`
+  - `scripts/gateway/aoe_tg_scheduler_control_handlers.py`
+  - `scripts/gateway/aoe_tg_management_chat.py`
+  - `scripts/gateway/aoe_tg_management_acl.py`
+- gateway support split into explicit transport/runtime/request/task modules
 
 Existing extracted seams already in place:
 
@@ -125,6 +140,12 @@ Acceptance criteria:
 
 ### Phase 2. Scheduler domain split
 
+Status:
+
+- initial split complete
+- command UX still remains in `scripts/gateway/aoe_tg_scheduler_handlers.py`
+- `scripts/gateway/aoe_tg_sync_sources.py` is now the main remaining scheduler-sized file
+
 Target file:
 
 - `scripts/gateway/aoe_tg_scheduler_handlers.py`
@@ -201,6 +222,15 @@ Acceptance criteria:
 
 - scheduler handler becomes command UX orchestration
 - sync heuristics no longer live primarily in one file
+
+Remaining Phase 2 TODO:
+
+- [x] split source discovery and classification out of `aoe_tg_scheduler_handlers.py`
+- [x] split merge/prune and sync metadata stamping out of `aoe_tg_scheduler_handlers.py`
+- [x] split queue selection helpers out of `aoe_tg_scheduler_handlers.py`
+- [ ] keep future sync heuristic work inside `aoe_tg_sync_sources.py`, not back in handlers
+- [ ] split `aoe_tg_sync_sources.py` again if parser/discovery concerns start changing independently
+- [ ] extract scheduler diagnostics/replay UX if `aoe_tg_scheduler_handlers.py` grows past command-surface work
 
 ### Phase 3. Run pipeline split
 
