@@ -29,6 +29,7 @@ import aoe_tg_ops_view as ops_view
 import aoe_tg_orch_overview_handlers as overview
 import aoe_tg_orch_task_handlers as orch_task_handlers
 import aoe_tg_parse as tg_parse
+import aoe_tg_plan_pipeline as plan_pipeline
 import aoe_tg_project_runtime as runtime_helpers
 import aoe_tg_runtime_core as runtime_core
 import aoe_tg_queue_engine as queue_engine
@@ -431,6 +432,176 @@ def test_compute_dispatch_plan_reports_progress_sequence() -> None:
     assert [row["phase"] for row in phases] == ["planner", "critic", "repair", "critic", "ready"]
     assert phases[2]["attempt"] == 1
     assert phases[2]["total"] == 1
+
+
+def test_plan_pipeline_module_matches_run_planning_exports() -> None:
+    prompt = "각 프로젝트별로 5시간 내로 가장 늦게 생성된 10개 md를 살펴보고 업데이트 부탁해"
+    assert run_handlers._apply_success_first_prompt_fallbacks(prompt) == plan_pipeline.apply_success_first_prompt_fallbacks(prompt)
+
+    def _choose_roles(user_prompt: str, **_kwargs):
+        if "analyze" in user_prompt.lower():
+            return ["Analyst", "Reviewer"]
+        return ["Reviewer"]
+
+    run_mode = run_handlers._resolve_dispatch_mode_and_roles(
+        run_force_mode=None,
+        run_roles_override="",
+        project_roles_csv="",
+        auto_dispatch_enabled=True,
+        prompt="analyze this change",
+        choose_auto_dispatch_roles=_choose_roles,
+        available_roles=["Analyst", "Reviewer"],
+        team_dir=ROOT,
+    )
+    module_mode = plan_pipeline.resolve_dispatch_mode_and_roles(
+        run_force_mode=None,
+        run_roles_override="",
+        project_roles_csv="",
+        auto_dispatch_enabled=True,
+        prompt="analyze this change",
+        choose_auto_dispatch_roles=_choose_roles,
+        available_roles=["Analyst", "Reviewer"],
+        team_dir=ROOT,
+    )
+    assert run_mode == module_mode
+
+    run_sent: list[tuple[str, dict]] = []
+    module_sent: list[tuple[str, dict]] = []
+    run_logged: list[dict] = []
+    module_logged: list[dict] = []
+
+    run_handlers._emit_planning_progress(
+        phase="repair",
+        key="local_map_analysis",
+        send=lambda body, **kwargs: run_sent.append((body, kwargs)) or True,
+        log_event=lambda **kwargs: run_logged.append(kwargs),
+        emit_chat=True,
+        detail="critic issues found; auto-replanning",
+        attempt=1,
+        total=2,
+    )
+    plan_pipeline.emit_planning_progress(
+        phase="repair",
+        key="local_map_analysis",
+        send=lambda body, **kwargs: module_sent.append((body, kwargs)) or True,
+        log_event=lambda **kwargs: module_logged.append(kwargs),
+        emit_chat=True,
+        detail="critic issues found; auto-replanning",
+        attempt=1,
+        total=2,
+    )
+
+    assert run_logged == module_logged
+    assert run_sent == module_sent
+
+
+def test_plan_pipeline_module_matches_run_compute_and_lineage_helpers() -> None:
+    args = argparse.Namespace(
+        task_planning=True,
+        dry_run=False,
+        plan_max_subtasks=4,
+        plan_auto_replan=True,
+        plan_replan_attempts=1,
+        plan_block_on_critic=True,
+    )
+    critic_call_count = {"n": 0}
+
+    def _build(*_args, **_kwargs):
+        return {
+            "summary": "plan",
+            "subtasks": [{"id": "S1", "title": "build", "goal": "build", "owner_role": "DataEngineer", "acceptance": ["ok"]}],
+        }
+
+    def _critic(*_args, **_kwargs):
+        critic_call_count["n"] += 1
+        if critic_call_count["n"] == 1:
+            return {"approved": False, "issues": ["fix this"], "recommendations": ["repair"]}
+        return {"approved": True, "issues": [], "recommendations": []}
+
+    def _repair(*_args, **_kwargs):
+        return {
+            "summary": "plan-fixed",
+            "subtasks": [{"id": "S1", "title": "fixed", "goal": "fixed", "owner_role": "DataEngineer", "acceptance": ["ok"]}],
+        }
+
+    run_phases: list[dict] = []
+    module_phases: list[dict] = []
+    critic_has_blockers = lambda critic: (not bool(critic.get("approved", True))) or bool(critic.get("issues") or [])
+
+    run_meta = run_handlers._compute_dispatch_plan(
+        args=args,
+        p_args=argparse.Namespace(),
+        prompt="build something",
+        dispatch_mode=True,
+        run_control_mode="normal",
+        run_source_task=None,
+        selected_roles=[],
+        available_roles=["DataEngineer", "Reviewer"],
+        available_worker_roles=lambda roles: roles,
+        normalize_task_plan_payload=lambda parsed, **_kwargs: parsed,
+        build_task_execution_plan=_build,
+        critique_task_execution_plan=_critic,
+        critic_has_blockers=critic_has_blockers,
+        repair_task_execution_plan=_repair,
+        plan_roles_from_subtasks=lambda plan: ["DataEngineer"] if isinstance(plan, dict) else [],
+        report_progress=lambda **kwargs: run_phases.append(kwargs),
+    )
+
+    critic_call_count["n"] = 0
+    module_meta = plan_pipeline.compute_dispatch_plan(
+        args=args,
+        p_args=argparse.Namespace(),
+        prompt="build something",
+        dispatch_mode=True,
+        run_control_mode="normal",
+        run_source_task=None,
+        selected_roles=[],
+        available_roles=["DataEngineer", "Reviewer"],
+        available_worker_roles=lambda roles: roles,
+        normalize_task_plan_payload=lambda parsed, **_kwargs: parsed,
+        build_task_execution_plan=_build,
+        critique_task_execution_plan=_critic,
+        critic_has_blockers=critic_has_blockers,
+        repair_task_execution_plan=_repair,
+        plan_roles_from_subtasks=lambda plan: ["DataEngineer"] if isinstance(plan, dict) else [],
+        report_progress=lambda **kwargs: module_phases.append(kwargs),
+    )
+
+    assert run_meta == module_meta
+    assert run_phases == module_phases
+
+    task_a = {"request_id": "REQ-001", "context": {}}
+    task_b = {"request_id": "REQ-001", "context": {}}
+    source_a = {"request_id": "REQ-000", "context": {}}
+    source_b = {"request_id": "REQ-000", "context": {}}
+    notes_a: list[tuple[tuple, dict]] = []
+    notes_b: list[tuple[tuple, dict]] = []
+
+    kwargs = dict(
+        task=task_a,
+        plan_data={"subtasks": [{"id": "S1"}]},
+        plan_critic={"approved": True, "issues": [], "recommendations": []},
+        plan_roles=["DataEngineer"],
+        plan_replans=[{"attempt": 1, "critic": "approved", "subtasks": 1}],
+        plan_error="",
+        critic_has_blockers=critic_has_blockers,
+        lifecycle_set_stage=lambda *args, **kwargs: notes_a.append((args, kwargs)),
+        run_control_mode="retry",
+        run_source_request_id="REQ-000",
+        run_source_task=source_a,
+        req_id="REQ-001",
+        now_iso=lambda: "2026-03-11T10:00:00+09:00",
+    )
+    run_handlers._apply_plan_and_lineage(**kwargs)
+
+    kwargs["task"] = task_b
+    kwargs["run_source_task"] = source_b
+    kwargs["lifecycle_set_stage"] = lambda *args, **kwargs: notes_b.append((args, kwargs))
+    plan_pipeline.apply_plan_and_lineage(**kwargs)
+
+    assert task_a == task_b
+    assert source_a == source_b
+    assert notes_a == notes_b
 
 
 def test_save_manager_state_syncs_investigations_registry_files(tmp_path: Path) -> None:
