@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "description": "Phase 0 benchmark set for comparing the current local TF backend contract against an AutoGen Core backend design.",
+  "cases": [
+    {
+      "id": "review_read_only_risk_scan",
+      "project_key": "O3",
+      "task": "Review the latest clustering analysis notes, identify the top three operational risks, and summarize them without changing files.",
+      "roles": ["Reviewer"],
+      "retry_budget": 2,
+      "approval_required": false,
+      "risk_level": "low",
+      "workload_type": "review",
+      "expected_focus": ["risk_summary", "read_only", "operator_report"]
+    },
+    {
+      "id": "research_synthesis_followups",
+      "project_key": "O4",
+      "task": "Synthesize the latest experiment notes into a concise findings summary and propose next-step follow-up tasks.",
+      "roles": ["Local-Analyst", "Reviewer"],
+      "retry_budget": 3,
+      "approval_required": false,
+      "risk_level": "low",
+      "workload_type": "synthesis",
+      "expected_focus": ["synthesis", "followup_proposals", "review_gate"]
+    },
+    {
+      "id": "writer_report_handoff",
+      "project_key": "O4",
+      "task": "Draft a short handoff report from the recent task outcomes and flag anything that still requires human follow-up.",
+      "roles": ["Local-Writer", "Reviewer"],
+      "retry_budget": 2,
+      "approval_required": false,
+      "risk_level": "low",
+      "workload_type": "reporting",
+      "expected_focus": ["handoff_report", "manual_followup", "operator_readability"]
+    },
+    {
+      "id": "implementation_change_with_gate",
+      "project_key": "O3",
+      "task": "Implement a small pipeline change in a sandbox branch, run a reviewer pass, and return a success or retry verdict with evidence.",
+      "roles": ["Local-Dev", "Reviewer"],
+      "retry_budget": 3,
+      "approval_required": true,
+      "risk_level": "medium",
+      "workload_type": "write_candidate",
+      "expected_focus": ["write_path", "evidence", "verdict_schema"]
+    }
+  ]
+}
