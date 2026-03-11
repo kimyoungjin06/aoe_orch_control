@@ -37,6 +37,7 @@ import aoe_tg_orch_responses as orch_responses
 import aoe_tg_orch_overview_handlers as overview
 import aoe_tg_orch_task_handlers as orch_task_handlers
 import aoe_tg_parse as tg_parse
+import aoe_tg_project_state as project_state
 import aoe_tg_request_state as request_state
 import aoe_tg_run_guards as run_guards
 import aoe_tg_plan_pipeline as plan_pipeline
@@ -1889,6 +1890,52 @@ def test_set_and_clear_project_lock_roundtrip() -> None:
     assert gw.clear_project_lock(state) is True
     assert gw.get_project_lock_key(state) == ""
     assert gw.clear_project_lock(state) is False
+
+
+def test_project_state_module_matches_gateway_project_helpers(tmp_path: Path) -> None:
+    state = _empty_state()
+    project_root = tmp_path / "TwinPaper"
+    team_dir = project_root / ".aoe-team"
+    state["projects"]["twinpaper"] = {
+        "name": "twinpaper",
+        "display_name": "TwinPaper",
+        "project_alias": "O2",
+        "project_root": str(project_root),
+        "team_dir": str(team_dir),
+        "tasks": {},
+    }
+
+    assert gw.normalize_project_name("Twin Paper") == project_state.normalize_project_name("Twin Paper")
+    assert gw.normalize_project_alias("o2") == project_state.normalize_project_alias("o2")
+    assert gw.extract_project_alias_index("O2") == project_state.extract_project_alias_index("O2")
+    assert gw.ensure_project_aliases(state) == project_state.ensure_project_aliases(state)
+    assert gw.project_alias_for_key(state, "twinpaper") == project_state.project_alias_for_key(state, "twinpaper")
+
+    state_for_mod = copy.deepcopy(state)
+    original_now_iso = gw.now_iso
+    try:
+        gw.now_iso = lambda: "2026-03-11T12:00:00+0900"
+        row = gw.set_project_lock(state, "twinpaper", actor="chat:939062873")
+        row_mod = project_state.set_project_lock(
+            state_for_mod,
+            "twinpaper",
+            now_iso=lambda: "2026-03-11T12:00:00+0900",
+            actor="chat:939062873",
+        )
+    finally:
+        gw.now_iso = original_now_iso
+    assert row == row_mod
+    assert gw.get_project_lock_key(state) == project_state.get_project_lock_key(state, bool_from_json=gw.bool_from_json)
+    assert gw.project_lock_label(state) == project_state.project_lock_label(state, bool_from_json=gw.bool_from_json)
+
+    key_a, entry_a = gw.get_manager_project(state, "O2")
+    key_b, entry_b = project_state.get_manager_project(state, "O2", bool_from_json=gw.bool_from_json)
+    assert (key_a, entry_a) == (key_b, entry_b)
+
+    args = argparse.Namespace(project_root=project_root, team_dir=team_dir, foo="bar")
+    a_args = gw.make_project_args(args, entry_a, key=key_a)
+    b_args = project_state.make_project_args(args, entry_b, key=key_b)
+    assert vars(a_args) == vars(b_args)
 
 
 def test_get_manager_project_respects_hard_project_lock() -> None:
