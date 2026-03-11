@@ -33,6 +33,7 @@ import aoe_tg_management_handlers as mgmt_handlers
 import aoe_tg_message_handler as message_handler
 import aoe_tg_ops_policy as ops_policy
 import aoe_tg_ops_view as ops_view
+import aoe_tg_room_runtime as room_runtime
 import aoe_tg_orch_registry as orch_registry
 import aoe_tg_orch_roles as orch_roles
 import aoe_tg_orch_responses as orch_responses
@@ -573,6 +574,65 @@ def test_message_handler_module_handles_slash_only_hint(tmp_path: Path) -> None:
 
     assert sent
     assert "입력 형식" in sent[0]["text"]
+
+
+def test_room_runtime_module_matches_gateway_route_and_gc_helpers(tmp_path: Path) -> None:
+    assert gw.normalize_room_autopublish_route("project_tf") == room_runtime.normalize_room_autopublish_route(
+        "project_tf",
+        default_room_autopublish_route=gw.DEFAULT_ROOM_AUTOPUBLISH_ROUTE,
+    )
+    assert gw._room_autopublish_title("dispatch_failed") == room_runtime.room_autopublish_title("dispatch_failed")
+
+    team_dir = tmp_path / ".aoe-team"
+    room_dir = team_dir / "logs" / "rooms" / "demo"
+    room_dir.mkdir(parents=True, exist_ok=True)
+    old_file = room_dir / "2026-01-01.jsonl"
+    old_file.write_text("{}\n", encoding="utf-8")
+
+    removed = room_runtime.cleanup_room_logs(
+        team_dir,
+        force=True,
+        room_retention_days=lambda: 1,
+        today_key_local=lambda: "2026-03-11",
+    )
+    assert removed == 1
+    assert not old_file.exists()
+
+
+def test_room_runtime_module_builds_expected_autopublish_event() -> None:
+    events = []
+    manager_state = _empty_state()
+    manager_state["projects"]["default"]["project_alias"] = "O1"
+
+    room_runtime.room_autopublish_event(
+        team_dir=ROOT / ".aoe-team",
+        manager_state=manager_state,
+        chat_id="939062873",
+        event="dispatch_completed",
+        project="default",
+        request_id="REQ-1",
+        task={"short_id": "T-001", "todo_id": "TODO-001"},
+        stage="close",
+        status="completed",
+        error_code="",
+        detail="done",
+        room_autopublish_enabled=lambda: True,
+        project_alias_for_key=gw.project_alias_for_key,
+        get_chat_room=lambda *_a, **_k: gw.DEFAULT_ROOM_NAME,
+        normalize_room_token=gw.normalize_room_token,
+        room_autopublish_route=lambda: "project",
+        int_from_env=gw.int_from_env,
+        task_display_label=gw.task_display_label,
+        append_room_event=lambda **kwargs: events.append(kwargs),
+        now_iso=lambda: "2026-03-11T12:00:00+0900",
+        default_room_name=gw.DEFAULT_ROOM_NAME,
+        default_max_event_chars=gw.DEFAULT_MAX_EVENT_CHARS,
+        default_max_file_bytes=gw.DEFAULT_MAX_FILE_BYTES,
+    )
+
+    assert events
+    assert events[0]["room"] == "O1"
+    assert events[0]["event"]["todo_id"] == "TODO-001"
 
 
 def test_chat_state_module_matches_gateway_chat_session_exports() -> None:

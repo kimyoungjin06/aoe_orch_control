@@ -77,6 +77,7 @@ from aoe_tg_gateway_events import (
 )
 import aoe_tg_gateway_state as gateway_state_mod
 import aoe_tg_gateway_aux as gateway_aux_mod
+import aoe_tg_room_runtime as room_runtime_mod
 import aoe_tg_orch_registry as orch_registry_mod
 import aoe_tg_orch_roles as orch_roles_mod
 import aoe_tg_orch_responses as orch_responses_mod
@@ -963,147 +964,50 @@ def acquire_process_lock(lock_path: Path) -> Any:
 
 
 def append_jsonl(path: Path, row: Dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    max_bytes = int_from_env(
-        os.environ.get("AOE_GATEWAY_LOG_MAX_BYTES"),
-        DEFAULT_GATEWAY_LOG_MAX_BYTES,
-        minimum=64 * 1024,
-        maximum=256 * 1024 * 1024,
+    return room_runtime_mod.append_jsonl(
+        path,
+        row,
+        int_from_env=int_from_env,
+        default_max_bytes=DEFAULT_GATEWAY_LOG_MAX_BYTES,
+        default_keep_files=DEFAULT_GATEWAY_LOG_KEEP_FILES,
     )
-    keep_files = int_from_env(
-        os.environ.get("AOE_GATEWAY_LOG_KEEP_FILES"),
-        DEFAULT_GATEWAY_LOG_KEEP_FILES,
-        minimum=1,
-        maximum=30,
-    )
-    if path.exists() and path.stat().st_size >= max_bytes:
-        for idx in range(keep_files - 1, 0, -1):
-            src = path.with_name(path.name + f".{idx}")
-            dst = path.with_name(path.name + f".{idx + 1}")
-            if src.exists():
-                if dst.exists():
-                    dst.unlink(missing_ok=True)
-                src.replace(dst)
-        first = path.with_name(path.name + ".1")
-        if first.exists():
-            first.unlink(missing_ok=True)
-        path.replace(first)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
 def room_retention_days() -> int:
-    # 0 disables GC (keep forever).
-    return int_from_env(
-        os.environ.get("AOE_ROOM_RETENTION_DAYS"),
-        DEFAULT_ROOM_RETENTION_DAYS,
-        minimum=0,
-        maximum=3650,
+    return room_runtime_mod.room_retention_days(
+        int_from_env=int_from_env,
+        default_room_retention_days=DEFAULT_ROOM_RETENTION_DAYS,
     )
 
 
 def cleanup_room_logs(team_dir: Path, *, force: bool = False) -> int:
-    days = room_retention_days()
-    if days <= 0:
-        return 0
-    root = (team_dir / "logs" / "rooms").resolve()
-    if not root.exists() or not root.is_dir():
-        return 0
-
-    marker = root / ".gc_last"
-    today = today_key_local()
-    try:
-        if (not force) and marker.exists():
-            prev = marker.read_text(encoding="utf-8", errors="replace").strip()
-            if (prev.split() or [""])[0] == today:
-                return 0
-    except Exception:
-        pass
-
-    keep_from = datetime.now().date() - timedelta(days=max(0, days - 1))
-    removed: List[Path] = []
-
-    for path in root.rglob("*.jsonl"):
-        if not path.is_file():
-            continue
-        name = path.name
-        if len(name) < 10:
-            continue
-        key = name[:10]
-        try:
-            file_date = datetime.strptime(key, "%Y-%m-%d").date()
-        except Exception:
-            continue
-        if file_date >= keep_from:
-            continue
-        try:
-            path.unlink(missing_ok=True)
-            removed.append(path)
-        except Exception:
-            pass
-
-    if removed:
-        parents = {p.parent for p in removed}
-        for d in sorted(parents, key=lambda p: len(p.parts), reverse=True):
-            cur = d
-            while cur != root and cur.exists():
-                try:
-                    next(cur.iterdir())
-                    break
-                except StopIteration:
-                    try:
-                        cur.rmdir()
-                    except Exception:
-                        break
-                    cur = cur.parent
-                except Exception:
-                    break
-
-    try:
-        marker.write_text(f"{today} removed={len(removed)}\n", encoding="utf-8")
-    except Exception:
-        pass
-    return len(removed)
+    return room_runtime_mod.cleanup_room_logs(
+        team_dir,
+        force=force,
+        room_retention_days=room_retention_days,
+        today_key_local=today_key_local,
+    )
 
 
 def room_autopublish_enabled() -> bool:
-    return bool_from_env(os.environ.get("AOE_ROOM_AUTOPUBLISH"), True)
+    return room_runtime_mod.room_autopublish_enabled(bool_from_env=bool_from_env)
 
 
 def normalize_room_autopublish_route(raw: Optional[str]) -> str:
-    token = str(raw or "").strip().lower()
-    if token in {"room", "chat", "current"}:
-        return "room"
-    if token in {"project", "orch", "o"}:
-        return "project"
-    if token in {"project-tf", "project_tf", "orch-tf", "orch_tf", "tf-project"}:
-        return "project-tf"
-    if token in {"tf", "taskforce"}:
-        return "tf"
-    return DEFAULT_ROOM_AUTOPUBLISH_ROUTE
+    return room_runtime_mod.normalize_room_autopublish_route(
+        raw,
+        default_room_autopublish_route=DEFAULT_ROOM_AUTOPUBLISH_ROUTE,
+    )
 
 
 def room_autopublish_route() -> str:
-    return normalize_room_autopublish_route(os.environ.get("AOE_ROOM_AUTOPUBLISH_ROUTE"))
-
-
-_ROOM_AUTOPUBLISH_EVENTS = {
-    "dispatch_completed",
-    "dispatch_failed",
-    "exec_critic_retry",
-    "exec_critic_blocked",
-}
+    return room_runtime_mod.room_autopublish_route(
+        normalize_room_autopublish_route=normalize_room_autopublish_route,
+    )
 
 
 def _room_autopublish_title(event: str) -> str:
-    mapping = {
-        "dispatch_completed": "done",
-        "dispatch_failed": "failed",
-        "exec_critic_retry": "retry",
-        "exec_critic_blocked": "blocked",
-    }
-    token = str(event or "").strip()
-    return mapping.get(token, token or "event")
+    return room_runtime_mod.room_autopublish_title(event)
 
 
 def room_autopublish_event(
@@ -1120,113 +1024,30 @@ def room_autopublish_event(
     error_code: str,
     detail: str,
 ) -> None:
-    if not room_autopublish_enabled():
-        return
-    if str(event or "").strip() not in _ROOM_AUTOPUBLISH_EVENTS:
-        return
-
-    project_alias = project_alias_for_key(manager_state, project) or str(project or "").strip() or "-"
-    tf_id = ""
-    if isinstance(task, dict):
-        short_id = str(task.get("short_id", "")).strip().upper()
-        if short_id:
-            tf_id = re.sub(r"^T-", "TF-", short_id)
-            if not tf_id.startswith("TF-"):
-                tf_id = "TF-" + re.sub(r"[^A-Z0-9._-]+", "_", short_id).strip("._-")[:24]
-
-    # Routing:
-    # - If user explicitly selected a non-global room, always respect it.
-    # - Otherwise, pick based on policy (default: per-project).
-    selected_room = get_chat_room(manager_state, chat_id, DEFAULT_ROOM_NAME) or DEFAULT_ROOM_NAME
-    selected_room = normalize_room_token(selected_room)
-    if selected_room != DEFAULT_ROOM_NAME:
-        room = selected_room
-    else:
-        route = room_autopublish_route()
-        if route == "room":
-            room = selected_room
-        elif route == "tf":
-            room = tf_id or project_alias or DEFAULT_ROOM_NAME
-        elif route == "project-tf":
-            room = f"{project_alias}/{tf_id}" if (project_alias and tf_id) else (project_alias or DEFAULT_ROOM_NAME)
-        else:
-            room = project_alias or DEFAULT_ROOM_NAME
-        room = normalize_room_token(room)
-
-    max_chars = int_from_env(
-        os.environ.get("AOE_ROOM_MAX_EVENT_CHARS"),
-        DEFAULT_MAX_EVENT_CHARS,
-        minimum=200,
-        maximum=20000,
-    )
-    max_file_bytes = int_from_env(
-        os.environ.get("AOE_ROOM_MAX_FILE_BYTES"),
-        DEFAULT_MAX_FILE_BYTES,
-        minimum=64 * 1024,
-        maximum=50 * 1024 * 1024,
-    )
-
-    label = task_display_label(task, request_id) if isinstance(task, dict) else (str(request_id or "").strip() or "-")
-    todo_id = str(task.get("todo_id", "")).strip() if isinstance(task, dict) else ""
-
-    verdict = ""
-    action = ""
-    reason = ""
-    if isinstance(task, dict) and isinstance(task.get("exec_critic"), dict):
-        ec = task.get("exec_critic") or {}
-        verdict = str(ec.get("verdict", "")).strip().lower()
-        action = str(ec.get("action", "")).strip().lower()
-        reason = str(ec.get("reason", "")).strip()
-
-    title = _room_autopublish_title(event)
-    prefix = f"[{project_alias}]"
-    if todo_id:
-        prefix = f"{prefix} {todo_id}"
-
-    extras: List[str] = []
-    if verdict:
-        extras.append(f"verdict={verdict}")
-    if action and action not in {"-", "none", "ok"}:
-        extras.append(f"action={action}")
-    if stage:
-        extras.append(f"stage={stage}")
-    if status:
-        extras.append(f"status={status}")
-    if error_code:
-        extras.append(f"error={error_code}")
-    extra_tail = (" (" + " ".join(extras) + ")") if extras else ""
-
-    text = f"{prefix} {title}: {label}{extra_tail}"
-    if event in {"exec_critic_blocked", "dispatch_failed"} and reason:
-        clipped_reason = reason if len(reason) <= 240 else (reason[:240] + "...")
-        text = text + f"\nreason: {clipped_reason}"
-    elif event == "exec_critic_retry" and detail:
-        clipped_detail = detail if len(detail) <= 240 else (detail[:240] + "...")
-        text = text + f"\nnext: {clipped_detail}"
-
-    if len(text) > max_chars:
-        text = text[: max_chars - 20] + " ...(truncated)"
-
-    append_room_event(
+    return room_runtime_mod.room_autopublish_event(
         team_dir=team_dir,
-        room=room,
-        event={
-            "ts": now_iso(),
-            "actor": "gateway",
-            "kind": "event",
-            "event": str(event),
-            "project": str(project),
-            "project_alias": project_alias,
-            "request_id": str(request_id),
-            "task_label": label,
-            "todo_id": todo_id,
-            "stage": str(stage),
-            "status": str(status),
-            "error_code": str(error_code),
-            "detail": str(detail),
-            "text": text,
-        },
-        max_file_bytes=max_file_bytes,
+        manager_state=manager_state,
+        chat_id=chat_id,
+        event=event,
+        project=project,
+        request_id=request_id,
+        task=task,
+        stage=stage,
+        status=status,
+        error_code=error_code,
+        detail=detail,
+        room_autopublish_enabled=room_autopublish_enabled,
+        project_alias_for_key=project_alias_for_key,
+        get_chat_room=get_chat_room,
+        normalize_room_token=normalize_room_token,
+        room_autopublish_route=room_autopublish_route,
+        int_from_env=int_from_env,
+        task_display_label=task_display_label,
+        append_room_event=append_room_event,
+        now_iso=now_iso,
+        default_room_name=DEFAULT_ROOM_NAME,
+        default_max_event_chars=DEFAULT_MAX_EVENT_CHARS,
+        default_max_file_bytes=DEFAULT_MAX_FILE_BYTES,
     )
 
 
