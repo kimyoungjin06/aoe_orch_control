@@ -29,6 +29,11 @@ from aoe_tg_command_handlers import (
     build_non_run_deps,
     handle_non_run_command_pipeline,
 )
+from aoe_tg_gateway_events import (
+    append_gateway_event_targets as gateway_append_gateway_event_targets,
+    log_gateway_event as gateway_log_gateway_event,
+    task_identifiers as gateway_task_identifiers,
+)
 from aoe_tg_message_flow import (
     RunTransitionState,
     apply_confirm_transition_to_resolved,
@@ -39,6 +44,7 @@ from aoe_tg_queue_engine import drain_peek_next_todo as queue_drain_peek_next_to
 from aoe_tg_runtime_core import (
     acquire_process_lock as runtime_acquire_process_lock,
     default_manager_state as runtime_default_manager_state,
+    ensure_default_project_registered as runtime_ensure_default_project_registered,
     resolve_project_root,
     resolve_state_file,
     resolve_team_dir,
@@ -2339,29 +2345,16 @@ def summarize_gateway_metrics(
 
 
 def task_identifiers(task: Optional[Dict[str, Any]]) -> Tuple[str, str]:
-    if not isinstance(task, dict):
-        return "", ""
-    short_id = str(task.get("short_id", "")).strip()
-    alias = str(task.get("alias", "")).strip()
-    return short_id, alias
+    return gateway_task_identifiers(task)
 
 
 def append_gateway_event_targets(*, team_dir: Path, row: Dict[str, Any], mirror_team_dir: Optional[Path] = None) -> None:
-    primary = Path(team_dir).expanduser().resolve()
-    payload = dict(row)
-    payload["log_scope"] = "project"
-    append_jsonl(primary / "logs" / "gateway_events.jsonl", payload)
-
-    if mirror_team_dir is None:
-        return
-    mirror = Path(mirror_team_dir).expanduser().resolve()
-    if mirror == primary:
-        return
-
-    mirror_row = dict(row)
-    mirror_row["log_scope"] = "mother"
-    mirror_row["project_team_dir"] = str(primary)
-    append_jsonl(mirror / "logs" / "gateway_events.jsonl", mirror_row)
+    return gateway_append_gateway_event_targets(
+        team_dir=team_dir,
+        row=row,
+        append_jsonl=append_jsonl,
+        mirror_team_dir=mirror_team_dir,
+    )
 
 
 def log_gateway_event(
@@ -2379,26 +2372,24 @@ def log_gateway_event(
     detail: str = "",
     mirror_team_dir: Optional[Path] = None,
 ) -> None:
-    short_id, alias = task_identifiers(task)
-    row: Dict[str, Any] = {
-        "timestamp": now_iso(),
-        "event": str(event or "").strip() or "event",
-        "trace_id": str(trace_id or "").strip(),
-        "project": str(project or "").strip(),
-        "request_id": str(request_id or "").strip(),
-        "task_short_id": short_id,
-        "task_alias": alias,
-        "stage": str(stage or "").strip(),
-        "actor": str(actor or "").strip() or "gateway",
-        "status": str(status or "").strip(),
-        "error_code": str(error_code or "").strip(),
-        "latency_ms": max(0, int(latency_ms or 0)),
-        "detail": mask_sensitive_text(str(detail or "").strip())[:800],
-    }
-    try:
-        append_gateway_event_targets(team_dir=team_dir, row=row, mirror_team_dir=mirror_team_dir)
-    except Exception:
-        return
+    return gateway_log_gateway_event(
+        team_dir=team_dir,
+        event=event,
+        now_iso=now_iso,
+        mask_sensitive_text=mask_sensitive_text,
+        append_gateway_event_targets=append_gateway_event_targets,
+        trace_id=trace_id,
+        project=project,
+        request_id=request_id,
+        task=task,
+        stage=stage,
+        actor=actor,
+        status=status,
+        error_code=error_code,
+        latency_ms=latency_ms,
+        detail=detail,
+        mirror_team_dir=mirror_team_dir,
+    )
 
 
 def classify_handler_error(err: Exception) -> Tuple[str, str, str]:
@@ -2451,68 +2442,18 @@ def format_error_message(error_code: str, user_message: str, next_step: str, det
 
 
 def ensure_default_project_registered(state: Dict[str, Any], project_root: Path, team_dir: Path) -> None:
-    chat_sessions = state.get("chat_sessions")
-    if not isinstance(chat_sessions, dict):
-        state["chat_sessions"] = {}
-
-    projects = state.setdefault("projects", {})
-    if not isinstance(projects, dict):
-        state["projects"] = {}
-        projects = state["projects"]
-
-    if "default" not in projects:
-        projects["default"] = {
-            "name": "default",
-            "display_name": "default",
-            "project_alias": "O1",
-            "project_root": str(project_root),
-            "team_dir": str(team_dir),
-            "overview": "",
-            "last_request_id": "",
-            "tasks": {},
-            "task_alias_index": {},
-            "task_seq": 0,
-            "todos": [],
-            "todo_seq": 0,
-            "system_project": True,
-            "ops_hidden": True,
-            "ops_hidden_reason": "internal fallback project",
-            "created_at": now_iso(),
-            "updated_at": now_iso(),
-        }
-
-    for entry in projects.values():
-        if isinstance(entry, dict):
-            if "tasks" not in entry or not isinstance(entry.get("tasks"), dict):
-                entry["tasks"] = {}
-            if "task_alias_index" not in entry or not isinstance(entry.get("task_alias_index"), dict):
-                entry["task_alias_index"] = {}
-            if "todos" not in entry or not isinstance(entry.get("todos"), list):
-                entry["todos"] = []
-            entry["project_alias"] = normalize_project_alias(str(entry.get("project_alias", "")))
-            entry["system_project"] = bool_from_json(entry.get("system_project"), str(entry.get("name", "")).strip().lower() == "default")
-            entry["ops_hidden"] = bool_from_json(entry.get("ops_hidden"), bool(entry.get("system_project")))
-            entry["ops_hidden_reason"] = str(entry.get("ops_hidden_reason", "")).strip()[:400]
-            try:
-                entry["task_seq"] = max(0, int(entry.get("task_seq", 0) or 0))
-            except Exception:
-                entry["task_seq"] = 0
-            try:
-                entry["todo_seq"] = max(0, int(entry.get("todo_seq", 0) or 0))
-            except Exception:
-                entry["todo_seq"] = 0
-            backfill_task_aliases(entry)
-
-    active = normalize_project_name(str(state.get("active", "default")))
-    if active not in projects:
-        state["active"] = "default"
-    project_lock = sanitize_project_lock_row(state.get("project_lock"), projects)
-    if project_lock:
-        state["project_lock"] = project_lock
-        state["active"] = str(project_lock.get("project_key", state.get("active", "default"))).strip() or "default"
-    else:
-        state.pop("project_lock", None)
-    ensure_project_aliases(state)
+    return runtime_ensure_default_project_registered(
+        state,
+        project_root,
+        team_dir,
+        now_iso=now_iso,
+        bool_from_json=bool_from_json,
+        normalize_project_alias=normalize_project_alias,
+        normalize_project_name=normalize_project_name,
+        sanitize_project_lock_row=sanitize_project_lock_row,
+        ensure_project_aliases=ensure_project_aliases,
+        backfill_task_aliases=backfill_task_aliases,
+    )
 
 
 def get_chat_sessions(state: Dict[str, Any]) -> Dict[str, Any]:

@@ -73,6 +73,83 @@ def default_manager_state(project_root: Path, team_dir: Path, *, now_iso: Callab
     }
 
 
+def ensure_default_project_registered(
+    state: Dict[str, Any],
+    project_root: Path,
+    team_dir: Path,
+    *,
+    now_iso: Callable[[], str],
+    bool_from_json: Callable[[Any, bool], bool],
+    normalize_project_alias: Callable[[str], str],
+    normalize_project_name: Callable[[str], str],
+    sanitize_project_lock_row: Callable[[Any, Dict[str, Any]], Dict[str, Any]],
+    ensure_project_aliases: Callable[[Dict[str, Any]], Any],
+    backfill_task_aliases: Callable[[Dict[str, Any]], Any],
+) -> None:
+    chat_sessions = state.get("chat_sessions")
+    if not isinstance(chat_sessions, dict):
+        state["chat_sessions"] = {}
+
+    projects = state.setdefault("projects", {})
+    if not isinstance(projects, dict):
+        state["projects"] = {}
+        projects = state["projects"]
+
+    if "default" not in projects:
+        projects["default"] = {
+            "name": "default",
+            "display_name": "default",
+            "project_alias": "O1",
+            "project_root": str(project_root),
+            "team_dir": str(team_dir),
+            "overview": "",
+            "last_request_id": "",
+            "tasks": {},
+            "task_alias_index": {},
+            "task_seq": 0,
+            "todos": [],
+            "todo_seq": 0,
+            "system_project": True,
+            "ops_hidden": True,
+            "ops_hidden_reason": "internal fallback project",
+            "created_at": now_iso(),
+            "updated_at": now_iso(),
+        }
+
+    for entry in projects.values():
+        if isinstance(entry, dict):
+            if "tasks" not in entry or not isinstance(entry.get("tasks"), dict):
+                entry["tasks"] = {}
+            if "task_alias_index" not in entry or not isinstance(entry.get("task_alias_index"), dict):
+                entry["task_alias_index"] = {}
+            if "todos" not in entry or not isinstance(entry.get("todos"), list):
+                entry["todos"] = []
+            entry["project_alias"] = normalize_project_alias(str(entry.get("project_alias", "")))
+            entry["system_project"] = bool_from_json(entry.get("system_project"), str(entry.get("name", "")).strip().lower() == "default")
+            entry["ops_hidden"] = bool_from_json(entry.get("ops_hidden"), bool(entry.get("system_project")))
+            entry["ops_hidden_reason"] = str(entry.get("ops_hidden_reason", "")).strip()[:400]
+            try:
+                entry["task_seq"] = max(0, int(entry.get("task_seq", 0) or 0))
+            except Exception:
+                entry["task_seq"] = 0
+            try:
+                entry["todo_seq"] = max(0, int(entry.get("todo_seq", 0) or 0))
+            except Exception:
+                entry["todo_seq"] = 0
+            backfill_task_aliases(entry)
+
+    active = normalize_project_name(str(state.get("active", "default")))
+    if active not in projects:
+        state["active"] = "default"
+    project_lock = sanitize_project_lock_row(state.get("project_lock"), projects)
+    if project_lock:
+        state["project_lock"] = project_lock
+        state["active"] = str(project_lock.get("project_key", state.get("active", "default"))).strip() or "default"
+    else:
+        state.pop("project_lock", None)
+    ensure_project_aliases(state)
+
+
 def save_manager_state(
     path: Path,
     state: Dict[str, Any],

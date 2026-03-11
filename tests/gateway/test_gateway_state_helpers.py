@@ -22,6 +22,7 @@ if str(GW_DIR) not in sys.path:
 
 import aoe_tg_command_resolver as resolver
 import aoe_tg_blocked_state as blocked_state
+import aoe_tg_gateway_events as gateway_events
 import aoe_tg_management_handlers as mgmt_handlers
 import aoe_tg_ops_policy as ops_policy
 import aoe_tg_ops_view as ops_view
@@ -1507,6 +1508,34 @@ def test_runtime_core_matches_gateway_path_and_default_state_helpers(tmp_path: P
     expected = runtime_core.default_manager_state(project_root, team_dir, now_iso=gw.now_iso)
     actual = gw.default_manager_state(project_root, team_dir)
     assert actual == expected
+
+
+def test_gateway_events_module_matches_gateway_task_identifiers() -> None:
+    task = {"short_id": "T-001", "alias": "demo"}
+    assert gw.task_identifiers(task) == gateway_events.task_identifiers(task)
+
+
+def test_runtime_core_matches_gateway_default_project_registration(tmp_path: Path) -> None:
+    state_a = {"active": "missing", "projects": {"demo": {"name": "demo", "project_alias": "O2"}}}
+    state_b = copy.deepcopy(state_a)
+    project_root = tmp_path
+    team_dir = tmp_path / ".aoe-team"
+
+    gw.ensure_default_project_registered(state_a, project_root, team_dir)
+    runtime_core.ensure_default_project_registered(
+        state_b,
+        project_root,
+        team_dir,
+        now_iso=gw.now_iso,
+        bool_from_json=gw.bool_from_json,
+        normalize_project_alias=gw.normalize_project_alias,
+        normalize_project_name=gw.normalize_project_name,
+        sanitize_project_lock_row=gw.sanitize_project_lock_row,
+        ensure_project_aliases=gw.ensure_project_aliases,
+        backfill_task_aliases=gw.backfill_task_aliases,
+    )
+
+    assert state_a == state_b
 
 
 def test_orch_map_reply_markup_contains_use_focus_status_todo_and_active_sync_actions() -> None:
