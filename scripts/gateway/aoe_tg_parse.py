@@ -220,9 +220,26 @@ def infer_natural_run_mode(prompt: str, default_mode: str = "dispatch") -> str:
         "explain",
         "help me",
     )
+    repo_action_markers = (
+        "푸시",
+        "push",
+        "커밋",
+        "commit",
+        "머지",
+        "merge",
+        "배포",
+        "deploy",
+        "반영",
+        "올려",
+        "날려",
+        "rebase",
+        "cherry-pick",
+    )
     dispatch_markers = (
         "구현",
         "수정",
+        "고쳐",
+        "고치",
         "작성",
         "설치",
         "삭제",
@@ -256,6 +273,7 @@ def infer_natural_run_mode(prompt: str, default_mode: str = "dispatch") -> str:
 
     direct_score = 0
     dispatch_score = 0
+    has_repo_action = any(marker in low for marker in repo_action_markers)
 
     if text.endswith("?"):
         direct_score += 2
@@ -263,12 +281,16 @@ def infer_natural_run_mode(prompt: str, default_mode: str = "dispatch") -> str:
         direct_score += 2
     if any(marker in low for marker in dispatch_markers):
         dispatch_score += 2
+    if has_repo_action:
+        dispatch_score += 3
 
     # Plain "check/report/status" requests are usually read/query intent.
     if any(marker in low for marker in ("확인", "상태", "리포트", "보고", "요약", "조회", "check", "status", "report", "summary")):
         direct_score += 1
 
     if base == "direct":
+        if has_repo_action:
+            return "dispatch"
         if dispatch_score >= 2 and dispatch_score > direct_score:
             return "dispatch"
         return "direct"
@@ -756,12 +778,19 @@ def parse_cli_message(text: str) -> Optional[Dict[str, Any]]:
             "force_mode": force_mode,
         }
 
-    if cmd in {"add-role", "addrole"}:
+    def _parse_add_role_args(
+        argv: List[str],
+        *,
+        forced_provider: Optional[str] = None,
+        default_launch: Optional[str] = None,
+    ) -> Dict[str, Any]:
         if not argv:
-            raise RuntimeError("usage: aoe add-role <Role> [--provider <name>] [--launch <cmd>] [--spawn|--no-spawn]")
+            if forced_provider:
+                raise RuntimeError(f"usage: aoe add-{forced_provider} <Role|--name Name> [--launch <cmd>] [--spawn|--no-spawn]")
+            raise RuntimeError("usage: aoe add-role <Role|--name Name> [--provider <name>] [--launch <cmd>] [--spawn|--no-spawn]")
 
         role = ""
-        provider: Optional[str] = None
+        provider: Optional[str] = forced_provider
         launch: Optional[str] = None
         spawn = True
 
@@ -772,12 +801,24 @@ def parse_cli_message(text: str) -> Optional[Dict[str, Any]]:
                 i += 1
                 if i >= len(argv):
                     raise RuntimeError("usage: --provider <name>")
-                provider = argv[i].strip()
+                candidate = argv[i].strip()
+                if forced_provider and candidate and candidate.lower() != forced_provider:
+                    raise RuntimeError(f"usage: aoe add-{forced_provider} <Role> [--launch <cmd>] [--spawn|--no-spawn]")
+                provider = candidate
             elif tok == "--launch":
                 i += 1
                 if i >= len(argv):
                     raise RuntimeError("usage: --launch <command>")
                 launch = argv[i]
+            elif tok == "--name":
+                i += 1
+                if i >= len(argv):
+                    raise RuntimeError("usage: --name <Role>")
+                if role:
+                    if forced_provider:
+                        raise RuntimeError(f"usage: aoe add-{forced_provider} <Role|--name Name> [--launch <cmd>] [--spawn|--no-spawn]")
+                    raise RuntimeError("usage: aoe add-role <Role|--name Name> [--provider <name>] [--launch <cmd>] [--spawn|--no-spawn]")
+                role = argv[i].strip()
             elif tok == "--spawn":
                 spawn = True
             elif tok == "--no-spawn":
@@ -786,12 +827,21 @@ def parse_cli_message(text: str) -> Optional[Dict[str, Any]]:
                 raise RuntimeError(f"unknown option: {tok}")
             else:
                 if role:
-                    raise RuntimeError("usage: aoe add-role <Role> [options]")
+                    if forced_provider:
+                        raise RuntimeError(f"usage: aoe add-{forced_provider} <Role|--name Name> [--launch <cmd>] [--spawn|--no-spawn]")
+                    raise RuntimeError("usage: aoe add-role <Role|--name Name> [options]")
                 role = tok.strip()
             i += 1
 
         if not role:
-            raise RuntimeError("usage: aoe add-role <Role> [--provider <name>] [--launch <cmd>] [--spawn|--no-spawn]")
+            if forced_provider:
+                raise RuntimeError(f"usage: aoe add-{forced_provider} <Role|--name Name> [--launch <cmd>] [--spawn|--no-spawn]")
+            raise RuntimeError("usage: aoe add-role <Role|--name Name> [--provider <name>] [--launch <cmd>] [--spawn|--no-spawn]")
+
+        if not provider and forced_provider:
+            provider = forced_provider
+        if not launch and default_launch:
+            launch = default_launch
 
         return {
             "cmd": "add-role",
@@ -800,6 +850,18 @@ def parse_cli_message(text: str) -> Optional[Dict[str, Any]]:
             "launch": launch,
             "spawn": spawn,
         }
+
+    if cmd in {"add-role", "addrole"}:
+        return _parse_add_role_args(argv)
+
+    if cmd in {"add-claude", "addclaude"}:
+        return _parse_add_role_args(argv, forced_provider="claude", default_launch="claude")
+
+    if cmd in {"add-codex", "addcodex"}:
+        return _parse_add_role_args(argv, forced_provider="codex", default_launch="codex")
+
+    if cmd in {"add-shell", "addshell"}:
+        return _parse_add_role_args(argv, forced_provider="shell", default_launch="bash -l")
 
     if cmd == "role":
         if not argv:
