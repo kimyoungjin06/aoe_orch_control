@@ -492,6 +492,17 @@ def _handle_offdesk_command(
             note_rows = list(row.get("notes") or [])
             for note in note_rows[:2]:
                 lines.append(f"  note: {note}")
+            proposal_triage = row.get("proposal_triage") if isinstance(row.get("proposal_triage"), dict) else {}
+            if int(proposal_triage.get("open_count", 0) or 0) > 0:
+                lines.append(
+                    "  proposal_triage: priorities={priorities} | kinds={kinds}".format(
+                        priorities=str(proposal_triage.get("priority_summary", "-")).strip() or "-",
+                        kinds=str(proposal_triage.get("kind_summary", "-")).strip() or "-",
+                    )
+                )
+                top_summary = str(proposal_triage.get("top_summary", "")).strip()
+                if top_summary:
+                    lines.append(f"  proposal_top: {top_summary}")
             lines.append(f"  do: {', '.join(actions)}")
 
         lines.extend(["", "next:", "- resolve flagged items, then /offdesk on", "- /offdesk prepare"])

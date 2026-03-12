@@ -8742,6 +8742,108 @@ def test_offdesk_prepare_reply_markup_includes_flagged_project_drilldowns(tmp_pa
     assert "/help" in buttons
 
 
+def test_offdesk_prepare_includes_proposal_triage_summary(tmp_path: Path) -> None:
+    state = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+
+    project_root = tmp_path / "Nano"
+    team_dir = project_root / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (project_root / "TODO.md").write_text("# Tasks\n- [ ] current task\n", encoding="utf-8")
+    (team_dir / "AOE_TODO.md").write_text("@include ../TODO.md\n", encoding="utf-8")
+    (team_dir / "orchestrator.json").write_text("{}", encoding="utf-8")
+    state["projects"]["nano"] = {
+        "name": "nano",
+        "display_name": "Nano",
+        "project_alias": "O3",
+        "project_root": str(project_root),
+        "team_dir": str(team_dir),
+        "runtime_ready": True,
+        "todos": [
+            {"id": "TODO-001", "summary": "current task", "priority": "P1", "status": "open"},
+        ],
+        "todo_proposals": [
+            {
+                "id": "PROP-001",
+                "summary": "prepare handoff summary for owner review",
+                "priority": "P1",
+                "kind": "handoff",
+                "confidence": 0.92,
+                "status": "open",
+            },
+            {
+                "id": "PROP-002",
+                "summary": "capture residual risk note for benchmark drift",
+                "priority": "P2",
+                "kind": "risk",
+                "confidence": 0.71,
+                "status": "open",
+            },
+        ],
+        "last_sync_at": "2026-03-12T20:00:00+0900",
+        "last_sync_mode": "scenario",
+        "last_sync_candidate_classes": {"scenario": 4},
+        "last_sync_candidate_doc_types": {"todo": 4},
+    }
+
+    body, _markup = _call_management_status_with_markup(
+        tmp_path=tmp_path,
+        manager_state=state,
+        cmd="offdesk",
+        rest="prepare O3",
+    )
+
+    assert "proposal_triage: priorities=P1=1, P2=1 | kinds=handoff=1, risk=1" in body
+    assert "proposal_top: PROP-001[P1 handoff 0.92] prepare handoff summary for owner review" in body
+    assert "PROP-002[P2 risk 0.71] capture residual risk note for benchmark drift" in body
+    assert "high-priority proposals pending review (P1=1, P2=1)" in body
+
+
+def test_offdesk_review_includes_proposal_triage_summary(tmp_path: Path) -> None:
+    state = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+
+    project_root = tmp_path / "LocalMap"
+    team_dir = project_root / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (project_root / "TODO.md").write_text("# Tasks\n- [ ] current task\n", encoding="utf-8")
+    (team_dir / "AOE_TODO.md").write_text("@include ../TODO.md\n", encoding="utf-8")
+    (team_dir / "orchestrator.json").write_text("{}", encoding="utf-8")
+    state["projects"]["localmap"] = {
+        "name": "localmap",
+        "display_name": "LocalMap",
+        "project_alias": "O4",
+        "project_root": str(project_root),
+        "team_dir": str(team_dir),
+        "runtime_ready": True,
+        "todos": [
+            {"id": "TODO-001", "summary": "current task", "priority": "P1", "status": "open"},
+        ],
+        "todo_proposals": [
+            {
+                "id": "PROP-001",
+                "summary": "draft publish-ready caption set for map panels",
+                "priority": "P2",
+                "kind": "handoff",
+                "confidence": 0.88,
+                "status": "open",
+            }
+        ],
+        "last_sync_at": "2026-03-12T20:00:00+0900",
+        "last_sync_mode": "scenario",
+        "last_sync_candidate_classes": {"scenario": 5},
+        "last_sync_candidate_doc_types": {"todo": 5},
+    }
+
+    body, _markup = _call_management_status_with_markup(
+        tmp_path=tmp_path,
+        manager_state=state,
+        cmd="offdesk",
+        rest="review O4",
+    )
+
+    assert "proposal_triage: priorities=P2=1 | kinds=handoff=1" in body
+    assert "proposal_top: PROP-001[P2 handoff 0.88] draft publish-ready caption set for map panels" in body
+
+
 def test_offdesk_prepare_reply_markup_includes_clean_actions(tmp_path: Path) -> None:
     state = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
 

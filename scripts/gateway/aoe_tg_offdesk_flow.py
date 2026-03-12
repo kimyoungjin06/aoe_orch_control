@@ -23,7 +23,13 @@ from aoe_tg_ops_view import (
 from aoe_tg_package_paths import team_tmux_script
 from aoe_tg_project_runtime import project_runtime_issue, project_runtime_label
 from aoe_tg_task_view import task_display_label
-from aoe_tg_todo_state import preview_syncback_plan
+from aoe_tg_todo_policy import (
+    normalize_proposal_kind,
+    normalize_proposal_priority,
+    priority_rank,
+    proposal_confidence,
+)
+from aoe_tg_todo_state import preview_syncback_plan, sorted_open_proposals
 
 
 def cmd_prefix() -> str:
@@ -130,6 +136,76 @@ def _sync_quality_snapshot(entry: Dict[str, Any]) -> Dict[str, Any]:
         "candidate_doc_types": doc_types,
         "classes_summary": _sync_counter_summary(classes),
         "doc_types_summary": _sync_counter_summary(doc_types),
+    }
+
+
+def _proposal_counter_summary(raw: Dict[str, int], *, order: Callable[[str], Any] | None = None) -> str:
+    if not raw:
+        return "-"
+    rows = list(raw.items())
+    if callable(order):
+        rows.sort(key=lambda kv: (order(kv[0]), kv[0]))
+    else:
+        rows.sort(key=lambda kv: (-kv[1], kv[0]))
+    return ", ".join(f"{key}={count}" for key, count in rows[:4])
+
+
+def _proposal_triage_snapshot(entry: Dict[str, Any]) -> Dict[str, Any]:
+    proposals = entry.get("todo_proposals") if isinstance(entry.get("todo_proposals"), list) else []
+    open_rows = sorted_open_proposals(proposals)
+    if not open_rows:
+        return {
+            "open_count": 0,
+            "priority_counts": {},
+            "kind_counts": {},
+            "priority_summary": "-",
+            "kind_summary": "-",
+            "top_rows": [],
+            "top_summary": "-",
+            "high_priority": False,
+        }
+
+    priority_counts: Dict[str, int] = {}
+    kind_counts: Dict[str, int] = {}
+    top_rows: List[Dict[str, Any]] = []
+    for row in open_rows:
+        pr = normalize_proposal_priority(row.get("priority", "P2"))
+        kind = normalize_proposal_kind(row.get("kind", "followup"))
+        priority_counts[pr] = int(priority_counts.get(pr, 0)) + 1
+        kind_counts[kind] = int(kind_counts.get(kind, 0)) + 1
+    for row in open_rows[:2]:
+        summary = " ".join(str(row.get("summary", "")).strip().split())
+        if len(summary) > 72:
+            summary = summary[:69].rstrip() + "..."
+        top_rows.append(
+            {
+                "id": str(row.get("id", "")).strip() or "-",
+                "priority": normalize_proposal_priority(row.get("priority", "P2")),
+                "kind": normalize_proposal_kind(row.get("kind", "followup")),
+                "confidence": proposal_confidence(row.get("confidence", 0.0)),
+                "summary": summary or "-",
+            }
+        )
+    top_summary_parts = []
+    for row in top_rows:
+        top_summary_parts.append(
+            "{pid}[{priority} {kind} {conf:.2f}] {summary}".format(
+                pid=row["id"],
+                priority=row["priority"],
+                kind=row["kind"],
+                conf=float(row["confidence"]),
+                summary=row["summary"],
+            )
+        )
+    return {
+        "open_count": len(open_rows),
+        "priority_counts": priority_counts,
+        "kind_counts": kind_counts,
+        "priority_summary": _proposal_counter_summary(priority_counts, order=priority_rank),
+        "kind_summary": _proposal_counter_summary(kind_counts),
+        "top_rows": top_rows,
+        "top_summary": " || ".join(top_summary_parts) if top_summary_parts else "-",
+        "high_priority": bool(priority_counts.get("P1", 0)),
     }
 
 
@@ -436,6 +512,7 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
     last_sync_at = str(entry.get("last_sync_at", "")).strip()
     last_sync_disp = compact_age_label(last_sync_at)
     sync_quality = _sync_quality_snapshot(entry)
+    proposal_triage = _proposal_triage_snapshot(entry)
     latest_task = _latest_task_snapshot(entry)
     last_sync_dt = parse_iso_datetime(last_sync_at)
     sync_stale = False
@@ -479,6 +556,8 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
     if open_proposals > 0:
         status = "warn" if status == "ready" else status
         notes.append(f"open todo proposals pending review ({open_proposals})")
+        if bool(proposal_triage.get("high_priority", False)):
+            notes.append(f"high-priority proposals pending review ({proposal_triage.get('priority_summary', '-')})")
     if syncback_pending:
         status = "warn" if status == "ready" else status
         notes.append(
@@ -515,6 +594,7 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
         f"  canonical: {canonical_rel if canonical_exists else 'missing TODO.md'}",
         f"  scenario_include: {include_display}",
         f"  queue: open={counts['open']} running={counts['running']} blocked={counts['blocked']} followup={manual_followup_count} pending={'yes' if pending_flag else 'no'} proposals={open_proposals}",
+        f"  proposal_triage: priorities={proposal_triage.get('priority_summary', '-')} | kinds={proposal_triage.get('kind_summary', '-')}",
         f"  syncback: done={syncback_counts['done']} reopen={syncback_counts['reopen']} append={syncback_counts['append']} blocked_notes={syncback_counts['blocked']}",
         f"  last_sync: {last_sync_mode} {last_sync_disp}".rstrip(),
         "  sync_source: "
@@ -522,6 +602,8 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
         f"classes={sync_quality.get('classes_summary', '-')} "
         f"doc_types={sync_quality.get('doc_types_summary', '-')}".rstrip(),
     ]
+    if int(proposal_triage.get("open_count", 0) or 0) > 0:
+        lines.append(f"  proposal_top: {proposal_triage.get('top_summary', '-')}")
     if latest_task:
         lane_parts = [f"lanes E{int(latest_task.get('execution_lane_count', 0) or 0)}/R{int(latest_task.get('review_lane_count', 0) or 0)}"]
         exec_summary_disp = _compact_counter_summary(latest_task.get("execution_summary"))
@@ -578,6 +660,7 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
         "blocked_count": counts["blocked"],
         "followup_count": manual_followup_count,
         "proposals": open_proposals,
+        "proposal_triage": dict(proposal_triage),
         "syncback_pending": syncback_pending,
         "syncback_counts": dict(syncback_counts),
         "pending_flag": pending_flag,
@@ -651,7 +734,8 @@ def offdesk_review_reply_markup(flagged: List[Dict[str, Any]], *, clean: bool = 
             seen.add(text)
             deduped_secondary.append(btn)
         if deduped_secondary:
-            keyboard.append(deduped_secondary[:3])
+            for idx in range(0, len(deduped_secondary), 3):
+                keyboard.append(deduped_secondary[idx : idx + 3])
         if tertiary:
             keyboard.append(tertiary[:3])
 
@@ -712,7 +796,8 @@ def offdesk_prepare_reply_markup(
         secondary.append({"text": f"/sync preview {alias} 24h"})
         secondary.append({"text": f"/orch status {alias}"})
         secondary.append({"text": f"/todo {alias}"})
-        keyboard.append(secondary[:3])
+        for idx in range(0, len(secondary), 3):
+            keyboard.append(secondary[idx : idx + 3])
         if tertiary:
             keyboard.append(tertiary[:3])
 
