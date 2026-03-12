@@ -23,6 +23,7 @@ from aoe_tg_ops_view import (
 from aoe_tg_package_paths import team_tmux_script
 from aoe_tg_project_runtime import project_runtime_issue, project_runtime_label
 from aoe_tg_task_view import task_display_label
+from aoe_tg_task_state import task_lane_target_snapshot, task_priority_action_snapshot
 from aoe_tg_todo_policy import (
     normalize_proposal_kind,
     normalize_proposal_priority,
@@ -214,6 +215,7 @@ def _priority_action_snapshot(
     alias: str,
     active_task_label: str,
     active_task_tf_phase: str,
+    active_task_targets: Optional[Dict[str, List[str]]] = None,
     syncback_pending: bool,
     followup_count: int,
     proposal_count: int,
@@ -222,16 +224,16 @@ def _priority_action_snapshot(
     open_count: int,
     sync_quality_warn: bool,
 ) -> Dict[str, str]:
-    if active_task_label and active_task_tf_phase in {"needs_retry", "critic_review"}:
-        return {
-            "action": f"/retry {active_task_label}",
-            "reason": f"active task requires retry ({active_task_tf_phase})",
-        }
-    if active_task_label and active_task_tf_phase in {"manual_intervention", "blocked"}:
-        return {
-            "action": f"/task {active_task_label}",
-            "reason": f"active task requires operator review ({active_task_tf_phase})",
-        }
+    task_priority = task_priority_action_snapshot(
+        label=active_task_label,
+        tf_phase=active_task_tf_phase,
+        rerun_execution_lane_ids=list((active_task_targets or {}).get("rerun_execution_lane_ids") or []),
+        rerun_review_lane_ids=list((active_task_targets or {}).get("rerun_review_lane_ids") or []),
+        manual_followup_execution_lane_ids=list((active_task_targets or {}).get("manual_followup_execution_lane_ids") or []),
+        manual_followup_review_lane_ids=list((active_task_targets or {}).get("manual_followup_review_lane_ids") or []),
+    )
+    if str(task_priority.get("action", "")).strip():
+        return task_priority
     if syncback_pending:
         return {
             "action": f"/todo {alias} syncback preview",
@@ -339,11 +341,11 @@ def _latest_task_snapshot(entry: Dict[str, Any]) -> Dict[str, Any]:
     exec_summary = lane_summary.get("execution") if isinstance(lane_summary.get("execution"), dict) else {}
     review_summary = lane_summary.get("review") if isinstance(lane_summary.get("review"), dict) else {}
     review_verdicts = lane_summary.get("review_verdicts") if isinstance(lane_summary.get("review_verdicts"), dict) else {}
-    exec_critic = best_task.get("exec_critic") if isinstance(best_task.get("exec_critic"), dict) else {}
-    rerun_exec = [str(x).strip() for x in (exec_critic.get("rerun_execution_lane_ids") or []) if str(x).strip()]
-    rerun_review = [str(x).strip() for x in (exec_critic.get("rerun_review_lane_ids") or []) if str(x).strip()]
-    manual_exec = [str(x).strip() for x in (exec_critic.get("manual_followup_execution_lane_ids") or []) if str(x).strip()]
-    manual_review = [str(x).strip() for x in (exec_critic.get("manual_followup_review_lane_ids") or []) if str(x).strip()]
+    lane_targets = task_lane_target_snapshot(best_task)
+    rerun_exec = list(lane_targets.get("rerun_execution_lane_ids") or [])
+    rerun_review = list(lane_targets.get("rerun_review_lane_ids") or [])
+    manual_exec = list(lane_targets.get("manual_followup_execution_lane_ids") or [])
+    manual_review = list(lane_targets.get("manual_followup_review_lane_ids") or [])
     return {
         "request_id": best_req,
         "label": label,
@@ -358,6 +360,7 @@ def _latest_task_snapshot(entry: Dict[str, Any]) -> Dict[str, Any]:
         "rerun_review_lane_ids": rerun_review,
         "manual_followup_execution_lane_ids": manual_exec,
         "manual_followup_review_lane_ids": manual_review,
+        "lane_targets": lane_targets,
     }
 
 
@@ -701,6 +704,7 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
         alias=alias,
         active_task_label=str(latest_task.get("label", "")).strip(),
         active_task_tf_phase=task_tf_phase,
+        active_task_targets=latest_task.get("lane_targets") if isinstance(latest_task.get("lane_targets"), dict) else None,
         syncback_pending=syncback_pending,
         followup_count=manual_followup_count,
         proposal_count=open_proposals,

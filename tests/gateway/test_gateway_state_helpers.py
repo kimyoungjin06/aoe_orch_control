@@ -2441,6 +2441,10 @@ def test_task_monitor_includes_lane_rerun_and_followup_targets() -> None:
         lifecycle_stages=gw.LIFECYCLE_STAGES,
     )
     assert "{rerun E:L2 R:R1 | followup E:L3 R:-}" in summary
+    assert (
+        "first: /retry T-001 | collect-data-write-memo | active task requires retry (needs_retry) "
+        "target execution=L2; review=R1"
+    ) in summary
 
 
 def test_task_state_sanitize_task_record_matches_gateway(monkeypatch) -> None:
