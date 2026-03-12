@@ -347,24 +347,24 @@ def _source_confidence_for(mode: str, doc_type: str) -> float:
     dtype = str(doc_type or "").strip()
     if token == "salvage_docs":
         return {
-            "handoff": 0.84,
-            "report": 0.58,
-            "spec": 0.56,
+            "handoff": 0.86,
+            "report": 0.72,
+            "spec": 0.60,
             "manuscript": 0.52,
-            "note": 0.78,
-            "research_note": 0.78,
-            "doc": 0.78,
-        }.get(dtype, 0.78)
+            "note": 0.64,
+            "research_note": 0.68,
+            "doc": 0.62,
+        }.get(dtype, 0.62)
     if token == "recent_docs":
         return {
-            "handoff": 0.80,
-            "report": 0.60,
+            "handoff": 0.82,
+            "report": 0.70,
             "spec": 0.58,
-            "manuscript": 0.54,
-            "note": 0.74,
-            "research_note": 0.74,
-            "doc": 0.74,
-        }.get(dtype, 0.74)
+            "manuscript": 0.50,
+            "note": 0.60,
+            "research_note": 0.64,
+            "doc": 0.58,
+        }.get(dtype, 0.58)
     return 0.60
 
 
@@ -438,6 +438,25 @@ def _attach_item_provenance(
         out["source_reason"] = reason[:80]
     if line_no > 0:
         out["source_line"] = line_no
+    return out
+
+
+def _promote_explicit_todo_marker_confidence(info: Dict[str, Any], text: str) -> Dict[str, Any]:
+    out = dict(info or {})
+    source_class = str(out.get("source_class", "")).strip()
+    if source_class not in {"recent_doc", "salvage_doc", "doc"}:
+        return out
+    if not _doc_has_todo_markers(text):
+        return out
+    try:
+        current = float(out.get("confidence", 0.0) or 0.0)
+    except Exception:
+        current = 0.0
+    boosted = max(current, 0.76)
+    if boosted > current:
+        out["confidence"] = boosted
+        if not str(out.get("policy_reason", "")).strip():
+            out["policy_reason"] = "todo_markers"
     return out
 
 def _tag_sync_items(items: List[Dict[str, Any]], *, rel: str, info: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -1302,6 +1321,7 @@ def _discover_recent_doc_todos(
                 preview.append(f"{rel} -> skipped:no-todo-marker")
             continue
         info = _apply_sync_policy(_classify_sync_source(path, root, mode="recent_docs"), rel=rel, policy=sync_policy)
+        info = _promote_explicit_todo_marker_confidence(info, text)
         if not _sync_candidate_allowed(info):
             if len(preview) < 12:
                 reason = str(info.get("policy_reason", "")).strip()
@@ -1385,6 +1405,7 @@ def _discover_salvage_doc_todos(
                 preview.append(f"{rel} -> skipped:read-failed")
             continue
         info = _apply_sync_policy(_classify_sync_source(path, root, mode="salvage_docs"), rel=rel, policy=sync_policy)
+        info = _promote_explicit_todo_marker_confidence(info, text)
         if not _sync_candidate_allowed(info):
             if len(preview) < 12:
                 reason = str(info.get("policy_reason", "")).strip()

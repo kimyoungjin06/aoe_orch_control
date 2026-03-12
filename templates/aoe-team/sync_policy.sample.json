@@ -11,9 +11,9 @@
     "todo_file": 0.92
   },
   "doc_type_confidence": {
-    "handoff": 0.84,
-    "report": 0.58,
-    "spec": 0.56,
+    "handoff": 0.86,
+    "report": 0.72,
+    "spec": 0.60,
     "manuscript": 0.52
   },
   "group_overrides": {
