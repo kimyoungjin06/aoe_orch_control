@@ -686,6 +686,49 @@ def test_sync_falls_back_to_recent_docs_when_scenario_is_empty(tmp_path: Path) -
 
 
 @pytest.mark.smoke
+def test_sync_bootstrap_uses_explicit_bootstrap_mode(tmp_path: Path) -> None:
+    state = _base_state(chat_id="test", session_patch={"default_mode": "direct"})
+    projects = state.get("projects") or {}
+    assert isinstance(projects, dict)
+    default = projects.get("default") or {}
+    assert isinstance(default, dict)
+    default["project_alias"] = "O1"
+
+    proj_root = tmp_path / "proj_root"
+    docs_dir = proj_root / "docs"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    team_dir = proj_root / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    default["project_root"] = str(proj_root)
+    default["team_dir"] = str(team_dir)
+
+    (docs_dir / "night-handoff.md").write_text(
+        "# Handoff\n\n"
+        "## Next steps\n"
+        "- P1: bootstrap the overnight backlog from handoff docs\n",
+        encoding="utf-8",
+    )
+    (proj_root / "TODO.md").write_text(
+        "# TODO\n\n- [ ] P2: sync the canonical todo file during bootstrap\n",
+        encoding="utf-8",
+    )
+
+    state_file = tmp_path / "manager_state.json"
+    state_file.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    out = _run_gateway(
+        simulate_text="/sync bootstrap",
+        extra_args=["--manager-state-file", str(state_file)],
+    )
+
+    assert "sync finished" in out
+    assert "- mode: bootstrap_docs" in out
+    assert "- docs_per_project:" in out
+    assert "- files_per_project:" in out
+    assert "- parsed: 2" in out
+    assert "- added: 2" in out
+
+
+@pytest.mark.smoke
 def test_sync_recent_imports_from_project_docs(tmp_path: Path) -> None:
     state = _base_state(chat_id="test", session_patch={"default_mode": "direct"})
     projects = state.get("projects") or {}

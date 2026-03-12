@@ -115,7 +115,7 @@ def _sync_quality_snapshot(entry: Dict[str, Any]) -> Dict[str, Any]:
         quality = "never"
     elif mode == "scenario" and has_backlog_docs and not non_backlog_docs:
         quality = "canonical"
-    elif ("fallback:" in mode) or mode in {"recent_docs", "salvage_docs", "todo_files"}:
+    elif ("fallback:" in mode) or mode in {"recent_docs", "salvage_docs", "bootstrap_docs", "todo_files"}:
         quality = "discovery"
         warn = True
         note = f"last sync used non-canonical discovery mode ({mode})"

@@ -422,7 +422,7 @@ def _build_sync_diagnostics(
                 "recent source produced only completed rows; widen the time window or point AOE_TODO.md at a canonical next-step backlog before off-desk execution"
             )
 
-    if source_mode.endswith(":bootstrap"):
+    if source_mode == "bootstrap_docs" or source_mode.endswith(":bootstrap"):
         notes.append("bootstrap mode merged recent docs, salvage sections, and todo files; review source provenance before using replace/prune")
 
     return notes[:4]
@@ -697,15 +697,18 @@ def handle_scheduler_command(
             if head in {"recent", "docs", "scan"}:
                 mode = "recent_docs"
                 tokens = tokens[1:]
-            elif head in {"salvage", "bootstrap", "recover"}:
+            elif head in {"salvage"}:
                 mode = "salvage_docs"
+                tokens = tokens[1:]
+            elif head in {"bootstrap", "recover"}:
+                mode = "bootstrap_docs"
                 tokens = tokens[1:]
             elif head in {"files", "todo-files", "todofiles"}:
                 mode = "todo_files"
                 tokens = tokens[1:]
 
         docs_limit = _DISCOVERY_DEFAULT_DOCS_LIMIT
-        if mode in {"recent_docs", "salvage_docs"} and tokens and tokens[-1].isdigit():
+        if mode in {"recent_docs", "salvage_docs", "bootstrap_docs"} and tokens and tokens[-1].isdigit():
             docs_limit = max(1, min(50, int(tokens[-1])))
             tokens = tokens[:-1]
 
@@ -714,11 +717,13 @@ def handle_scheduler_command(
             files_limit = max(1, min(400, int(tokens[-1])))
             tokens = tokens[:-1]
 
-        if prune_missing and (mode in {"recent_docs", "salvage_docs"} or since_seconds > 0):
+        if prune_missing and (mode in {"recent_docs", "salvage_docs", "bootstrap_docs"} or since_seconds > 0):
             if mode == "recent_docs":
                 detail = "recent_docs mode"
             elif mode == "salvage_docs":
                 detail = "salvage_docs mode"
+            elif mode == "bootstrap_docs":
+                detail = "bootstrap_docs mode"
             else:
                 detail = f"since {since_label or 'window'}"
             send(
@@ -1082,6 +1087,23 @@ def handle_scheduler_command(
                     inspect_lines.extend([str(line) for line in (meta.get("preview") or [])[:8]])
                     total["docs_used"] += int(meta.get("docs_used", 0) or 0)
                     total["docs_scanned"] += int(meta.get("scanned", 0) or 0)
+                elif mode == "bootstrap_docs":
+                    fallback_mode, items, meta, sources = _discover_sync_fallback_todos(
+                        project_root=project_root,
+                        docs_limit=max(docs_limit, 5),
+                        files_limit=files_limit,
+                        max_bytes=_DISCOVERY_DEFAULT_MAX_BYTES,
+                        min_mtime=min_mtime,
+                        sync_policy=sync_policy,
+                    )
+                    source_mode = "bootstrap_docs"
+                    if fallback_mode:
+                        source_mode = f"bootstrap_docs:{fallback_mode}"
+                    inspect_lines.extend([str(line) for line in (meta.get("preview") or [])[:8]])
+                    total["docs_used"] += int(meta.get("docs_used", 0) or 0)
+                    total["docs_scanned"] += int(meta.get("docs_scanned", 0) or 0)
+                    total["files_used"] += int(meta.get("files_used", 0) or 0)
+                    total["files_scanned"] += int(meta.get("files_scanned", 0) or 0)
                 else:
                     items, meta, sources = _discover_todo_file_todos(
                         project_root=project_root,
@@ -1152,7 +1174,7 @@ def handle_scheduler_command(
                         best_by_summary[skey] = row
                 items = list(best_by_summary.values())
 
-            if mode == "salvage_docs" or str(source_mode or "").endswith(":salvage") or str(source_mode or "").startswith("fallback:bootstrap"):
+            if mode in {"salvage_docs", "bootstrap_docs"} or str(source_mode or "").endswith(":salvage") or str(source_mode or "").startswith("fallback:bootstrap"):
                 proposal_payloads, proposal_meta, proposal_sources = _discover_salvage_doc_proposals(
                     project_root=project_root,
                     docs_limit=max(docs_limit, 5),
@@ -1172,11 +1194,11 @@ def handle_scheduler_command(
                 else:
                     per_project_lines.append(f"- {key}: include_warn {short}")
 
-            if mode == "salvage_docs" and (not items) and (not proposal_payloads):
+            if mode in {"salvage_docs", "bootstrap_docs"} and (not items) and (not proposal_payloads):
                 total["missing"] += 1
                 diagnosis_lines = _build_sync_diagnostics(
                     mode=mode,
-                    source_mode="salvage_docs",
+                    source_mode=str(source_mode or mode),
                     key=key,
                     alias=alias,
                     policy_path=policy_path,
@@ -1190,16 +1212,20 @@ def handle_scheduler_command(
                     sync_meta_changed = _stamp_sync_meta(
                         entry,
                         at=sync_mark_at,
-                        mode="salvage_docs",
+                        mode=str(source_mode or mode),
                         candidate_classes={},
                         candidate_doc_types={},
                     ) or sync_meta_changed
                 if preview:
                     block = [
                         f"- {alias} {display} ({key})",
-                        "  mode: salvage_docs",
+                        f"  mode: {source_mode or mode}",
                         f"  root: {project_root}",
-                        "  result: no salvage todo docs found",
+                        (
+                            "  result: no salvage todo docs found"
+                            if mode == "salvage_docs"
+                            else "  result: no bootstrap backlog candidates found"
+                        ),
                     ]
                     if inspect_lines:
                         block.append("  inspected:")
@@ -1215,7 +1241,10 @@ def handle_scheduler_command(
                             block.append(f"    - {line}")
                     preview_blocks.append("\n".join(block))
                 else:
-                    per_project_lines.append(f"- {key}: no salvage todo docs found")
+                    if mode == "salvage_docs":
+                        per_project_lines.append(f"- {key}: no salvage todo docs found")
+                    else:
+                        per_project_lines.append(f"- {key}: no bootstrap backlog candidates found")
                     for note in diagnosis_lines[:2]:
                         per_project_lines.append(f"  diag: {note}")
                 continue
@@ -1369,6 +1398,12 @@ def handle_scheduler_command(
                     block.append(
                         f"  discovery: docs_used={meta.get('docs_used', 0)}/{docs_limit} scanned={meta.get('scanned', 0)}"
                     )
+                elif mode == "bootstrap_docs":
+                    block.append(
+                        f"  discovery: docs_used={meta.get('docs_used', 0)}/{max(docs_limit, 5)} "
+                        f"docs_scanned={meta.get('docs_scanned', 0)} "
+                        f"files_used={meta.get('files_used', 0)} files_scanned={meta.get('files_scanned', 0)}"
+                    )
                 elif mode == "todo_files":
                     block.append(
                         f"  discovery: files_used={meta.get('files_used', 0)}/{files_limit} scanned={meta.get('scanned', 0)}"
@@ -1466,6 +1501,21 @@ def handle_scheduler_command(
                             + (f" src={src}" if src else "")
                         ).strip()
                     )
+                elif mode == "bootstrap_docs":
+                    per_project_lines.append(
+                        (
+                            f"- {key}: docs={meta.get('docs_used', 0)}/{max(docs_limit, 5)} "
+                            f"docs_scanned={meta.get('docs_scanned', 0)} "
+                            f"files={meta.get('files_used', 0)}/{files_limit} "
+                            f"files_scanned={meta.get('files_scanned', 0)} "
+                            f"parsed={counts.get('parsed', 0)} added={counts.get('added', 0)} "
+                            f"updated={counts.get('updated', 0)} done={counts.get('done', 0)}"
+                            + (f" proposed={proposal_result.get('created_count', 0)}" if proposal_payloads else "")
+                            + (f" pruned={counts.get('pruned', 0)}" if prune_missing else "")
+                            + (" (no changes)" if (not changed) else "")
+                            + (f" src={src}" if src else "")
+                        ).strip()
+                    )
                 else:
                     per_project_lines.append(
                         (
@@ -1494,6 +1544,10 @@ def handle_scheduler_command(
             elif mode == "salvage_docs":
                 lines.append("- mode: salvage_docs")
                 lines.append(f"- docs_per_project: {max(docs_limit, 5)}")
+            elif mode == "bootstrap_docs":
+                lines.append("- mode: bootstrap_docs")
+                lines.append(f"- docs_per_project: {max(docs_limit, 5)}")
+                lines.append(f"- files_per_project: {files_limit}")
             elif mode == "todo_files":
                 lines.append("- mode: todo_files")
                 lines.append(f"- files_per_project: {files_limit}")
@@ -1566,6 +1620,10 @@ def handle_scheduler_command(
                 elif mode == "salvage_docs":
                     msg_lines.append("- mode: salvage_docs")
                     msg_lines.append(f"- docs_per_project: {max(docs_limit, 5)}")
+                elif mode == "bootstrap_docs":
+                    msg_lines.append("- mode: bootstrap_docs")
+                    msg_lines.append(f"- docs_per_project: {max(docs_limit, 5)}")
+                    msg_lines.append(f"- files_per_project: {files_limit}")
                 elif mode == "todo_files":
                     msg_lines.append("- mode: todo_files")
                     msg_lines.append(f"- files_per_project: {files_limit}")
@@ -1577,7 +1635,7 @@ def handle_scheduler_command(
                     if since_seconds > 0:
                         msg_lines.append(f"- skipped_stale: {total['skipped_stale']}")
                 else:
-                    if mode in {"recent_docs", "salvage_docs"}:
+                    if mode in {"recent_docs", "salvage_docs", "bootstrap_docs"}:
                         msg_lines.append(f"- missing_docs: {total['missing']}")
                     else:
                         msg_lines.append(f"- missing_files: {total['missing']}")
@@ -1604,6 +1662,10 @@ def handle_scheduler_command(
         elif mode == "salvage_docs":
             lines.append("- mode: salvage_docs")
             lines.append(f"- docs_per_project: {max(docs_limit, 5)}")
+        elif mode == "bootstrap_docs":
+            lines.append("- mode: bootstrap_docs")
+            lines.append(f"- docs_per_project: {max(docs_limit, 5)}")
+            lines.append(f"- files_per_project: {files_limit}")
         elif mode == "todo_files":
             lines.append("- mode: todo_files")
             lines.append(f"- files_per_project: {files_limit}")
@@ -1615,10 +1677,13 @@ def handle_scheduler_command(
             if since_seconds > 0:
                 lines.append(f"- skipped_stale: {total['skipped_stale']}")
         else:
-            if mode in {"recent_docs", "salvage_docs"}:
+            if mode in {"recent_docs", "salvage_docs", "bootstrap_docs"}:
                 lines.append(f"- missing_docs: {total['missing']}")
                 lines.append(f"- docs_used: {total.get('docs_used', 0)}")
                 lines.append(f"- docs_scanned: {total.get('docs_scanned', 0)}")
+                if mode == "bootstrap_docs":
+                    lines.append(f"- files_used: {total.get('files_used', 0)}")
+                    lines.append(f"- files_scanned: {total.get('files_scanned', 0)}")
             else:
                 lines.append(f"- missing_files: {total['missing']}")
                 lines.append(f"- files_used: {total.get('files_used', 0)}")

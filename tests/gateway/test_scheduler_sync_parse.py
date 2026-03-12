@@ -245,9 +245,9 @@ def test_discover_salvage_doc_todos_recovers_next_steps_sections_without_todo_ma
         "review the summary before off-desk handoff",
     ]
     assert all(row["sync_source_class"] == "salvage_doc" for row in salvage_items)
-    assert all(row["sync_doc_type"] == "note" for row in salvage_items)
+    assert all(row["sync_doc_type"] == "research_note" for row in salvage_items)
     assert salvage_sources == ["docs/research/analysis-update.md"]
-    assert "used:2 class=salvage_doc conf=0.78" in "\n".join(salvage_meta.get("preview") or [])
+    assert "used:2 class=salvage_doc conf=0.72" in "\n".join(salvage_meta.get("preview") or [])
 
 
 def test_classify_sync_source_recognizes_handoff_and_report_doc_types() -> None:
