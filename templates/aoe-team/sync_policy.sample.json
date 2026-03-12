@@ -10,6 +10,12 @@
     "recent_doc": 0.74,
     "todo_file": 0.92
   },
+  "doc_type_confidence": {
+    "handoff": 0.84,
+    "report": 0.58,
+    "spec": 0.56,
+    "manuscript": 0.52
+  },
   "group_overrides": {
     "ops_todo": "ops",
     "todo_file": "todo_files",

@@ -245,8 +245,42 @@ def test_discover_salvage_doc_todos_recovers_next_steps_sections_without_todo_ma
         "review the summary before off-desk handoff",
     ]
     assert all(row["sync_source_class"] == "salvage_doc" for row in salvage_items)
+    assert all(row["sync_doc_type"] == "note" for row in salvage_items)
     assert salvage_sources == ["docs/research/analysis-update.md"]
     assert "used:2 class=salvage_doc conf=0.78" in "\n".join(salvage_meta.get("preview") or [])
+
+
+def test_classify_sync_source_recognizes_handoff_and_report_doc_types() -> None:
+    root = ROOT / "tmp"
+    handoff = root / "docs" / "night-handoff.md"
+    report = root / "docs" / "results-report.md"
+
+    handoff_info = mod._classify_sync_source(handoff, root, mode="salvage_docs")
+    report_info = mod._classify_sync_source(report, root, mode="salvage_docs")
+
+    assert handoff_info["source_class"] == "salvage_doc"
+    assert handoff_info["doc_type"] == "handoff"
+    assert float(handoff_info["confidence"]) > float(report_info["confidence"])
+    assert report_info["doc_type"] == "report"
+
+
+def test_preview_item_line_includes_doc_type() -> None:
+    line = mod._preview_item_line(
+        {
+            "status": "open",
+            "priority": "P1",
+            "summary": "Build the summary table",
+            "sync_source_class": "salvage_doc",
+            "sync_doc_type": "handoff",
+            "sync_confidence": 0.84,
+            "source_file": "docs/handoff.md",
+            "source_section": "Next steps",
+            "source_line": 17,
+            "source_reason": "salvage_section_bullet",
+        }
+    )
+
+    assert "{salvage_doc dtype=handoff 0.84}" in line
 
 
 def test_discover_sync_fallback_todos_uses_salvage_after_files_and_recent_fail(tmp_path: Path) -> None:
@@ -381,6 +415,34 @@ def test_discover_todo_file_todos_respects_sync_policy_include_globs(tmp_path: P
     assert sources == ["docs/research/00_ops/current/todo-ops.md"]
     preview = "\n".join(meta.get("preview") or [])
     assert "used:1 class=ops_todo conf=0.95" in preview
+
+
+def test_discover_salvage_doc_todos_respects_doc_type_confidence_override(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    docs_dir = project_root / "docs"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+
+    (docs_dir / "night-handoff.md").write_text(
+        "# Night Handoff\n\n"
+        "## Next steps\n"
+        "- P1: validate the overnight bootstrap path\n",
+        encoding="utf-8",
+    )
+
+    items, meta, sources = mod._discover_salvage_doc_todos(
+        project_root=project_root,
+        docs_limit=3,
+        candidate_keep=50,
+        max_bytes=512 * 1024,
+        min_mtime=0.0,
+        sync_policy={"doc_type_confidence": {"handoff": 0.91}},
+    )
+
+    assert [row["summary"] for row in items] == ["validate the overnight bootstrap path"]
+    assert items[0]["sync_doc_type"] == "handoff"
+    assert float(items[0]["sync_confidence"]) == 0.91
+    assert sources == ["docs/night-handoff.md"]
+    assert "used:1 class=salvage_doc conf=0.91" in "\n".join(meta.get("preview") or [])
 
 
 def test_preview_item_line_includes_provenance_fields() -> None:

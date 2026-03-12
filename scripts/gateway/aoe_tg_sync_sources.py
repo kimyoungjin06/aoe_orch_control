@@ -281,6 +281,17 @@ def _apply_sync_policy(info: Dict[str, Any], *, rel: str, policy: Optional[Dict[
         except Exception:
             pass
 
+    doc_type_conf = policy.get("doc_type_confidence")
+    doc_type = str(out.get("doc_type", "")).strip()
+    if isinstance(doc_type_conf, dict) and doc_type:
+        raw_val = doc_type_conf.get(doc_type)
+        try:
+            if raw_val is not None:
+                out["confidence"] = float(raw_val)
+                out["policy_reason"] = f"doc_type_confidence:{doc_type}"
+        except Exception:
+            pass
+
     group_map = policy.get("group_overrides")
     if isinstance(group_map, dict) and source_class:
         raw_group = str(group_map.get(source_class, "")).strip()
@@ -295,27 +306,101 @@ def _apply_sync_policy(info: Dict[str, Any], *, rel: str, policy: Optional[Dict[
     out["policy_min_confidence"] = min_conf
     return out
 
-def _classify_sync_source(path: Path, root: Path, *, mode: str) -> Dict[str, Any]:
+def _classify_sync_doc_type(path: Path, root: Path) -> str:
     rel = _rel_display(path, root)
     rel_low = rel.lower()
     name_low = str(path.name or "").lower()
 
     if name_low == _SCENARIO_FILENAME.lower():
-        return {"source_class": "scenario", "sync_group": "scenario", "confidence": 1.0}
+        return "scenario"
 
-    ops_markers = ("/00_ops/", "/ops/", "ops/", "/runbook/", "/checklist/")
-    archive_markers = ("/archive/", "/archives/", "/old/", "/deprecated/")
-    if any(marker in rel_low for marker in archive_markers):
-        return {"source_class": "archive_todo", "sync_group": "archive", "confidence": 0.25}
-    if any(marker in rel_low for marker in ops_markers):
-        return {"source_class": "ops_todo", "sync_group": "ops", "confidence": 0.45}
+    if any(marker in rel_low for marker in ("/archive/", "/archives/", "/old/", "/deprecated/")):
+        return "archive"
+    if any(marker in rel_low for marker in ("/00_ops/", "/ops/", "ops/", "/runbook/", "/checklist/")):
+        return "ops"
     if _path_has_todo_hint(path):
-        return {"source_class": "todo_file", "sync_group": "todo_files", "confidence": 0.92}
+        return "todo"
+
+    handoff_markers = ("handoff", "hand-off", "handover", "hand-over", "인계")
+    report_markers = ("report", "results", "readout", "summary", "brief", "dashboard")
+    spec_markers = ("spec", "specs", "prd", "design", "requirements")
+    manuscript_markers = ("manuscript", "draft", "paper", "quarto", "ncomms", "submission")
+    note_markers = ("note", "notes", "memo", "meeting", "journal", "log", "update")
+
+    if any(token in rel_low or token in name_low for token in handoff_markers):
+        return "handoff"
+    if any(token in rel_low or token in name_low for token in report_markers):
+        return "report"
+    if any(token in rel_low or token in name_low for token in spec_markers):
+        return "spec"
+    if any(token in rel_low or token in name_low for token in manuscript_markers):
+        return "manuscript"
+    if any(token in rel_low or token in name_low for token in note_markers):
+        return "note"
+    if "/docs/research/" in rel_low or rel_low.startswith("docs/research/"):
+        return "research_note"
+    return "doc"
+
+
+def _source_confidence_for(mode: str, doc_type: str) -> float:
+    token = str(mode or "").strip()
+    dtype = str(doc_type or "").strip()
+    if token == "salvage_docs":
+        return {
+            "handoff": 0.84,
+            "report": 0.58,
+            "spec": 0.56,
+            "manuscript": 0.52,
+            "note": 0.78,
+            "research_note": 0.78,
+            "doc": 0.78,
+        }.get(dtype, 0.78)
+    if token == "recent_docs":
+        return {
+            "handoff": 0.80,
+            "report": 0.60,
+            "spec": 0.58,
+            "manuscript": 0.54,
+            "note": 0.74,
+            "research_note": 0.74,
+            "doc": 0.74,
+        }.get(dtype, 0.74)
+    return 0.60
+
+
+def _classify_sync_source(path: Path, root: Path, *, mode: str) -> Dict[str, Any]:
+    name_low = str(path.name or "").lower()
+    doc_type = _classify_sync_doc_type(path, root)
+
+    if name_low == _SCENARIO_FILENAME.lower():
+        return {"source_class": "scenario", "sync_group": "scenario", "confidence": 1.0, "doc_type": "scenario"}
+
+    if doc_type == "archive":
+        return {"source_class": "archive_todo", "sync_group": "archive", "confidence": 0.25, "doc_type": doc_type}
+    if doc_type == "ops":
+        return {"source_class": "ops_todo", "sync_group": "ops", "confidence": 0.45, "doc_type": doc_type}
+    if _path_has_todo_hint(path):
+        return {"source_class": "todo_file", "sync_group": "todo_files", "confidence": 0.92, "doc_type": doc_type}
     if str(mode or "").strip() == "salvage_docs":
-        return {"source_class": "salvage_doc", "sync_group": "salvage_docs", "confidence": 0.78}
+        return {
+            "source_class": "salvage_doc",
+            "sync_group": "salvage_docs",
+            "confidence": _source_confidence_for("salvage_docs", doc_type),
+            "doc_type": doc_type,
+        }
     if str(mode or "").strip() == "recent_docs":
-        return {"source_class": "recent_doc", "sync_group": "recent_docs", "confidence": 0.74}
-    return {"source_class": "doc", "sync_group": "docs", "confidence": 0.60}
+        return {
+            "source_class": "recent_doc",
+            "sync_group": "recent_docs",
+            "confidence": _source_confidence_for("recent_docs", doc_type),
+            "doc_type": doc_type,
+        }
+    return {
+        "source_class": "doc",
+        "sync_group": "docs",
+        "confidence": 0.60,
+        "doc_type": doc_type,
+    }
 
 def _sync_candidate_allowed(info: Dict[str, Any]) -> bool:
     source_class = str(info.get("source_class", "")).strip().lower()
@@ -360,6 +445,7 @@ def _tag_sync_items(items: List[Dict[str, Any]], *, rel: str, info: Dict[str, An
     source_class = str(info.get("source_class", "")).strip()
     sync_group = str(info.get("sync_group", "")).strip()
     confidence = float(info.get("confidence", 0.0) or 0.0)
+    doc_type = str(info.get("doc_type", "")).strip()
     for row in items:
         if not isinstance(row, dict):
             continue
@@ -368,6 +454,8 @@ def _tag_sync_items(items: List[Dict[str, Any]], *, rel: str, info: Dict[str, An
         tagged_row["sync_source_class"] = source_class
         tagged_row["sync_group"] = sync_group
         tagged_row["sync_confidence"] = round(confidence, 2)
+        if doc_type:
+            tagged_row["sync_doc_type"] = doc_type
         tagged.append(tagged_row)
     return tagged
 
