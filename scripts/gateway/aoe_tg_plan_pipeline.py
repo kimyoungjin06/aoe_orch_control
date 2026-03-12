@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+from aoe_tg_orch_contract import derive_tf_phase, derive_tf_phase_reason, normalize_tf_phase
 from aoe_tg_schema import default_plan_critic_payload, normalize_plan_critic_payload, plan_critic_primary_issue
 
 
@@ -28,6 +29,9 @@ class PlanMeta:
     plan_gate_reason: str = ""
     planning_enabled: bool = False
     reuse_source_plan: bool = False
+    phase1_mode: str = ""
+    phase1_rounds: int = 0
+    phase1_providers: List[str] = field(default_factory=list)
 
 
 def apply_success_first_prompt_fallbacks(prompt: str) -> tuple[str, List[str]]:
@@ -125,6 +129,9 @@ def resolve_dispatch_mode_and_roles(
     elif auto_dispatch_enabled and auto_roles:
         dispatch_mode = True
         dispatch_roles = ",".join(auto_roles)
+    elif str(prompt or "").strip():
+        dispatch_mode = True
+        dispatch_roles = ",".join(auto_roles) if auto_roles else "Reviewer"
 
     return DispatchModeResult(
         dispatch_mode=dispatch_mode,
@@ -149,6 +156,7 @@ def compute_dispatch_plan(
     critic_has_blockers: Callable[[Dict[str, Any]], bool],
     repair_task_execution_plan: Callable[..., Dict[str, Any]],
     plan_roles_from_subtasks: Callable[[Optional[Dict[str, Any]]], List[str]],
+    phase1_ensemble_planning: Optional[Callable[..., Dict[str, Any]]] = None,
     report_progress: Optional[Callable[..., None]] = None,
 ) -> PlanMeta:
     plan_data: Optional[Dict[str, Any]] = None
@@ -164,6 +172,9 @@ def compute_dispatch_plan(
         and isinstance(run_source_task, dict)
         and isinstance(run_source_task.get("plan"), dict)
     )
+    phase1_mode = ""
+    phase1_rounds = 0
+    phase1_providers: List[str] = []
 
     if dispatch_mode and (planning_enabled or reuse_source_plan) and not args.dry_run:
         try:
@@ -181,57 +192,75 @@ def compute_dispatch_plan(
                 plan_critic = normalize_plan_critic_payload(raw_critic, max_items=8)
 
             if (plan_data is None) and planning_enabled:
-                if callable(report_progress):
-                    report_progress(phase="planner", detail="building execution plan")
-                plan_data = build_task_execution_plan(
-                    p_args,
-                    user_prompt=prompt,
-                    available_roles=available_roles,
-                    max_subtasks=max(1, int(args.plan_max_subtasks)),
-                )
-                if callable(report_progress):
-                    report_progress(phase="critic", detail="reviewing generated plan")
-                plan_critic = critique_task_execution_plan(p_args, prompt, plan_data)
+                if bool(getattr(args, "plan_phase1_ensemble", True)) and callable(phase1_ensemble_planning):
+                    ensemble = phase1_ensemble_planning(
+                        p_args,
+                        prompt,
+                        available_roles,
+                        report_progress=report_progress,
+                    )
+                    plan_data = ensemble.get("plan_data")
+                    plan_critic = ensemble.get("plan_critic") or default_plan_critic_payload()
+                    plan_roles = list(ensemble.get("plan_roles") or [])
+                    plan_replans = list(ensemble.get("plan_replans") or [])
+                    plan_error = str(ensemble.get("plan_error", "") or "").strip()
+                    plan_gate_blocked = bool(ensemble.get("plan_gate_blocked", False))
+                    plan_gate_reason = str(ensemble.get("plan_gate_reason", "") or "").strip()
+                    phase1_mode = str(ensemble.get("phase1_mode", "ensemble") or "ensemble")
+                    phase1_rounds = max(0, int(ensemble.get("phase1_rounds", 0) or 0))
+                    phase1_providers = [str(x).strip() for x in (ensemble.get("phase1_providers") or []) if str(x).strip()]
+                else:
+                    if callable(report_progress):
+                        report_progress(phase="planner", detail="building execution plan")
+                    plan_data = build_task_execution_plan(
+                        p_args,
+                        user_prompt=prompt,
+                        available_roles=available_roles,
+                        max_subtasks=max(1, int(args.plan_max_subtasks)),
+                    )
+                    if callable(report_progress):
+                        report_progress(phase="critic", detail="reviewing generated plan")
+                    plan_critic = critique_task_execution_plan(p_args, prompt, plan_data)
 
-                if bool(args.plan_auto_replan):
-                    max_replans = max(0, int(args.plan_replan_attempts))
-                    for attempt in range(1, max_replans + 1):
-                        if not isinstance(plan_data, dict) or not critic_has_blockers(plan_critic):
-                            break
-                        if callable(report_progress):
-                            report_progress(
-                                phase="repair",
-                                detail="critic issues found; auto-replanning",
-                                attempt=attempt,
-                                total=max_replans,
+                    if bool(args.plan_auto_replan):
+                        max_replans = max(0, int(args.plan_replan_attempts))
+                        for attempt in range(1, max_replans + 1):
+                            if not isinstance(plan_data, dict) or not critic_has_blockers(plan_critic):
+                                break
+                            if callable(report_progress):
+                                report_progress(
+                                    phase="repair",
+                                    detail="critic issues found; auto-replanning",
+                                    attempt=attempt,
+                                    total=max_replans,
+                                )
+                            plan_data = repair_task_execution_plan(
+                                p_args,
+                                user_prompt=prompt,
+                                current_plan=plan_data,
+                                critic=plan_critic,
+                                available_roles=available_roles,
+                                max_subtasks=max(1, int(args.plan_max_subtasks)),
+                                attempt_no=attempt,
                             )
-                        plan_data = repair_task_execution_plan(
-                            p_args,
-                            user_prompt=prompt,
-                            current_plan=plan_data,
-                            critic=plan_critic,
-                            available_roles=available_roles,
-                            max_subtasks=max(1, int(args.plan_max_subtasks)),
-                            attempt_no=attempt,
-                        )
-                        if callable(report_progress):
-                            report_progress(
-                                phase="critic",
-                                detail="rechecking repaired plan",
-                                attempt=attempt,
-                                total=max_replans,
+                            if callable(report_progress):
+                                report_progress(
+                                    phase="critic",
+                                    detail="rechecking repaired plan",
+                                    attempt=attempt,
+                                    total=max_replans,
+                                )
+                            plan_critic = critique_task_execution_plan(p_args, prompt, plan_data)
+                            plan_replans.append(
+                                {
+                                    "attempt": attempt,
+                                    "critic": "approved" if not critic_has_blockers(plan_critic) else "needs_fix",
+                                    "subtasks": len(plan_data.get("subtasks") or []),
+                                }
                             )
-                        plan_critic = critique_task_execution_plan(p_args, prompt, plan_data)
-                        plan_replans.append(
-                            {
-                                "attempt": attempt,
-                                "critic": "approved" if not critic_has_blockers(plan_critic) else "needs_fix",
-                                "subtasks": len(plan_data.get("subtasks") or []),
-                            }
-                        )
 
             plan_roles = plan_roles_from_subtasks(plan_data)
-            if not selected_roles and plan_roles:
+            if plan_roles:
                 selected_roles = plan_roles
 
             if bool(args.plan_block_on_critic) and isinstance(plan_data, dict) and critic_has_blockers(plan_critic):
@@ -266,6 +295,9 @@ def compute_dispatch_plan(
         plan_gate_reason=plan_gate_reason,
         planning_enabled=planning_enabled,
         reuse_source_plan=reuse_source_plan,
+        phase1_mode=phase1_mode,
+        phase1_rounds=phase1_rounds,
+        phase1_providers=phase1_providers,
     )
 
 
@@ -328,6 +360,9 @@ def apply_plan_and_lineage(
     plan_roles: List[str],
     plan_replans: List[Dict[str, Any]],
     plan_error: str,
+    phase1_mode: str = "",
+    phase1_rounds: int = 0,
+    phase1_providers: Optional[List[str]] = None,
     critic_has_blockers: Callable[[Dict[str, Any]], bool],
     lifecycle_set_stage: Callable[..., None],
     run_control_mode: str,
@@ -344,6 +379,12 @@ def apply_plan_and_lineage(
         task["plan_critic"] = plan_critic
         task["plan_roles"] = plan_roles
         task["plan_replans"] = plan_replans
+        if phase1_mode:
+            task["phase1_mode"] = str(phase1_mode).strip()
+        if int(phase1_rounds or 0) > 0:
+            task["phase1_rounds"] = int(phase1_rounds)
+        if phase1_providers:
+            task["phase1_providers"] = [str(item).strip() for item in phase1_providers if str(item).strip()]
         task["plan_gate_passed"] = not critic_has_blockers(plan_critic)
         task["plan_gate_reason"] = plan_critic_primary_issue(plan_critic, limit=240)
         lifecycle_set_stage(
@@ -353,13 +394,20 @@ def apply_plan_and_lineage(
             note=(
                 f"subtasks={len(plan_data.get('subtasks') or [])} "
                 f"critic={'ok' if not critic_has_blockers(plan_critic) else 'issues'} "
-                f"replans={len(plan_replans)}"
+                f"replans={len(plan_replans)} "
+                f"phase1={str(phase1_mode or 'single')} rounds={max(0, int(phase1_rounds or 0))}"
             ),
         )
     elif plan_error:
         lifecycle_set_stage(task, "planning", "done", note=f"fallback_no_plan: {plan_error}")
 
     if run_control_mode not in {"retry", "replan"} or (not run_source_request_id):
+        task["tf_phase"] = normalize_tf_phase(derive_tf_phase(task), "queued")
+        tf_phase_reason = derive_tf_phase_reason(task)
+        if tf_phase_reason:
+            task["tf_phase_reason"] = tf_phase_reason
+        else:
+            task.pop("tf_phase_reason", None)
         return
 
     lineage_ts = now_iso()
@@ -394,3 +442,9 @@ def apply_plan_and_lineage(
             source_context["last_child_request_id"] = req_id
         source_context["last_child_at"] = lineage_ts
 
+    task["tf_phase"] = normalize_tf_phase(derive_tf_phase(task), "queued")
+    tf_phase_reason = derive_tf_phase_reason(task)
+    if tf_phase_reason:
+        task["tf_phase_reason"] = tf_phase_reason
+    else:
+        task.pop("tf_phase_reason", None)

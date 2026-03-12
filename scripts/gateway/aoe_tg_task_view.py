@@ -6,6 +6,8 @@ from __future__ import annotations
 import re
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
+from aoe_tg_orch_contract import derive_tf_phase, derive_tf_phase_reason, normalize_tf_phase
+
 
 DEFAULT_PROJECT_ALIAS_MAX = 999
 LIFECYCLE_STAGES = (
@@ -184,10 +186,14 @@ def summarize_task_lifecycle(project_name: str, task: Dict[str, Any]) -> str:
         f"task: {label}",
         f"request_id: {request_id}",
         f"status: {status}",
+        f"tf_phase: {normalize_tf_phase(derive_tf_phase(task), 'queued')}",
         f"mode: {mode}",
         f"roles: {', '.join(roles) if roles else '-'}",
         f"verifier_roles: {', '.join(verifiers) if verifiers else '-'}",
     ]
+    tf_phase_reason = str(task.get("tf_phase_reason", "")).strip() or derive_tf_phase_reason(task)
+    if tf_phase_reason:
+        lines.append(f"tf_phase_reason: {tf_phase_reason}")
 
     context = build_task_context(request_id=request_id, task=task)
     if context:
@@ -219,6 +225,33 @@ def summarize_task_lifecycle(project_name: str, task: Dict[str, Any]) -> str:
     plan = task.get("plan")
     if isinstance(plan, dict):
         subtasks = plan.get("subtasks") or []
+        meta = plan.get("meta") if isinstance(plan.get("meta"), dict) else {}
+        team_spec = meta.get("phase2_team_spec") if isinstance(meta.get("phase2_team_spec"), dict) else {}
+        execution_plan = meta.get("phase2_execution_plan") if isinstance(meta.get("phase2_execution_plan"), dict) else {}
+        lane_states = task.get("lane_states") if isinstance(task.get("lane_states"), dict) else {}
+        execution_lane_state_rows = lane_states.get("execution") if isinstance(lane_states.get("execution"), list) else []
+        review_lane_state_rows = lane_states.get("review") if isinstance(lane_states.get("review"), list) else []
+        execution_lane_status = {
+            str(row.get("lane_id", "")).strip(): str(row.get("status", "")).strip()
+            for row in execution_lane_state_rows
+            if isinstance(row, dict)
+        }
+        review_lane_status = {
+            str(row.get("lane_id", "")).strip(): str(row.get("status", "")).strip()
+            for row in review_lane_state_rows
+            if isinstance(row, dict)
+        }
+        review_lane_verdict = {
+            str(row.get("lane_id", "")).strip(): str(row.get("verdict", "")).strip()
+            for row in review_lane_state_rows
+            if isinstance(row, dict) and str(row.get("verdict", "")).strip()
+        }
+        review_lane_action = {
+            str(row.get("lane_id", "")).strip(): str(row.get("action", "")).strip()
+            for row in review_lane_state_rows
+            if isinstance(row, dict) and str(row.get("action", "")).strip()
+        }
+        lane_summary = lane_states.get("summary") if isinstance(lane_states.get("summary"), dict) else {}
         plan_summary = str(plan.get("summary", "")).strip()
         if plan_summary:
             lines.append("plan_summary: " + plan_summary)
@@ -232,6 +265,115 @@ def summarize_task_lifecycle(project_name: str, task: Dict[str, Any]) -> str:
             owner_counts[role] = owner_counts.get(role, 0) + 1
         if owner_counts:
             lines.append("plan_owner_load: " + ", ".join(f"{role}={cnt}" for role, cnt in owner_counts.items()))
+
+        execution_groups = team_spec.get("execution_groups") if isinstance(team_spec.get("execution_groups"), list) else []
+        if execution_groups:
+            lines.append(
+                "phase2_execution: {mode} lanes={count}".format(
+                    mode=str(team_spec.get("execution_mode", "single")).strip() or "single",
+                    count=len(execution_groups),
+                )
+            )
+            for row in execution_groups[:6]:
+                if not isinstance(row, dict):
+                    continue
+                gid = str(row.get("group_id", "")).strip() or "E"
+                role = str(row.get("role", "")).strip() or "Worker"
+                subtask_ids = [str(item).strip() for item in (row.get("subtask_ids") or []) if str(item).strip()]
+                lines.append(f"- lane {gid} [{role}] -> {', '.join(subtask_ids) if subtask_ids else '-'}")
+
+        review_groups = team_spec.get("review_groups") if isinstance(team_spec.get("review_groups"), list) else []
+        if review_groups:
+            lines.append(
+                "phase2_review: {mode} lanes={count}".format(
+                    mode=str(team_spec.get("review_mode", "skip")).strip() or "skip",
+                    count=len(review_groups),
+                )
+            )
+            for row in review_groups[:4]:
+                if not isinstance(row, dict):
+                    continue
+                gid = str(row.get("group_id", "")).strip() or "R"
+                role = str(row.get("role", "")).strip() or "Reviewer"
+                kind = str(row.get("kind", "")).strip() or "verifier"
+                lines.append(f"- review {gid} [{role}/{kind}]")
+
+        execution_lanes = execution_plan.get("execution_lanes") if isinstance(execution_plan.get("execution_lanes"), list) else []
+        review_lanes = execution_plan.get("review_lanes") if isinstance(execution_plan.get("review_lanes"), list) else []
+        if not execution_lanes and execution_lane_state_rows:
+            execution_lanes = [
+                {
+                    "lane_id": str(row.get("lane_id", "")).strip(),
+                    "role": str(row.get("role", "")).strip(),
+                    "subtask_ids": list(row.get("subtask_ids") or []),
+                    "parallel": bool(row.get("parallel", False)),
+                }
+                for row in execution_lane_state_rows
+                if isinstance(row, dict) and str(row.get("lane_id", "")).strip()
+            ]
+        if not review_lanes and review_lane_state_rows:
+            review_lanes = [
+                {
+                    "lane_id": str(row.get("lane_id", "")).strip(),
+                    "role": str(row.get("role", "")).strip(),
+                    "kind": str(row.get("kind", "")).strip() or "verifier",
+                    "depends_on": list(row.get("depends_on") or []),
+                    "parallel": bool(row.get("parallel", False)),
+                }
+                for row in review_lane_state_rows
+                if isinstance(row, dict) and str(row.get("lane_id", "")).strip()
+            ]
+        if execution_plan:
+            lines.append(
+                "phase2_exec_plan: {mode} workers_parallel={workers} reviews_parallel={reviews} readonly={readonly}".format(
+                    mode=str(execution_plan.get("execution_mode", "single")).strip() or "single",
+                    workers="yes" if bool(execution_plan.get("parallel_workers", len(execution_lanes) > 1)) else "no",
+                    reviews="yes" if bool(execution_plan.get("parallel_reviews", len(review_lanes) > 1)) else "no",
+                    readonly="yes" if bool(execution_plan.get("readonly", True)) else "no",
+                )
+            )
+        if lane_summary:
+            exec_counts = lane_summary.get("execution") if isinstance(lane_summary.get("execution"), dict) else {}
+            review_counts = lane_summary.get("review") if isinstance(lane_summary.get("review"), dict) else {}
+            review_verdicts = lane_summary.get("review_verdicts") if isinstance(lane_summary.get("review_verdicts"), dict) else {}
+            parts: List[str] = []
+            if exec_counts:
+                parts.append("exec " + ", ".join(f"{key}={value}" for key, value in sorted(exec_counts.items())))
+            if review_counts:
+                parts.append("review " + ", ".join(f"{key}={value}" for key, value in sorted(review_counts.items())))
+            if review_verdicts:
+                parts.append("review_verdict " + ", ".join(f"{key}={value}" for key, value in sorted(review_verdicts.items())))
+            if parts:
+                lines.append("phase2_lane_state: " + " | ".join(parts))
+        for row in execution_lanes[:6]:
+            if not isinstance(row, dict):
+                continue
+            gid = str(row.get("lane_id", "")).strip() or "L"
+            role = str(row.get("role", "")).strip() or "Worker"
+            subtask_ids = [str(item).strip() for item in (row.get("subtask_ids") or []) if str(item).strip()]
+            mode = "parallel" if bool(row.get("parallel", True)) else "serial"
+            status = execution_lane_status.get(gid, "")
+            suffix = f" [{status}]" if status else ""
+            lines.append(f"- exec {gid} [{role}/{mode}]{suffix} -> {', '.join(subtask_ids) if subtask_ids else '-'}")
+        for row in review_lanes[:4]:
+            if not isinstance(row, dict):
+                continue
+            gid = str(row.get("lane_id", "")).strip() or "R"
+            role = str(row.get("role", "")).strip() or "Reviewer"
+            kind = str(row.get("kind", "")).strip() or "verifier"
+            depends = [str(item).strip() for item in (row.get("depends_on") or []) if str(item).strip()]
+            mode = "parallel" if bool(row.get("parallel", True)) else "serial"
+            suffix = f" after {', '.join(depends)}" if depends else ""
+            status = review_lane_status.get(gid, "")
+            status_suffix = f" [{status}]" if status else ""
+            verdict = review_lane_verdict.get(gid, "")
+            action = review_lane_action.get(gid, "")
+            verdict_suffix = ""
+            if verdict:
+                verdict_suffix = f" -> {verdict}"
+                if action and action != "none":
+                    verdict_suffix += f"/{action}"
+            lines.append(f"- critic {gid} [{role}/{kind}/{mode}]{status_suffix}{verdict_suffix}{suffix}")
 
         for row in subtasks[:6]:
             if not isinstance(row, dict):
@@ -290,6 +432,24 @@ def summarize_task_lifecycle(project_name: str, task: Dict[str, Any]) -> str:
             lines.append("exec_reason: " + reason[:240])
         if at:
             lines.append("exec_critic_at: " + at)
+        rerun_exec = [str(x).strip() for x in (exec_critic.get("rerun_execution_lane_ids") or []) if str(x).strip()]
+        rerun_review = [str(x).strip() for x in (exec_critic.get("rerun_review_lane_ids") or []) if str(x).strip()]
+        manual_exec = [str(x).strip() for x in (exec_critic.get("manual_followup_execution_lane_ids") or []) if str(x).strip()]
+        manual_review = [str(x).strip() for x in (exec_critic.get("manual_followup_review_lane_ids") or []) if str(x).strip()]
+        if rerun_exec or rerun_review:
+            lines.append(
+                "exec_rerun_targets: execution={exec} review={review}".format(
+                    exec=", ".join(rerun_exec) if rerun_exec else "-",
+                    review=", ".join(rerun_review) if rerun_review else "-",
+                )
+            )
+        if manual_exec or manual_review:
+            lines.append(
+                "exec_manual_followup_targets: execution={exec} review={review}".format(
+                    exec=", ".join(manual_exec) if manual_exec else "-",
+                    review=", ".join(manual_review) if manual_review else "-",
+                )
+            )
 
     result = task.get("result")
     if isinstance(result, dict):
@@ -300,6 +460,16 @@ def summarize_task_lifecycle(project_name: str, task: Dict[str, Any]) -> str:
                 c="yes" if bool(result.get("complete", False)) else "no",
             )
         )
+        phase2_request_ids = result.get("phase2_request_ids") if isinstance(result.get("phase2_request_ids"), dict) else {}
+        if phase2_request_ids:
+            exec_req = str(phase2_request_ids.get("execution", "")).strip() or "-"
+            review_req = str(phase2_request_ids.get("review", "")).strip() or "-"
+            lines.append(f"phase2_requests: execution={exec_req} review={review_req}")
+        if "phase2_review_triggered" in result:
+            lines.append("phase2_review_triggered: " + ("yes" if bool(result.get("phase2_review_triggered")) else "no"))
+        review_skip_reason = str(result.get("phase2_review_skipped_reason", "")).strip()
+        if review_skip_reason:
+            lines.append("phase2_review_skip_reason: " + review_skip_reason[:240])
         failed = result.get("failed_roles") or []
         pending = result.get("pending_roles") or []
         if failed:

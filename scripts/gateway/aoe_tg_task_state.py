@@ -5,6 +5,375 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
+from aoe_tg_orch_contract import derive_tf_phase, derive_tf_phase_reason, normalize_tf_phase
+
+
+LANE_STATES = ("pending", "running", "done", "failed", "waiting_on_dependencies")
+LANE_VERDICTS = ("success", "retry", "fail", "intervention")
+
+
+def _normalize_lane_status(raw: Any, default: str = "pending") -> str:
+    token = str(raw or "").strip().lower()
+    if token in LANE_STATES:
+        return token
+    if token in {"error", "fail"}:
+        return "failed"
+    if token in {"complete", "completed", "success"}:
+        return "done"
+    if token in {"in_progress", "in-progress", "working", "active"}:
+        return "running"
+    if token in {"blocked", "queued"}:
+        return "pending"
+    return default
+
+
+def _merge_role_status(prev: str, raw: Any) -> str:
+    token = _normalize_lane_status(raw)
+    order = {"failed": 4, "running": 3, "done": 2, "pending": 1}
+    return token if order.get(token, 0) >= order.get(prev, 0) else prev
+
+
+def _normalize_lane_verdict(raw: Any, default: str = "") -> str:
+    token = str(raw or "").strip().lower()
+    if token in LANE_VERDICTS:
+        return token
+    if token in {"ok", "pass"}:
+        return "success"
+    if token in {"failed", "error"}:
+        return "fail"
+    if token in {"escalate"}:
+        return "intervention"
+    return default
+
+
+def _normalize_lane_state_rows(raw_rows: Any, *, kind: str) -> List[Dict[str, Any]]:
+    rows = raw_rows if isinstance(raw_rows, list) else []
+    normalized: List[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        lane_id = str(row.get("lane_id", "")).strip() or str(row.get("id", "")).strip()
+        if not lane_id:
+            continue
+        item: Dict[str, Any] = {
+            "lane_id": lane_id[:32],
+            "role": str(row.get("role", "")).strip()[:64] or ("Reviewer" if kind == "review" else "Worker"),
+            "status": _normalize_lane_status(row.get("status")),
+        }
+        if kind == "execution":
+            subtask_ids = [str(x).strip()[:32] for x in (row.get("subtask_ids") or []) if str(x).strip()]
+            if subtask_ids:
+                item["subtask_ids"] = subtask_ids
+        else:
+            item["kind"] = str(row.get("kind", "")).strip()[:32] or "verifier"
+            depends = [str(x).strip()[:32] for x in (row.get("depends_on") or []) if str(x).strip()]
+            if depends:
+                item["depends_on"] = depends
+            waiting = [str(x).strip()[:32] for x in (row.get("waiting_on") or []) if str(x).strip()]
+            if waiting:
+                item["waiting_on"] = waiting
+            verdict = _normalize_lane_verdict(row.get("verdict"))
+            if verdict:
+                item["verdict"] = verdict
+            action = str(row.get("action", "")).strip().lower()
+            if action:
+                item["action"] = action[:32]
+        reason = str(row.get("reason", "")).strip()
+        if reason:
+            item["reason"] = reason[:240]
+        normalized.append(item)
+    return normalized
+
+
+def _lane_state_counts(rows: List[Dict[str, Any]]) -> Dict[str, int]:
+    counts = {name: 0 for name in LANE_STATES}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        status = _normalize_lane_status(row.get("status"))
+        counts[status] = counts.get(status, 0) + 1
+    return {key: value for key, value in counts.items() if value}
+
+
+def _lane_verdict_counts(rows: List[Dict[str, Any]]) -> Dict[str, int]:
+    counts = {name: 0 for name in LANE_VERDICTS}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        verdict = _normalize_lane_verdict(row.get("verdict"))
+        if verdict:
+            counts[verdict] = counts.get(verdict, 0) + 1
+    return {key: value for key, value in counts.items() if value}
+
+
+def _execution_lane_catalog(task: Dict[str, Any]) -> List[str]:
+    lane_states = task.get("lane_states") if isinstance(task.get("lane_states"), dict) else {}
+    execution_rows = lane_states.get("execution") if isinstance(lane_states.get("execution"), list) else []
+    lane_ids = [str(row.get("lane_id", "")).strip()[:32] for row in execution_rows if isinstance(row, dict) and str(row.get("lane_id", "")).strip()]
+    if lane_ids:
+        return lane_ids
+    plan = task.get("plan") if isinstance(task.get("plan"), dict) else {}
+    meta = plan.get("meta") if isinstance(plan.get("meta"), dict) else {}
+    exec_plan = meta.get("phase2_execution_plan") if isinstance(meta.get("phase2_execution_plan"), dict) else {}
+    execution_lanes = exec_plan.get("execution_lanes") if isinstance(exec_plan.get("execution_lanes"), list) else []
+    return [str(row.get("lane_id", "")).strip()[:32] for row in execution_lanes if isinstance(row, dict) and str(row.get("lane_id", "")).strip()]
+
+
+def _derive_exec_critic_lane_targets(task: Dict[str, Any], critic: Dict[str, Any]) -> Dict[str, List[str]]:
+    lane_states = task.get("lane_states") if isinstance(task.get("lane_states"), dict) else {}
+    review_rows = lane_states.get("review") if isinstance(lane_states.get("review"), list) else []
+    if not review_rows:
+        return {
+            "rerun_execution_lane_ids": [],
+            "rerun_review_lane_ids": [],
+            "manual_followup_execution_lane_ids": [],
+            "manual_followup_review_lane_ids": [],
+        }
+
+    explicit_rerun_exec = [str(x).strip()[:32] for x in (critic.get("rerun_execution_lane_ids") or []) if str(x).strip()]
+    explicit_rerun_review = [str(x).strip()[:32] for x in (critic.get("rerun_review_lane_ids") or []) if str(x).strip()]
+    explicit_manual_exec = [str(x).strip()[:32] for x in (critic.get("manual_followup_execution_lane_ids") or []) if str(x).strip()]
+    explicit_manual_review = [str(x).strip()[:32] for x in (critic.get("manual_followup_review_lane_ids") or []) if str(x).strip()]
+
+    review_done_or_failed = [
+        row for row in review_rows
+        if isinstance(row, dict) and str(row.get("status", "")).strip().lower() in {"done", "failed", "running"}
+    ]
+    if not review_done_or_failed:
+        review_done_or_failed = [row for row in review_rows if isinstance(row, dict)]
+
+    derived_review_lane_ids = [str(row.get("lane_id", "")).strip()[:32] for row in review_done_or_failed if str(row.get("lane_id", "")).strip()]
+    derived_exec_lane_ids: List[str] = []
+    for row in review_done_or_failed:
+        if not isinstance(row, dict):
+            continue
+        for lane_id in (row.get("depends_on") or []):
+            token = str(lane_id).strip()[:32]
+            if token and token not in derived_exec_lane_ids:
+                derived_exec_lane_ids.append(token)
+    if not derived_exec_lane_ids:
+        derived_exec_lane_ids = _execution_lane_catalog(task)
+
+    return {
+        "rerun_execution_lane_ids": explicit_rerun_exec or derived_exec_lane_ids,
+        "rerun_review_lane_ids": explicit_rerun_review or derived_review_lane_ids,
+        "manual_followup_execution_lane_ids": explicit_manual_exec or derived_exec_lane_ids,
+        "manual_followup_review_lane_ids": explicit_manual_review or derived_review_lane_ids,
+    }
+
+
+def apply_review_lane_verdicts(task: Dict[str, Any], critic: Optional[Dict[str, Any]] = None) -> None:
+    lane_states = task.get("lane_states")
+    if not isinstance(lane_states, dict):
+        return
+    review_rows = lane_states.get("review")
+    if not isinstance(review_rows, list) or not review_rows:
+        return
+
+    critic_data = critic if isinstance(critic, dict) else (
+        task.get("exec_critic") if isinstance(task.get("exec_critic"), dict) else {}
+    )
+    verdict = _normalize_lane_verdict(critic_data.get("verdict"))
+    action = str(critic_data.get("action", "")).strip().lower()
+    reason = str(critic_data.get("reason", critic_data.get("fix", "")) or "").strip()[:240]
+
+    if not verdict:
+        for row in review_rows:
+            if not isinstance(row, dict):
+                continue
+            row.pop("verdict", None)
+            row.pop("action", None)
+        summary = lane_states.get("summary")
+        if isinstance(summary, dict):
+            summary.pop("review_verdicts", None)
+        return
+
+    applied = False
+    for row in review_rows:
+        if not isinstance(row, dict):
+            continue
+        row["verdict"] = verdict
+        if action:
+            row["action"] = action[:32]
+        else:
+            row.pop("action", None)
+        if reason and str(row.get("status", "")).strip().lower() in {"done", "failed", "running"}:
+            row["reason"] = reason
+        applied = True
+
+    if applied:
+        summary = lane_states.get("summary")
+        if not isinstance(summary, dict):
+            summary = {}
+            lane_states["summary"] = summary
+        summary["review_verdicts"] = _lane_verdict_counts(review_rows)
+
+
+def derive_lane_states(
+    task: Dict[str, Any],
+    snapshot: Dict[str, Any],
+) -> Dict[str, Any]:
+    plan = task.get("plan") if isinstance(task.get("plan"), dict) else {}
+    meta = plan.get("meta") if isinstance(plan.get("meta"), dict) else {}
+    exec_plan = meta.get("phase2_execution_plan") if isinstance(meta.get("phase2_execution_plan"), dict) else {}
+    execution_lanes = exec_plan.get("execution_lanes") if isinstance(exec_plan.get("execution_lanes"), list) else []
+    review_lanes = exec_plan.get("review_lanes") if isinstance(exec_plan.get("review_lanes"), list) else []
+
+    if not execution_lanes and not review_lanes:
+        return {}
+
+    role_status: Dict[str, str] = {}
+    for row in snapshot.get("rows") or []:
+        if not isinstance(row, dict):
+            continue
+        role = str(row.get("role", "")).strip()
+        if not role:
+            continue
+        role_status[role] = _merge_role_status(role_status.get(role, "pending"), row.get("status"))
+
+    complete = bool(snapshot.get("complete", False))
+    pending_roles = {str(x).strip() for x in (snapshot.get("pending_roles") or []) if str(x).strip()}
+    done_roles = {str(x).strip() for x in (snapshot.get("done_roles") or []) if str(x).strip()}
+    failed_roles = {str(x).strip() for x in (snapshot.get("failed_roles") or []) if str(x).strip()}
+
+    def execution_status_for(role: str) -> Tuple[str, str]:
+        current = role_status.get(role, "pending")
+        if role in failed_roles or current == "failed":
+            return "failed", "lane role failed"
+        if role in done_roles or current == "done":
+            return "done", ""
+        if current == "running":
+            return "running", ""
+        if complete and role in pending_roles:
+            return "failed", "request completed before lane finished"
+        return "pending", ""
+
+    execution_rows: List[Dict[str, Any]] = []
+    execution_status_by_lane: Dict[str, str] = {}
+    for row in execution_lanes:
+        if not isinstance(row, dict):
+            continue
+        lane_id = str(row.get("lane_id", "")).strip()
+        if not lane_id:
+            continue
+        role = str(row.get("role", "")).strip() or "Worker"
+        status, reason = execution_status_for(role)
+        item: Dict[str, Any] = {
+            "lane_id": lane_id,
+            "role": role,
+            "status": status,
+            "parallel": bool(row.get("parallel", True)),
+        }
+        subtask_ids = [str(x).strip() for x in (row.get("subtask_ids") or []) if str(x).strip()]
+        if subtask_ids:
+            item["subtask_ids"] = subtask_ids
+        if reason:
+            item["reason"] = reason
+        execution_rows.append(item)
+        execution_status_by_lane[lane_id] = status
+
+    review_rows_out: List[Dict[str, Any]] = []
+    for row in review_lanes:
+        if not isinstance(row, dict):
+            continue
+        lane_id = str(row.get("lane_id", "")).strip()
+        if not lane_id:
+            continue
+        role = str(row.get("role", "")).strip() or "Reviewer"
+        depends = [str(x).strip() for x in (row.get("depends_on") or []) if str(x).strip()]
+        waiting_on = [
+            lane for lane in depends if execution_status_by_lane.get(lane, "pending") not in {"done"}
+        ]
+        if waiting_on:
+            failed_waiting = [lane for lane in waiting_on if execution_status_by_lane.get(lane) == "failed"]
+            reason = (
+                "waiting on failed execution lane(s): " + ", ".join(failed_waiting)
+                if failed_waiting
+                else "waiting on execution lane(s): " + ", ".join(waiting_on)
+            )
+            status = "waiting_on_dependencies"
+        else:
+            status, reason = execution_status_for(role)
+        item = {
+            "lane_id": lane_id,
+            "role": role,
+            "kind": str(row.get("kind", "")).strip() or "verifier",
+            "status": status,
+            "parallel": bool(row.get("parallel", True)),
+        }
+        if depends:
+            item["depends_on"] = depends
+        if waiting_on:
+            item["waiting_on"] = waiting_on
+        if reason:
+            item["reason"] = reason
+        review_rows_out.append(item)
+
+    return {
+        "execution": execution_rows,
+        "review": review_rows_out,
+        "summary": {
+            "execution": _lane_state_counts(execution_rows),
+            "review": _lane_state_counts(review_rows_out),
+        },
+    }
+
+
+def refresh_task_tf_state(task: Dict[str, Any]) -> None:
+    task["tf_phase"] = normalize_tf_phase(derive_tf_phase(task), "queued")
+    reason = derive_tf_phase_reason(task)
+    if reason:
+        task["tf_phase_reason"] = reason
+    else:
+        task.pop("tf_phase_reason", None)
+
+
+def apply_exec_critic_lifecycle(
+    task: Dict[str, Any],
+    critic: Dict[str, Any],
+    *,
+    lifecycle_set_stage: Callable[..., None],
+) -> None:
+    task["exec_critic"] = dict(critic or {})
+    verdict = str((critic or {}).get("verdict", "")).strip().lower()
+    action = str((critic or {}).get("action", "")).strip().lower()
+    reason = str((critic or {}).get("reason", "")).strip()[:240]
+    lane_targets = _derive_exec_critic_lane_targets(task, critic if isinstance(critic, dict) else {})
+    if verdict == "retry":
+        task["exec_critic"]["rerun_execution_lane_ids"] = list(lane_targets["rerun_execution_lane_ids"])
+        task["exec_critic"]["rerun_review_lane_ids"] = list(lane_targets["rerun_review_lane_ids"])
+        task["exec_critic"].pop("manual_followup_execution_lane_ids", None)
+        task["exec_critic"].pop("manual_followup_review_lane_ids", None)
+    elif verdict in {"fail", "intervention"}:
+        task["exec_critic"]["manual_followup_execution_lane_ids"] = list(lane_targets["manual_followup_execution_lane_ids"])
+        task["exec_critic"]["manual_followup_review_lane_ids"] = list(lane_targets["manual_followup_review_lane_ids"])
+        task["exec_critic"].pop("rerun_execution_lane_ids", None)
+        task["exec_critic"].pop("rerun_review_lane_ids", None)
+    else:
+        task["exec_critic"].pop("rerun_execution_lane_ids", None)
+        task["exec_critic"].pop("rerun_review_lane_ids", None)
+        task["exec_critic"].pop("manual_followup_execution_lane_ids", None)
+        task["exec_critic"].pop("manual_followup_review_lane_ids", None)
+
+    if verdict == "success":
+        lifecycle_set_stage(task=task, stage="integration", status="done", note="exec critic approved")
+        close_state = str(((task.get("stages") or {}).get("close", "pending"))).strip().lower()
+        if close_state != "done":
+            lifecycle_set_stage(task=task, stage="close", status="running", note="awaiting final result packaging")
+    elif verdict == "retry":
+        if action == "replan":
+            lifecycle_set_stage(task=task, stage="planning", status="running", note=reason or "critic requested replan")
+        else:
+            lifecycle_set_stage(task=task, stage="execution", status="running", note=reason or "critic requested retry")
+        lifecycle_set_stage(task=task, stage="integration", status="running", note=reason or f"critic requested {action or 'retry'}")
+        lifecycle_set_stage(task=task, stage="close", status="pending")
+    elif verdict in {"fail", "intervention"}:
+        lifecycle_set_stage(task=task, stage="integration", status="failed", note=reason or verdict)
+        lifecycle_set_stage(task=task, stage="close", status="failed", note=reason or verdict)
+
+    apply_review_lane_verdicts(task, critic)
+    refresh_task_tf_state(task)
+
 
 def sanitize_task_record(
     raw_task: Dict[str, Any],
@@ -177,6 +546,23 @@ def sanitize_task_record(
             at=str(exec_critic.get("at", "")).strip() or now_iso(),
         )
 
+    lane_states = task.get("lane_states")
+    if isinstance(lane_states, dict):
+        execution_rows = _normalize_lane_state_rows(lane_states.get("execution"), kind="execution")
+        review_rows = _normalize_lane_state_rows(lane_states.get("review"), kind="review")
+        if execution_rows or review_rows:
+            task["lane_states"] = {
+                "execution": execution_rows,
+                "review": review_rows,
+                "summary": {
+                    "execution": _lane_state_counts(execution_rows),
+                    "review": _lane_state_counts(review_rows),
+                },
+            }
+            apply_review_lane_verdicts(task)
+        else:
+            task.pop("lane_states", None)
+
     context = build_task_context(
         request_id=rid,
         task=task,
@@ -184,6 +570,8 @@ def sanitize_task_record(
     )
     if context:
         task["context"] = context
+
+    refresh_task_tf_state(task)
 
     return task
 
@@ -599,12 +987,35 @@ def summarize_task_monitor(
         stage = str(task.get("stage", "pending")).strip().lower() or "pending"
         if stage not in stage_names:
             stage = "pending"
+        tf_phase = normalize_tf_phase(derive_tf_phase(task), "queued")
         roles = dedupe_roles(task.get("roles") or [])
         role_text = ", ".join(roles[:2])
         if len(roles) > 2:
             role_text += f" +{len(roles) - 2}"
+        plan = task.get("plan") if isinstance(task.get("plan"), dict) else {}
+        meta = plan.get("meta") if isinstance(plan.get("meta"), dict) else {}
+        exec_plan = meta.get("phase2_execution_plan") if isinstance(meta.get("phase2_execution_plan"), dict) else {}
+        exec_lanes = exec_plan.get("execution_lanes") if isinstance(exec_plan.get("execution_lanes"), list) else []
+        review_lanes = exec_plan.get("review_lanes") if isinstance(exec_plan.get("review_lanes"), list) else []
+        lane_text = ""
+        if exec_lanes or review_lanes:
+            lane_text = f" | lanes E{len(exec_lanes)}/R{len(review_lanes)}"
+        lane_states = task.get("lane_states") if isinstance(task.get("lane_states"), dict) else {}
+        lane_summary = lane_states.get("summary") if isinstance(lane_states.get("summary"), dict) else {}
+        exec_summary = lane_summary.get("execution") if isinstance(lane_summary.get("execution"), dict) else {}
+        review_summary = lane_summary.get("review") if isinstance(lane_summary.get("review"), dict) else {}
+        review_verdicts = lane_summary.get("review_verdicts") if isinstance(lane_summary.get("review_verdicts"), dict) else {}
+        lane_parts: List[str] = []
+        if exec_summary:
+            lane_parts.append("exec " + ",".join(f"{key}={value}" for key, value in sorted(exec_summary.items())))
+        if review_summary:
+            lane_parts.append("review " + ",".join(f"{key}={value}" for key, value in sorted(review_summary.items())))
+        if review_verdicts:
+            lane_parts.append("review_verdict " + ",".join(f"{key}={value}" for key, value in sorted(review_verdicts.items())))
+        if lane_parts:
+            lane_text += " [" + " | ".join(lane_parts) + "]"
         updated = str(task.get("updated_at", "")).strip() or "-"
-        lines.append(f"- {idx}. {label} | {status}/{stage} | {role_text or '-'} | {updated}")
+        lines.append(f"- {idx}. {label} | {status}/{stage}/{tf_phase} | {role_text or '-'}{lane_text} | {updated}")
 
     lines.append("")
     lines.append("alias map (number/label -> request_id):")
@@ -878,5 +1289,24 @@ def sync_task_lifecycle(
         "failed_roles": sorted(failed_roles),
         "pending_roles": sorted(pending_roles),
     }
+    phase2_request_ids = request_data.get("phase2_request_ids")
+    if isinstance(phase2_request_ids, dict) and phase2_request_ids:
+        task["result"]["phase2_request_ids"] = {
+            str(key).strip(): str(value).strip()
+            for key, value in phase2_request_ids.items()
+            if str(key).strip() and str(value).strip()
+        }
+    if "phase2_review_triggered" in request_data:
+        task["result"]["phase2_review_triggered"] = bool(request_data.get("phase2_review_triggered"))
+    review_skip = str(request_data.get("phase2_review_skipped_reason", "")).strip()
+    if review_skip:
+        task["result"]["phase2_review_skipped_reason"] = review_skip[:240]
+    lane_states = derive_lane_states(task, snap)
+    if lane_states:
+        task["lane_states"] = lane_states
+        apply_review_lane_verdicts(task)
+    else:
+        task.pop("lane_states", None)
+    refresh_task_tf_state(task)
     sync_task_exec_context(entry, task)
     return task

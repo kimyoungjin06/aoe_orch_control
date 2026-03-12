@@ -84,6 +84,7 @@ import aoe_tg_room_runtime as room_runtime_mod
 import aoe_tg_orch_registry as orch_registry_mod
 import aoe_tg_orch_roles as orch_roles_mod
 import aoe_tg_orch_responses as orch_responses_mod
+import aoe_tg_plan_ensemble as plan_ensemble_mod
 import aoe_tg_poll_loop as poll_loop_mod
 import aoe_tg_message_handler as message_handler_mod
 import aoe_tg_request_state as request_state_mod
@@ -138,7 +139,9 @@ from aoe_tg_tf_backend import (
     normalize_tf_backend_name,
 )
 from aoe_tg_room_handlers import DEFAULT_MAX_EVENT_CHARS, DEFAULT_MAX_FILE_BYTES, DEFAULT_ROOM_NAME, append_room_event, normalize_room_token
+from aoe_tg_orch_contract import attach_phase2_team_spec
 from aoe_tg_schema import (
+    default_plan_critic_payload,
     normalize_exec_critic_payload,
     normalize_plan_critic_payload,
     normalize_plan_replans_payload,
@@ -1638,6 +1641,88 @@ def run_codex_exec(args: argparse.Namespace, prompt: str, timeout_sec: int = 480
             out_path.unlink(missing_ok=True)
         except Exception:
             pass
+
+
+def run_claude_exec(args: argparse.Namespace, prompt: str, timeout_sec: int = 480) -> str:
+    perm_mode = (os.environ.get("AOE_CLAUDE_PERMISSION_MODE", os.environ.get("AOE_CODEX_PERMISSION_MODE", "full")) or "full").strip().lower()
+    run_as_root_raw = (os.environ.get("AOE_CLAUDE_RUN_AS_ROOT", os.environ.get("AOE_CODEX_RUN_AS_ROOT", "0")) or "0").strip().lower()
+    run_as_root = run_as_root_raw in {"1", "true", "yes", "on"}
+
+    cmd = [
+        "claude",
+        "-p",
+        prompt,
+        "--output-format",
+        "text",
+        "--add-dir",
+        str(args.project_root),
+        "--no-session-persistence",
+    ]
+
+    if perm_mode in {"full", "unsafe", "bypass", "dangerous", "danger", "danger-full-access"}:
+        cmd.extend(["--dangerously-skip-permissions", "--permission-mode", "bypassPermissions"])
+    elif perm_mode in {"workspace", "workspace-write", "safe", ""}:
+        cmd.extend(["--permission-mode", "acceptEdits"])
+    elif perm_mode in {"read-only", "readonly"}:
+        cmd.extend(["--permission-mode", "plan"])
+    elif perm_mode in {"auto", "default", "dontask", "dont-ask", "acceptedits", "bypasspermissions", "plan"}:
+        mode_map = {
+            "dontask": "dontAsk",
+            "dont-ask": "dontAsk",
+            "acceptedits": "acceptEdits",
+            "bypasspermissions": "bypassPermissions",
+        }
+        cmd.extend(["--permission-mode", mode_map.get(perm_mode, perm_mode)])
+    else:
+        cmd.extend(["--dangerously-skip-permissions", "--permission-mode", "bypassPermissions"])
+
+    if run_as_root:
+        can_sudo = subprocess.run(
+            ["sudo", "-n", "true"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode == 0
+        if can_sudo:
+            env_pairs: List[str] = []
+            for k in [
+                "HOME",
+                "PATH",
+                "ANTHROPIC_API_KEY",
+                "ANTHROPIC_BASE_URL",
+                "ANTHROPIC_AUTH_TOKEN",
+                "CLAUDE_CODE_USE_BEDROCK",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+                "CLAUDE_CONFIG_DIR",
+                "AWS_REGION",
+                "AWS_DEFAULT_REGION",
+                "AWS_PROFILE",
+                "AWS_ACCESS_KEY_ID",
+                "AWS_SECRET_ACCESS_KEY",
+                "AWS_SESSION_TOKEN",
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "NO_PROXY",
+                "ALL_PROXY",
+            ]:
+                v = os.environ.get(k, "")
+                if v:
+                    env_pairs.append(f"{k}={v}")
+            cmd = ["sudo", "-n", "env", *env_pairs, *cmd]
+
+    proc = subprocess.run(
+        cmd,
+        text=True,
+        capture_output=True,
+        cwd=str(args.project_root),
+        timeout=max(5, int(timeout_sec)),
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        raise RuntimeError(f"claude exec failed: {detail[:1000]}")
+    body = (proc.stdout or "").strip()
+    if not body:
+        raise RuntimeError("claude exec returned empty output")
+    return body
 def parse_json_object_from_text(text: str) -> Optional[Dict[str, Any]]:
     src = (text or "").strip()
     if not src:
@@ -1844,6 +1929,8 @@ def build_planned_dispatch_prompt(
 ) -> str:
     subtasks = plan.get("subtasks") or []
     summary = str(plan.get("summary", "")).strip()
+    meta = plan.get("meta") if isinstance(plan.get("meta"), dict) else {}
+    team_spec = meta.get("phase2_team_spec") if isinstance(meta.get("phase2_team_spec"), dict) else {}
 
     lines: List[str] = []
     lines.append("원사용자 요청:")
@@ -1864,6 +1951,39 @@ def build_planned_dispatch_prompt(
         role = str(row.get("owner_role", "")).strip() or "Worker"
         lines.append(f"- {sid} [{role}] {title}: {goal}")
 
+    execution_groups = team_spec.get("execution_groups") if isinstance(team_spec.get("execution_groups"), list) else []
+    review_groups = team_spec.get("review_groups") if isinstance(team_spec.get("review_groups"), list) else []
+    if execution_groups:
+        lines.append("")
+        lines.append(
+            "Phase2 execution lanes: {mode}".format(
+                mode=str(team_spec.get("execution_mode", "single")).strip() or "single"
+            )
+        )
+        for row in execution_groups[:8]:
+            if not isinstance(row, dict):
+                continue
+            gid = str(row.get("group_id", "")).strip() or "E"
+            role = str(row.get("role", "")).strip() or "Worker"
+            subtask_ids = [str(item).strip() for item in (row.get("subtask_ids") or []) if str(item).strip()]
+            lines.append(f"- lane {gid} [{role}] -> {', '.join(subtask_ids) if subtask_ids else '-'}")
+    if review_groups:
+        lines.append("")
+        lines.append(
+            "Phase2 critic lanes: {mode}".format(
+                mode=str(team_spec.get("review_mode", "skip")).strip() or "skip"
+            )
+        )
+        for row in review_groups[:6]:
+            if not isinstance(row, dict):
+                continue
+            gid = str(row.get("group_id", "")).strip() or "R"
+            role = str(row.get("role", "")).strip() or "Reviewer"
+            kind = str(row.get("kind", "")).strip() or "verifier"
+            depends_on = [str(item).strip() for item in (row.get("depends_on") or []) if str(item).strip()]
+            dep_txt = f" after {', '.join(depends_on)}" if depends_on else ""
+            lines.append(f"- review {gid} [{role}/{kind}]{dep_txt}")
+
     issues = critic.get("issues") or []
     recs = critic.get("recommendations") or []
     approved = not critic_has_blockers(critic)
@@ -1879,8 +1999,89 @@ def build_planned_dispatch_prompt(
                 lines.append(f"- fix: {str(item)}")
 
     lines.append("")
+    lines.append("Phase2 실행 규칙:")
+    lines.append("- 가능한 역할은 병렬로 동시에 진행한다.")
+    lines.append("- critic/verifier 역할은 핵심 산출물에 대해 병렬로 비판 검토한다.")
+    lines.append("- 실행 결과는 역할별 산출물 + 검증 근거 + 남은 리스크를 명확히 남긴다.")
+    lines.append("")
     lines.append("위 계획과 체크사항을 반영해 역할별 실행/검증 결과를 산출해라.")
     return "\n".join(lines)
+
+
+def run_phase1_ensemble_planning(
+    args: argparse.Namespace,
+    user_prompt: str,
+    available_roles: List[str],
+    report_progress: Optional[Callable[..., None]] = None,
+) -> Dict[str, Any]:
+    providers_csv = str(getattr(args, "plan_phase1_providers", "codex,claude") or "codex,claude")
+    requested = []
+    for token in providers_csv.split(","):
+        item = str(token or "").strip().lower()
+        if item and item not in requested:
+            requested.append(item)
+    if not requested:
+        requested = ["codex", "claude"]
+
+    runner_catalog: Dict[str, tuple[str, Callable[[str, int], str]]] = {
+        "codex": ("codex", lambda prompt, timeout_sec: run_codex_exec(args, prompt, timeout_sec=timeout_sec)),
+        "claude": ("claude", lambda prompt, timeout_sec: run_claude_exec(args, prompt, timeout_sec=timeout_sec)),
+    }
+    unsupported = [name for name in requested if name not in runner_catalog]
+    if unsupported:
+        detail = f"unsupported phase1 providers: {', '.join(unsupported)}"
+        return {
+            "plan_data": None,
+            "plan_critic": default_plan_critic_payload(),
+            "plan_roles": [],
+            "plan_replans": [],
+            "plan_error": detail,
+            "plan_gate_blocked": True,
+            "plan_gate_reason": detail,
+            "phase1_rounds": 0,
+            "phase1_mode": "ensemble",
+            "phase1_providers": requested,
+        }
+
+    available_execs: Dict[str, Callable[[str, int], str]] = {}
+    missing_binaries: List[str] = []
+    for name in requested:
+        binary, runner = runner_catalog[name]
+        if shutil.which(binary):
+            available_execs[name] = runner
+        else:
+            missing_binaries.append(binary)
+
+    min_providers = max(1, int(getattr(args, "plan_phase1_min_providers", 2) or 2))
+    if len(available_execs) < min_providers:
+        detail = (
+            f"phase1 ensemble requires at least {min_providers} providers; "
+            f"available={','.join(sorted(available_execs)) or 'none'} "
+            f"missing={','.join(missing_binaries) or 'none'}"
+        )
+        return {
+            "plan_data": None,
+            "plan_critic": default_plan_critic_payload(),
+            "plan_roles": [],
+            "plan_replans": [],
+            "plan_error": detail,
+            "plan_gate_blocked": True,
+            "plan_gate_reason": detail,
+            "phase1_rounds": 0,
+            "phase1_mode": "ensemble",
+            "phase1_providers": list(available_execs),
+        }
+
+    return plan_ensemble_mod.run_phase1_ensemble_planning(
+        args=args,
+        user_prompt=user_prompt,
+        available_roles=available_roles,
+        normalize_task_plan_payload=normalize_task_plan_payload,
+        parse_json_object_from_text=parse_json_object_from_text,
+        run_provider_execs=available_execs,
+        plan_roles_from_subtasks=plan_roles_from_subtasks,
+        report_progress=report_progress,
+    )
 
 
 def run_orchestrator_direct(args: argparse.Namespace, user_prompt: str, reply_lang: str = DEFAULT_REPLY_LANG) -> str:
@@ -1991,19 +2192,44 @@ def tf_worker_session_name(request_id: str, role: str) -> str:
     )
 
 
-def tf_worker_specs(args: argparse.Namespace, request_id: str, roles: List[str], startup_timeout_sec: int) -> List[Dict[str, str]]:
+def tf_worker_specs(
+    args: argparse.Namespace,
+    request_id: str,
+    roles: List[str],
+    startup_timeout_sec: int,
+    lane_summary: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
     args._aoe_default_tf_worker_session_prefix = DEFAULT_TF_WORKER_SESSION_PREFIX
-    return tf_exec_mod.tf_worker_specs(args, request_id, roles, startup_timeout_sec)
+    return tf_exec_mod.tf_worker_specs(args, request_id, roles, startup_timeout_sec, lane_summary=lane_summary)
 
 
-def preview_tf_worker_sessions(args: argparse.Namespace, request_id: str, roles: List[str], startup_timeout_sec: int) -> Dict[str, Any]:
+def preview_tf_worker_sessions(
+    args: argparse.Namespace,
+    request_id: str,
+    roles: List[str],
+    startup_timeout_sec: int,
+    lane_summary: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     args._aoe_default_tf_worker_session_prefix = DEFAULT_TF_WORKER_SESSION_PREFIX
-    return tf_exec_mod.preview_tf_worker_sessions(args, request_id, roles, startup_timeout_sec)
+    return tf_exec_mod.preview_tf_worker_sessions(args, request_id, roles, startup_timeout_sec, lane_summary=lane_summary)
 
 
-def spawn_tf_worker_sessions(args: argparse.Namespace, request_id: str, roles: List[str], startup_timeout_sec: int) -> Dict[str, Any]:
+def spawn_tf_worker_sessions(
+    args: argparse.Namespace,
+    request_id: str,
+    roles: List[str],
+    startup_timeout_sec: int,
+    lane_summary: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     args._aoe_default_tf_worker_session_prefix = DEFAULT_TF_WORKER_SESSION_PREFIX
-    return tf_exec_mod.spawn_tf_worker_sessions(args, request_id, roles, startup_timeout_sec, run_command=run_command)
+    return tf_exec_mod.spawn_tf_worker_sessions(
+        args,
+        request_id,
+        roles,
+        startup_timeout_sec,
+        lane_summary=lane_summary,
+        run_command=run_command,
+    )
 
 
 def cleanup_tf_worker_sessions(tf_entry: Dict[str, Any]) -> None:
@@ -2088,10 +2314,15 @@ def git_branch_delete(repo_root: Path, branch: str) -> None:
     return tf_exec_mod.git_branch_delete(repo_root, branch, run_command=run_command)
 
 
-def ensure_tf_exec_workspace(args: argparse.Namespace, request_id: str) -> Dict[str, Any]:
+def ensure_tf_exec_workspace(
+    args: argparse.Namespace,
+    request_id: str,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     return tf_exec_mod.ensure_tf_exec_workspace(
         args,
         request_id,
+        metadata=metadata,
         default_tf_exec_mode=DEFAULT_TF_EXEC_MODE,
         default_tf_work_root_name=DEFAULT_TF_WORK_ROOT_NAME,
         default_tf_exec_map_file=DEFAULT_TF_EXEC_MAP_FILE,
@@ -2133,6 +2364,7 @@ def run_aoe_orch(
     priority_override: Optional[str] = None,
     timeout_override: Optional[int] = None,
     no_wait_override: Optional[bool] = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     selection = tf_backend_selection_mod.resolve_effective_tf_backend(Path(str(args.team_dir)))
     backend_name = normalize_tf_backend_name(selection.get("effective_backend"), default=DEFAULT_TF_BACKEND)
@@ -2151,6 +2383,19 @@ def run_aoe_orch(
             f" selection={selection.get('selection_reason', 'default_local')}{config_hint}"
         )
 
+    request_metadata = {
+        "backend": backend_name,
+        "selection_reason": str(selection.get("selection_reason", "") or ""),
+        "profile": str(selection.get("profile", "") or ""),
+        "sandbox_only": bool(selection.get("sandbox_only", True)),
+        "config_path": str(selection.get("config_path", "") or ""),
+    }
+    if isinstance(metadata, dict):
+        for key, value in metadata.items():
+            if not isinstance(key, str):
+                continue
+            request_metadata[str(key).strip()] = value
+
     request = build_tf_backend_request(
         args=args,
         prompt=prompt,
@@ -2159,13 +2404,7 @@ def run_aoe_orch(
         priority_override=priority_override,
         timeout_override=timeout_override,
         no_wait_override=no_wait_override,
-        metadata={
-            "backend": backend_name,
-            "selection_reason": str(selection.get("selection_reason", "") or ""),
-            "profile": str(selection.get("profile", "") or ""),
-            "sandbox_only": bool(selection.get("sandbox_only", True)),
-            "config_path": str(selection.get("config_path", "") or ""),
-        },
+        metadata=request_metadata,
     )
     deps = build_tf_backend_deps(
         default_tf_exec_mode=DEFAULT_TF_EXEC_MODE,
@@ -2527,6 +2766,9 @@ def help_text(ui_lang: str = DEFAULT_UI_LANG) -> str:
         "- /replan <request_or_alias>\n"
         "- /request <request_or_alias>\n"
         "- /run <prompt>\n"
+        "- /add-role <Role|--name Name> [--provider <name>] [--launch <cmd>] [--spawn|--no-spawn]\n"
+        "- /add-claude <Role|--name Name> [--launch <cmd>] [--spawn|--no-spawn]\n"
+        "- /add-codex <Role|--name Name> [--launch <cmd>] [--spawn|--no-spawn]\n"
         "\n"
         "CLI mode\n"
         "- aoe status\n"
@@ -2561,7 +2803,9 @@ def help_text(ui_lang: str = DEFAULT_UI_LANG) -> str:
         "- aoe replan <request_or_alias>\n"
         "- aoe request <request_or_alias>\n"
         "- aoe run [--direct|--dispatch] [--roles <csv>] [--priority P1|P2|P3] [--timeout-sec N] [--no-wait] <prompt>\n"
-        "- aoe add-role <Role> [--provider <name>] [--launch <cmd>] [--spawn|--no-spawn]\n"
+        "- aoe add-role <Role|--name Name> [--provider <name>] [--launch <cmd>] [--spawn|--no-spawn]\n"
+        "- aoe add-claude <Role|--name Name> [--launch <cmd>] [--spawn|--no-spawn]\n"
+        "- aoe add-codex <Role|--name Name> [--launch <cmd>] [--spawn|--no-spawn]\n"
         "\n"
         "Orch Manager\n"
         "- aoe orch list (or: aoe orch map)\n"

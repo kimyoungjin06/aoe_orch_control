@@ -8,6 +8,20 @@ from typing import Any, Callable, Dict, List, Optional
 from aoe_tg_exec_pipeline import project_alias
 
 
+def result_request_ids(state: Dict[str, Any], fallback_request_id: str = "") -> List[str]:
+    linked = state.get("linked_request_ids") if isinstance(state, dict) else []
+    rows = linked if isinstance(linked, list) else []
+    merged: List[str] = []
+    seen = set()
+    for raw in [fallback_request_id, str((state or {}).get("request_id", "")).strip(), *rows]:
+        token = str(raw or "").strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        merged.append(token)
+    return merged
+
+
 def confirmed_result_reply_markup(entry: Dict[str, Any], key: str) -> Dict[str, Any]:
     alias = project_alias(entry, key)
     return {
@@ -136,6 +150,7 @@ def send_dispatch_result(
     render_run_response: Callable[..., str],
     finalize_request_reply_messages: Callable[..., Dict[str, Any]],
 ) -> bool:
+    request_ids = result_request_ids(state, req_id)
     reply_markup = confirmed_result_reply_markup(entry, key) if str(run_auto_source or "").strip().lower() == "confirmed" else None
     if task is not None:
         ver_status = str((task.get("stages") or {}).get("verification", "pending"))
@@ -160,9 +175,9 @@ def send_dispatch_result(
     if bool(state.get("complete", False)) and (state.get("replies") or []):
         try:
             send(synthesize_orchestrator_response(p_args, prompt, state), context="synth", reply_markup=reply_markup)
-            if req_id:
+            for request_id in request_ids:
                 try:
-                    finalize_request_reply_messages(args, req_id)
+                    finalize_request_reply_messages(args, request_id)
                 except Exception:
                     pass
             log_event(
@@ -179,11 +194,12 @@ def send_dispatch_result(
             pass
 
     send(render_run_response(state, task=task), context="result", reply_markup=reply_markup)
-    if bool(state.get("complete", False)) and req_id:
-        try:
-            finalize_request_reply_messages(args, req_id)
-        except Exception:
-            pass
+    if bool(state.get("complete", False)):
+        for request_id in request_ids:
+            try:
+                finalize_request_reply_messages(args, request_id)
+            except Exception:
+                pass
     log_event(
         event="dispatch_result",
         project=key,

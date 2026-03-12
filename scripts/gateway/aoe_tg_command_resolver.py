@@ -15,6 +15,7 @@ from aoe_tg_parse import (
     parse_command,
     parse_quick_message,
 )
+from aoe_tg_orch_actions import action_call_to_resolved_command, infer_mother_orch_action_call
 
 _ABBREV_COMMANDS = [
     # Stable surface for prefix-based abbreviation (Telegram UX sugar).
@@ -63,6 +64,10 @@ _ABBREV_COMMANDS = [
     "request",
     "run",
     "clear",
+    "add-role",
+    "add-claude",
+    "add-codex",
+    "add-shell",
 ]
 
 
@@ -124,6 +129,21 @@ class ResolvedCommand:
     run_auto_source: str = ""
 
 
+def _default_project_key_for_plaintext(manager_state: Dict[str, Any]) -> str:
+    projects = manager_state.get("projects")
+    if not isinstance(projects, dict):
+        return ""
+    project_lock = manager_state.get("project_lock")
+    if isinstance(project_lock, dict) and bool(project_lock.get("enabled")):
+        token = str(project_lock.get("project_key", "")).strip()
+        if token and isinstance(projects.get(token), dict):
+            return token
+    active = str(manager_state.get("active", "")).strip()
+    if active and isinstance(projects.get(active), dict):
+        return active
+    return ""
+
+
 def resolve_message_command(
     text: str,
     slash_only: bool,
@@ -137,6 +157,14 @@ def resolve_message_command(
     save_manager_state: Callable[[Path, Dict[str, Any]], None],
 ) -> ResolvedCommand:
     out = ResolvedCommand()
+
+    def _apply_add_role_cli(cli: Dict[str, Any]) -> None:
+        out.cmd = "add-role"
+        out.add_role_name = str(cli.get("role", "")).strip()
+        out.add_role_provider = cli.get("provider")
+        out.add_role_launch = cli.get("launch")
+        out.add_role_spawn = bool(cli.get("spawn", True))
+
     cmd, rest = parse_command(text)
     out.cmd = _expand_command_abbrev(str(cmd or "").strip().lower())
     out.rest = str(rest or "").strip()
@@ -164,6 +192,11 @@ def resolve_message_command(
             out.rest = slash_rest
         elif out.cmd in {"id", "whoami"}:
             out.cmd = "whoami"
+        elif out.cmd in {"add-role", "addrole", "add-claude", "addclaude", "add-codex", "addcodex", "add-shell", "addshell"}:
+            cli = parse_cli_message(f"aoe {out.cmd} {slash_rest}".strip())
+            if not cli:
+                raise RuntimeError("usage: /add-role <Role> [--provider <name>] [--launch <cmd>] [--spawn|--no-spawn]")
+            _apply_add_role_cli(cli)
         elif out.cmd in {"mode", "inbox", "on", "off"}:
             src_cmd = out.cmd
             out.cmd = "mode"
@@ -402,10 +435,7 @@ def resolve_message_command(
                 out.run_force_mode = cli.get("force_mode")
                 out.orch_target = cli.get("orch")
             elif out.cmd == "add-role":
-                out.add_role_name = str(cli.get("role", "")).strip()
-                out.add_role_provider = cli.get("provider")
-                out.add_role_launch = cli.get("launch")
-                out.add_role_spawn = bool(cli.get("spawn", True))
+                _apply_add_role_cli(cli)
             elif out.cmd in {"orch-use", "orch-status", "orch-repair"}:
                 out.orch_target = cli.get("orch")
             elif out.cmd == "orch-add":
@@ -485,16 +515,37 @@ def resolve_message_command(
             if clear_pending_mode(manager_state, chat_id) and (not dry_run):
                 save_manager_state(manager_state_file, manager_state)
         elif pending_prompt:
-            default_mode = get_default_mode(manager_state, chat_id)
-            if default_mode in {"dispatch", "direct"}:
-                effective_mode = default_mode
-                inferred_mode = infer_natural_run_mode(pending_prompt, default_mode)
-                if inferred_mode in {"dispatch", "direct"}:
-                    effective_mode = inferred_mode
-                out.cmd = "run"
-                out.run_prompt = pending_prompt
-                out.run_force_mode = effective_mode
-                out.run_auto_source = "default-intent" if effective_mode != default_mode else "default"
+            default_project_key = _default_project_key_for_plaintext(manager_state)
+            has_active_task = bool(default_project_key)
+            action_call = infer_mother_orch_action_call(
+                pending_prompt,
+                default_project_key=default_project_key,
+                has_active_task=has_active_task,
+            )
+            mapped = action_call_to_resolved_command(action_call)
+            out.cmd = str(mapped.get("cmd", "")).strip().lower()
+            out.rest = str(mapped.get("rest", "")).strip()
+            out.run_prompt = str(mapped.get("run_prompt", "")).strip()
+            out.run_force_mode = mapped.get("run_force_mode")
+            out.run_auto_source = (
+                str(mapped.get("run_auto_source", "")).strip()
+                or f"orch-action:{str(action_call.get('action', '')).strip()}"
+            )
+            out.orch_target = mapped.get("orch_target") or out.orch_target
+            out.orch_task_request_id = mapped.get("orch_task_request_id") or out.orch_task_request_id
+            out.orch_retry_request_id = mapped.get("orch_retry_request_id") or out.orch_retry_request_id
+            out.orch_replan_request_id = mapped.get("orch_replan_request_id") or out.orch_replan_request_id
+            if not out.cmd:
+                default_mode = get_default_mode(manager_state, chat_id)
+                if default_mode in {"dispatch", "direct"}:
+                    effective_mode = default_mode
+                    inferred_mode = infer_natural_run_mode(pending_prompt, default_mode)
+                    if inferred_mode in {"dispatch", "direct"}:
+                        effective_mode = inferred_mode
+                    out.cmd = "run"
+                    out.run_prompt = pending_prompt
+                    out.run_force_mode = effective_mode
+                    out.run_auto_source = "default-intent" if effective_mode != default_mode else "default"
 
     if not out.cmd and bool(slash_only):
         natural = parse_quick_message(text)

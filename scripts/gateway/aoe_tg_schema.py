@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from aoe_tg_orch_contract import normalize_phase2_execution_plan, normalize_phase2_team_spec
+
 
 def _trim_text(raw: Any, limit: int) -> str:
     return str(raw or "").strip()[: max(0, int(limit))]
@@ -23,6 +25,10 @@ def default_exec_critic_payload(
     attempt_no: int = 1,
     max_attempts: int = 3,
     at: str = "",
+    rerun_execution_lane_ids: List[str] | None = None,
+    rerun_review_lane_ids: List[str] | None = None,
+    manual_followup_execution_lane_ids: List[str] | None = None,
+    manual_followup_review_lane_ids: List[str] | None = None,
 ) -> Dict[str, Any]:
     return {
         "verdict": verdict,
@@ -32,6 +38,14 @@ def default_exec_critic_payload(
         "attempt": max(1, int(attempt_no or 1)),
         "max_attempts": max(1, int(max_attempts or 1)),
         "at": str(at or "").strip(),
+        "rerun_execution_lane_ids": [str(x).strip()[:32] for x in (rerun_execution_lane_ids or []) if str(x).strip()],
+        "rerun_review_lane_ids": [str(x).strip()[:32] for x in (rerun_review_lane_ids or []) if str(x).strip()],
+        "manual_followup_execution_lane_ids": [
+            str(x).strip()[:32] for x in (manual_followup_execution_lane_ids or []) if str(x).strip()
+        ],
+        "manual_followup_review_lane_ids": [
+            str(x).strip()[:32] for x in (manual_followup_review_lane_ids or []) if str(x).strip()
+        ],
     }
 
 
@@ -117,7 +131,7 @@ def normalize_task_plan_payload(
     if not worker_roles:
         worker_roles = worker_list[:]
 
-    return {
+    plan_payload = {
         "summary": summary[:240],
         "subtasks": normalized,
         "meta": {
@@ -125,6 +139,26 @@ def normalize_task_plan_payload(
             "worker_roles": worker_roles,
         },
     }
+
+    raw_phase2 = meta_in.get("phase2_team_spec")
+    if raw_phase2 is None and isinstance(parsed, dict):
+        raw_phase2 = parsed.get("phase2_team_spec")
+    plan_payload["meta"]["phase2_team_spec"] = normalize_phase2_team_spec(
+        raw_phase2,
+        plan=plan_payload,
+        roles=worker_roles,
+        verifier_roles=[],
+        require_verifier=False,
+    )
+    raw_phase2_exec = meta_in.get("phase2_execution_plan")
+    if raw_phase2_exec is None and isinstance(parsed, dict):
+        raw_phase2_exec = parsed.get("phase2_execution_plan")
+    plan_payload["meta"]["phase2_execution_plan"] = normalize_phase2_execution_plan(
+        raw_phase2_exec,
+        team_spec=plan_payload["meta"]["phase2_team_spec"],
+        readonly=True,
+    )
+    return plan_payload
 
 
 def normalize_plan_critic_payload(parsed: Any, *, max_items: int = 5) -> Dict[str, Any]:
@@ -195,6 +229,10 @@ def normalize_exec_critic_payload(
     action = "escalate"
     reason = "critic_parse_error"
     fix = ""
+    rerun_execution_lane_ids: List[str] = []
+    rerun_review_lane_ids: List[str] = []
+    manual_followup_execution_lane_ids: List[str] = []
+    manual_followup_review_lane_ids: List[str] = []
 
     if isinstance(parsed, dict):
         verdict_map = {
@@ -224,6 +262,14 @@ def normalize_exec_critic_payload(
         action = action_map.get(araw, "")
         reason = _trim_text(parsed.get("reason", "") or reason, 200) or reason
         fix = _trim_text(parsed.get("fix", ""), 600)
+        rerun_execution_lane_ids = [str(x).strip()[:32] for x in (parsed.get("rerun_execution_lane_ids") or []) if str(x).strip()]
+        rerun_review_lane_ids = [str(x).strip()[:32] for x in (parsed.get("rerun_review_lane_ids") or []) if str(x).strip()]
+        manual_followup_execution_lane_ids = [
+            str(x).strip()[:32] for x in (parsed.get("manual_followup_execution_lane_ids") or []) if str(x).strip()
+        ]
+        manual_followup_review_lane_ids = [
+            str(x).strip()[:32] for x in (parsed.get("manual_followup_review_lane_ids") or []) if str(x).strip()
+        ]
 
     if verdict == "success":
         action = "none"
@@ -241,4 +287,8 @@ def normalize_exec_critic_payload(
         attempt_no=attempt_no,
         max_attempts=max_attempts,
         at=at,
+        rerun_execution_lane_ids=rerun_execution_lane_ids,
+        rerun_review_lane_ids=rerun_review_lane_ids,
+        manual_followup_execution_lane_ids=manual_followup_execution_lane_ids,
+        manual_followup_review_lane_ids=manual_followup_review_lane_ids,
     )

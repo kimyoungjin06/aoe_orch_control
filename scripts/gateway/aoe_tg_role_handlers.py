@@ -19,7 +19,11 @@ def handle_add_role_command(
         return False
 
     if not add_role_name:
-        send("usage: aoe add-role <Role> [--provider <name>] [--launch <cmd>] [--spawn|--no-spawn]", context="add-role usage")
+        send(
+            "usage: aoe add-role <Role|--name Name> [--provider <name>] [--launch <cmd>] [--spawn|--no-spawn]\n"
+            "shortcut: aoe add-claude <Role|--name Name> | aoe add-codex <Role|--name Name>",
+            context="add-role usage",
+        )
         return True
     key, _entry, p_args = get_context(None)
     if args.dry_run:
@@ -42,5 +46,3 @@ def handle_add_role_command(
     )
     send(f"orch: {key}\n{result}", context="add-role")
     return True
-
-

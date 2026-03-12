@@ -218,6 +218,23 @@ This layer covers:
 - `/orch ...`
 - `/todo ...`
 
+### 5.5 Mother-Orch Action API
+
+Before Telegram/CLI/plaintext requests are turned into concrete commands,
+Mother-Orch should reason in a normalized action seam:
+
+- `scripts/gateway/aoe_tg_orch_actions.py`
+- `docs/MOTHER_ORCH_ACTION_API.md`
+
+This seam defines:
+
+- action families
+- intent classes (`status / inspect / work / control`)
+- mutation boundaries (`safe / runtime_mutation / canonical_mutation`)
+
+It exists so future adapters, including MCP, can share one stable control-plane
+contract instead of each inventing its own routing shortcuts.
+
 ## 6. Policy / State / View Modules
 
 Recent refactoring introduced explicit domain modules. These are the intended stable seams.

@@ -40,6 +40,7 @@ Project charter:
 
 Primary docs:
 - Architecture: `docs/ARCHITECTURE.md`
+- Mother-Orch Action API: `docs/MOTHER_ORCH_ACTION_API.md`
 - Command reference: `docs/COMMANDS.md`
 - Deployment: `docs/DEPLOYMENT.md`
 - Runbook: `docs/RUNBOOK.md`

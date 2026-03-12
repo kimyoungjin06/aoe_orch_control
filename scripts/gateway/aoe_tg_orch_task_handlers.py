@@ -160,6 +160,44 @@ def _orch_status_reply_markup(manager_state: Dict[str, Any], key: str, entry: Di
     }
 
 
+def _task_ref_for_actions(task: Dict[str, Any], request_id: str) -> str:
+    context = task.get("context") if isinstance(task.get("context"), dict) else {}
+    short_id = str(context.get("task_short_id", "")).strip()
+    if short_id:
+        return short_id
+    return str(request_id or "").strip()
+
+
+def _orch_task_reply_markup(key: str, entry: Dict[str, Any], request_id: str, task: Dict[str, Any]) -> Dict[str, Any]:
+    alias = _project_alias(entry, key)
+    ref = _task_ref_for_actions(task, request_id)
+    exec_critic = task.get("exec_critic") if isinstance(task.get("exec_critic"), dict) else {}
+    rerun_exec = [str(x).strip() for x in (exec_critic.get("rerun_execution_lane_ids") or []) if str(x).strip()]
+    rerun_review = [str(x).strip() for x in (exec_critic.get("rerun_review_lane_ids") or []) if str(x).strip()]
+    manual_exec = [str(x).strip() for x in (exec_critic.get("manual_followup_execution_lane_ids") or []) if str(x).strip()]
+    manual_review = [str(x).strip() for x in (exec_critic.get("manual_followup_review_lane_ids") or []) if str(x).strip()]
+    verdict = str(exec_critic.get("verdict", "")).strip().lower()
+    action = str(exec_critic.get("action", "")).strip().lower()
+
+    keyboard: List[List[Dict[str, str]]] = [
+        [{"text": f"/check {ref}"}, {"text": f"/task {ref}"}],
+    ]
+    if rerun_exec or rerun_review or verdict == "retry":
+        row = [{"text": f"/retry {ref}"}]
+        if action == "replan":
+            row.append({"text": f"/replan {ref}"})
+        keyboard.append(row)
+    if manual_exec or manual_review or verdict in {"fail", "intervention"}:
+        keyboard.append([{"text": f"/todo {alias} followup"}, {"text": f"/orch monitor {alias}"}])
+    keyboard.append([{"text": f"/orch status {alias}"}, {"text": "/queue"}, {"text": "/map"}])
+    return {
+        "keyboard": keyboard,
+        "resize_keyboard": True,
+        "one_time_keyboard": False,
+        "input_field_placeholder": f"예: /retry {ref} 또는 /task {ref}",
+    }
+
+
 def ensure_scenario_file(*, template_root: Path, team_dir: Path, dry_run: bool) -> str:
     """Ensure `.aoe-team/AOE_TODO.md` exists for a project.
 
@@ -588,7 +626,11 @@ def handle_orch_task_command(
         set_chat_selected_task_ref(manager_state, chat_id, key, req_id)
         if not args.dry_run:
             save_manager_state(args.manager_state_file, manager_state)
-        send(summarize_task_lifecycle(key, task), context="orch-task")
+        send(
+            summarize_task_lifecycle(key, task),
+            context="orch-task",
+            reply_markup=_orch_task_reply_markup(key, entry, req_id, task),
+        )
         return True
 
     if cmd == "orch-pick":

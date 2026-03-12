@@ -19,9 +19,12 @@ from typing import Any, Dict, List
 DEFAULT_REPAIR_AGENTS = [
     "DataEngineer:codex",
     "Reviewer:codex",
+    "Claude-Reviewer:claude",
     "Local-Dev:codex",
     "Local-Writer:codex",
+    "Claude-Writer:claude",
     "Local-Analyst:codex",
+    "Claude-Analyst:claude",
 ]
 
 

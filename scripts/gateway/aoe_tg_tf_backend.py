@@ -55,6 +55,16 @@ class TFBackendRequest:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
+def normalize_backend_metadata(raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    data = raw if isinstance(raw, dict) else {}
+    out: Dict[str, Any] = {}
+    for key, value in data.items():
+        if not isinstance(key, str):
+            continue
+        out[str(key).strip()] = value
+    return out
+
+
 @dataclass(frozen=True)
 class TFBackendDeps:
     """Execution dependencies injected into the backend adapter."""
@@ -102,7 +112,7 @@ def build_tf_backend_request(
         priority_override=priority_override,
         timeout_override=timeout_override,
         no_wait_override=no_wait_override,
-        metadata=dict(metadata or {}),
+        metadata=normalize_backend_metadata(metadata),
     )
 
 

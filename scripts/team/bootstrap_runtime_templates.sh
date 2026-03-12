@@ -134,7 +134,7 @@ for f in "$TEMPLATE_DIR"/workers/*.json; do
   copy_file_if_needed "$f" "$TEAM_DIR/workers/$(basename "$f")"
 done
 
-for role in Orchestrator DataEngineer Reviewer Local-Dev Local-Writer Local-Analyst; do
+for role in Orchestrator DataEngineer Reviewer Claude-Reviewer Local-Dev Local-Writer Claude-Writer Local-Analyst Claude-Analyst; do
   src="$TEMPLATE_DIR/agents/$role/AGENTS.md"
   dst="$TEAM_DIR/agents/$role/AGENTS.md"
   if [[ -f "$src" ]]; then

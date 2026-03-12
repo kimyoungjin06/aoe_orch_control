@@ -22,6 +22,8 @@
 - `aoe-orch status ...`: 현재 상태 조회
 - `aoe-orch worker --for <Role> ...`: 역할별 워커 루프 실행
 - `aoe-orch add-role ...`: 워커 역할 추가
+- `aoe add-claude <Role|--name Name> [--spawn]`: Claude 세션을 role로 추가
+- `aoe add-codex <Role|--name Name> [--spawn]`: Codex 세션을 role로 추가
 
 정확한 옵션/서브커맨드 목록은 upstream 문서를 기준으로 한다.
 
@@ -71,6 +73,27 @@
 - `aoe-team-stack switch <idx|session>`: 즉시 전환/attach
 - `aoe-team-stack page next|prev|set <N>|status|reset`
 - `aoe-team-stack auto on|off|status`: tmux 백그라운드 스케줄러 세션 제어
+
+worker runtime 권한 정책:
+
+- 이 스택의 worker plane은 role의 `provider`를 보고 실행기를 고른다.
+  - `provider=codex` -> `codex exec`
+  - `provider=claude` -> `claude -p`
+- Codex 권한 env:
+  - `AOE_CODEX_PERMISSION_MODE=full|danger-full-access|workspace-write|read-only`
+  - `AOE_CODEX_RUN_AS_ROOT=1`
+- Claude 권한 env:
+  - `AOE_CLAUDE_PERMISSION_MODE=full|workspace-write|read-only|auto|default`
+  - `AOE_CLAUDE_RUN_AS_ROOT=1`
+- `full` 계열은 worker runtime에서 사실상 YOLO/full-access로 해석된다.
+  - Codex: `--dangerously-bypass-approvals-and-sandbox`
+  - Claude: `--dangerously-skip-permissions --permission-mode bypassPermissions`
+- Phase1 planning의 Claude provider도 같은 env를 읽는다.
+  - 이제 `run_claude_exec()`는 `--add-dir <project_root>`와 provider별 permission mode를 사용한다.
+  - 이전처럼 `--tools ""`로 막혀 있지 않아서 코드/문서 접근 기반 planning이 가능하다.
+- 진단용:
+  - `AOE_WORKER_DRY_RUN=1 bash scripts/team/runtime/worker_codex_handler.sh`
+  - 실제 실행 없이 provider/launch/permission 플래그만 출력한다.
 
 ---
 

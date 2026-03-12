@@ -448,6 +448,7 @@ def dispatch_and_sync_task(
     run_priority_override: Optional[str],
     run_timeout_override: Optional[int],
     run_no_wait_override: Optional[bool],
+    dispatch_metadata: Optional[Dict[str, Any]],
     key: str,
     entry: Dict[str, Any],
     manager_state: Dict[str, Any],
@@ -470,6 +471,7 @@ def dispatch_and_sync_task(
         priority_override=run_priority_override,
         timeout_override=run_timeout_override,
         no_wait_override=run_no_wait_override,
+        metadata=dispatch_metadata,
     )
 
     req_id = str(state.get("request_id", "")).strip()

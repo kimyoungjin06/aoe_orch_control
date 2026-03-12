@@ -29,6 +29,12 @@
       "session": ""
     },
     {
+      "role": "Claude-Reviewer",
+      "provider": "claude",
+      "launch": "claude",
+      "session": ""
+    },
+    {
       "role": "Local-Dev",
       "provider": "codex",
       "launch": "codex",
@@ -41,9 +47,21 @@
       "session": ""
     },
     {
+      "role": "Claude-Writer",
+      "provider": "claude",
+      "launch": "claude",
+      "session": ""
+    },
+    {
       "role": "Local-Analyst",
       "provider": "codex",
       "launch": "codex",
+      "session": ""
+    },
+    {
+      "role": "Claude-Analyst",
+      "provider": "claude",
+      "launch": "claude",
       "session": ""
     }
   ]
