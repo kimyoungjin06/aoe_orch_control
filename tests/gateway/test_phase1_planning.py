@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -69,6 +71,45 @@ def test_phase1_ensemble_runs_three_rounds_and_uses_both_providers() -> None:
     assert result["plan_gate_blocked"] is False
     assert any(item.startswith("codex:") for item in prompts)
     assert any(item.startswith("claude:") for item in prompts)
+
+
+def test_phase1_ensemble_launches_round1_planners_in_parallel() -> None:
+    start_times: dict[str, float] = {}
+    lock = threading.Lock()
+
+    def _runner(name: str):
+        def _run(prompt: str, timeout_sec: int) -> str:
+            line1 = prompt.splitlines()[0]
+            if "TF Phase1 planner" in line1:
+                with lock:
+                    start_times.setdefault(name, time.monotonic())
+                time.sleep(0.25)
+                return '{"summary":"plan from %s","subtasks":[{"id":"S1","title":"Draft","goal":"Write the plan","owner_role":"Local-Writer","acceptance":["has a concise plan"]}]}' % name
+            time.sleep(0.25)
+            return '{"approved": true, "issues": [], "recommendations": []}'
+        return _run
+
+    args = SimpleNamespace(
+        plan_phase1_providers="codex,claude",
+        plan_phase1_rounds=3,
+        plan_max_subtasks=3,
+        orch_command_timeout_sec=120,
+        plan_block_on_critic=True,
+    )
+
+    ensemble_mod.run_phase1_ensemble_planning(
+        args=args,
+        user_prompt="Prepare a stable execution plan",
+        available_roles=["Local-Writer", "Reviewer"],
+        normalize_task_plan_payload=gw.normalize_task_plan_payload,
+        parse_json_object_from_text=gw.parse_json_object_from_text,
+        run_provider_execs={"codex": _runner("codex"), "claude": _runner("claude")},
+        plan_roles_from_subtasks=gw.plan_roles_from_subtasks,
+        report_progress=None,
+    )
+
+    assert set(start_times) == {"codex", "claude"}
+    assert abs(start_times["codex"] - start_times["claude"]) < 0.15
 
 
 def test_resolve_dispatch_mode_defaults_to_tf_dispatch_when_not_forced_direct() -> None:

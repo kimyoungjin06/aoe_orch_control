@@ -9,6 +9,7 @@ Phase1 is planner-only:
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 from typing import Any, Callable, Dict, List, Optional
 
@@ -122,6 +123,33 @@ def _render_shared_feedback(round_candidates: List[Dict[str, Any]], *, best_idx:
     return "\n".join(lines).strip()
 
 
+def _run_parallel_calls(
+    providers: List[str],
+    run_one: Callable[[str], Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    if len(providers) <= 1:
+        return [run_one(providers[0])] if providers else []
+
+    max_workers = max(1, len(providers))
+    ordered: Dict[str, Dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="aoe-phase1") as pool:
+        futures = {provider: pool.submit(run_one, provider) for provider in providers}
+        for provider, fut in futures.items():
+            try:
+                ordered[provider] = fut.result()
+            except Exception as exc:
+                ordered[provider] = {
+                    "provider": provider,
+                    "plan": None,
+                    "critic": {
+                        "approved": False,
+                        "issues": [f"{provider} execution failed: {_trim_text(exc, 180)}"],
+                        "recommendations": [],
+                    },
+                }
+    return [ordered[p] for p in providers if p in ordered]
+
+
 def run_phase1_ensemble_planning(
     *,
     args: Any,
@@ -170,8 +198,7 @@ def run_phase1_ensemble_planning(
     plan_replans: List[Dict[str, Any]] = []
 
     for round_no in range(1, rounds + 1):
-        round_candidates: List[Dict[str, Any]] = []
-        for provider in providers:
+        def _run_planner_provider(provider: str) -> Dict[str, Any]:
             if callable(report_progress):
                 report_progress(
                     phase="planner",
@@ -198,23 +225,20 @@ def run_phase1_ensemble_planning(
                     max_subtasks=max_subtasks,
                 )
             except Exception as exc:
-                round_candidates.append(
-                    {
-                        "provider": provider,
-                        "plan": None,
-                        "critic": {
-                            "approved": False,
-                            "issues": [f"{provider} planner failed: {_trim_text(exc, 180)}"],
-                            "recommendations": [],
-                        },
-                    }
-                )
-                continue
+                return {
+                    "provider": provider,
+                    "plan": None,
+                    "critic": {
+                        "approved": False,
+                        "issues": [f"{provider} planner failed: {_trim_text(exc, 180)}"],
+                        "recommendations": [],
+                    },
+                }
 
             issues: List[str] = []
             recommendations: List[str] = []
             approvals: List[bool] = []
-            for critic_provider in providers:
+            def _run_critic_provider(critic_provider: str) -> Dict[str, Any]:
                 if callable(report_progress):
                     report_progress(
                         phase="critic",
@@ -233,13 +257,16 @@ def run_phase1_ensemble_planning(
                 try:
                     raw_critic = run_provider_execs[critic_provider](critic_prompt, critic_timeout)
                     parsed_critic = parse_json_object_from_text(raw_critic)
-                    critic = normalize_plan_critic_payload(parsed_critic, max_items=5)
+                    return normalize_plan_critic_payload(parsed_critic, max_items=5)
                 except Exception as exc:
-                    critic = {
+                    return {
                         "approved": False,
                         "issues": [f"{critic_provider} critic failed: {_trim_text(exc, 180)}"],
                         "recommendations": [],
                     }
+
+            critic_rows = _run_parallel_calls(providers, _run_critic_provider)
+            for critic in critic_rows:
                 approvals.append(bool(critic.get("approved", True)) and not bool(critic.get("issues") or []))
                 issues.extend([_trim_text(item, 240) for item in (critic.get("issues") or [])])
                 recommendations.extend([_trim_text(item, 240) for item in (critic.get("recommendations") or [])])
@@ -249,13 +276,13 @@ def run_phase1_ensemble_planning(
                 "issues": _dedupe_lines(issues, limit=8),
                 "recommendations": _dedupe_lines(recommendations, limit=8),
             }
-            round_candidates.append(
-                {
-                    "provider": provider,
-                    "plan": plan,
-                    "critic": aggregate_critic,
-                }
-            )
+            return {
+                "provider": provider,
+                "plan": plan,
+                "critic": aggregate_critic,
+            }
+
+        round_candidates = _run_parallel_calls(providers, _run_planner_provider)
 
         viable = [row for row in round_candidates if isinstance(row.get("plan"), dict)]
         if not viable:
@@ -306,4 +333,3 @@ def run_phase1_ensemble_planning(
         "phase1_mode": "ensemble",
         "phase1_providers": providers,
     }
-
