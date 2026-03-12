@@ -14,10 +14,19 @@ from aoe_tg_task_view import dedupe_roles
 DEFAULT_WORKER_ROLE_POOL = [
     "DataEngineer",
     "Reviewer",
+    "Claude-Reviewer",
     "Local-Dev",
     "Local-Writer",
+    "Claude-Writer",
     "Local-Analyst",
+    "Claude-Analyst",
 ]
+
+CLAUDE_COMPANION_ROLES = {
+    "Reviewer": "Claude-Reviewer",
+    "Local-Writer": "Claude-Writer",
+    "Local-Analyst": "Claude-Analyst",
+}
 
 
 def parse_roles_csv(raw: Optional[str]) -> List[str]:
@@ -208,19 +217,6 @@ def choose_auto_dispatch_roles(
             for role in DEFAULT_WORKER_ROLE_POOL
         ]
 
-    explicit: List[str] = []
-    for profile in profiles:
-        role = str(profile.get("role", "")).strip()
-        if not role or role.lower() == "orchestrator":
-            continue
-        for alias in _role_name_aliases(role):
-            if alias in prompt_lower:
-                explicit.append(role)
-                break
-    explicit = dedupe_roles(explicit)
-    if explicit:
-        return explicit
-
     has_review_signal = any(token in prompt_lower for token in ("review", "risk", "regression", "test", "qa", "verify", "리뷰", "검토", "검증", "테스트", "리스크"))
     has_data_signal = any(token in prompt_lower for token in ("data", "dataset", "etl", "schema", "sql", "csv", "pipeline", "데이터", "스키마", "결측", "적재", "정합성"))
     has_build_signal = any(token in prompt_lower for token in ("implement", "build", "code", "fix", "patch", "refactor", "개발", "구현", "수정", "패치", "리팩토링", "코드"))
@@ -234,6 +230,26 @@ def choose_auto_dispatch_roles(
     category_hits = sum(1 for flag in (has_review_signal, has_data_signal, has_build_signal, has_doc_signal, has_analysis_signal) if flag)
     if category_hits >= 2:
         wants_multi = True
+
+    explicit: List[str] = []
+    for profile in profiles:
+        role = str(profile.get("role", "")).strip()
+        if not role or role.lower() == "orchestrator":
+            continue
+        for alias in _role_name_aliases(role):
+            if alias in prompt_lower:
+                explicit.append(role)
+                break
+    explicit = dedupe_roles(explicit)
+    if explicit:
+        chosen = dedupe_roles(explicit)
+        if wants_multi:
+            available_set = {str(profile.get("role", "")).strip() for profile in profiles if str(profile.get("role", "")).strip()}
+            for role in list(chosen):
+                companion = CLAUDE_COMPANION_ROLES.get(role)
+                if companion and companion in available_set:
+                    chosen.append(companion)
+        return dedupe_roles(chosen)
 
     scored: List[Tuple[int, str]] = []
     for profile in profiles:
@@ -252,27 +268,41 @@ def choose_auto_dispatch_roles(
         analysis_keys = ("analyze", "analysis", "research", "compare", "benchmark", "investigate", "분석", "조사", "비교", "벤치마크", "리서치")
         both_keys = ("both", "둘 다", "둘다", "각각", "cross-check", "교차")
         roles: List[str] = []
+        available_set = {str(profile.get("role", "")).strip() for profile in profiles if str(profile.get("role", "")).strip()}
         if any(k in prompt_lower for k in data_keys):
             roles.append("DataEngineer")
         if any(k in prompt_lower for k in review_keys):
             roles.append("Reviewer")
+            if "Claude-Reviewer" in available_set:
+                roles.append("Claude-Reviewer")
         if any(k in prompt_lower for k in build_keys):
             roles.append("Local-Dev")
         if any(k in prompt_lower for k in doc_keys):
             roles.append("Local-Writer")
+            if "Claude-Writer" in available_set:
+                roles.append("Claude-Writer")
         if any(k in prompt_lower for k in analysis_keys):
             roles.append("Local-Analyst")
+            if "Claude-Analyst" in available_set:
+                roles.append("Claude-Analyst")
         if not roles and any(k in prompt_lower for k in both_keys):
             roles = ["DataEngineer", "Reviewer"]
+            if "Claude-Reviewer" in available_set:
+                roles.append("Claude-Reviewer")
         return dedupe_roles([r for r in roles if r])
 
-    scored.sort(key=lambda item: (-item[0], item[1].lower()))
+    scored.sort(key=lambda item: (-item[0], item[1].lower().startswith("claude-"), item[1].lower()))
     top_score = scored[0][0]
     selected = [scored[0][1]]
     if wants_multi:
         for score, role in scored[1:3]:
             if score >= max(3, top_score - 2):
                 selected.append(role)
+    available_set = {str(profile.get("role", "")).strip() for profile in profiles if str(profile.get("role", "")).strip()}
+    for role in list(selected):
+        companion = CLAUDE_COMPANION_ROLES.get(role)
+        if companion and companion in available_set and companion not in selected:
+            selected.append(companion)
     return dedupe_roles(selected)
 
 

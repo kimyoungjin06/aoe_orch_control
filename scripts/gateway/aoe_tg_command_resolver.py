@@ -63,6 +63,10 @@ _ABBREV_COMMANDS = [
     "request",
     "run",
     "clear",
+    "add-role",
+    "add-claude",
+    "add-codex",
+    "add-shell",
 ]
 
 
@@ -137,6 +141,14 @@ def resolve_message_command(
     save_manager_state: Callable[[Path, Dict[str, Any]], None],
 ) -> ResolvedCommand:
     out = ResolvedCommand()
+
+    def _apply_add_role_cli(cli: Dict[str, Any]) -> None:
+        out.cmd = "add-role"
+        out.add_role_name = str(cli.get("role", "")).strip()
+        out.add_role_provider = cli.get("provider")
+        out.add_role_launch = cli.get("launch")
+        out.add_role_spawn = bool(cli.get("spawn", True))
+
     cmd, rest = parse_command(text)
     out.cmd = _expand_command_abbrev(str(cmd or "").strip().lower())
     out.rest = str(rest or "").strip()
@@ -164,6 +176,11 @@ def resolve_message_command(
             out.rest = slash_rest
         elif out.cmd in {"id", "whoami"}:
             out.cmd = "whoami"
+        elif out.cmd in {"add-role", "addrole", "add-claude", "addclaude", "add-codex", "addcodex", "add-shell", "addshell"}:
+            cli = parse_cli_message(f"aoe {out.cmd} {slash_rest}".strip())
+            if not cli:
+                raise RuntimeError("usage: /add-role <Role> [--provider <name>] [--launch <cmd>] [--spawn|--no-spawn]")
+            _apply_add_role_cli(cli)
         elif out.cmd in {"mode", "inbox", "on", "off"}:
             src_cmd = out.cmd
             out.cmd = "mode"
@@ -402,10 +419,7 @@ def resolve_message_command(
                 out.run_force_mode = cli.get("force_mode")
                 out.orch_target = cli.get("orch")
             elif out.cmd == "add-role":
-                out.add_role_name = str(cli.get("role", "")).strip()
-                out.add_role_provider = cli.get("provider")
-                out.add_role_launch = cli.get("launch")
-                out.add_role_spawn = bool(cli.get("spawn", True))
+                _apply_add_role_cli(cli)
             elif out.cmd in {"orch-use", "orch-status", "orch-repair"}:
                 out.orch_target = cli.get("orch")
             elif out.cmd == "orch-add":

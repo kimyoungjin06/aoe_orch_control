@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run and confirmation handler helpers for Telegram gateway."""
 
+import copy
 import os
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
@@ -47,6 +48,10 @@ from aoe_tg_plan_pipeline import (
     emit_planning_progress as plan_emit_planning_progress,
     resolve_dispatch_mode_and_roles as plan_resolve_dispatch_mode_and_roles,
 )
+from aoe_tg_orch_contract import attach_phase2_team_spec
+from aoe_tg_orch_contract import derive_tf_phase, derive_tf_phase_reason, normalize_tf_phase
+from aoe_tg_orch_contract import normalize_phase2_execution_plan, normalize_phase2_team_spec
+from aoe_tg_task_state import apply_exec_critic_lifecycle
 
 
 _KNOWN_COMMANDS = [
@@ -94,6 +99,233 @@ _KNOWN_COMMANDS = [
 ]
 
 _BLOCKED_MANUAL_FOLLOWUP_THRESHOLD = 2
+
+
+def _dedupe_role_tokens(rows: List[str]) -> List[str]:
+    normalized: List[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        token = str(row or "").strip()
+        if not token:
+            continue
+        key = token.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(token)
+    return normalized
+
+
+def _lane_id_token(row: Dict[str, Any]) -> str:
+    return str(row.get("lane_id", row.get("group_id", "")) or "").strip()[:32]
+
+
+def _should_filter_retry_phase2_plan(
+    *,
+    run_control_mode: str,
+    run_source_task: Optional[Dict[str, Any]],
+    retry_critic: Optional[Dict[str, Any]] = None,
+) -> bool:
+    if run_control_mode != "retry" or not isinstance(run_source_task, dict):
+        return bool(
+            run_control_mode == "retry"
+            and isinstance(retry_critic, dict)
+            and str(retry_critic.get("verdict", "")).strip().lower() == "retry"
+            and str(retry_critic.get("action", "")).strip().lower() != "replan"
+        )
+    critic = retry_critic if isinstance(retry_critic, dict) else run_source_task.get("exec_critic")
+    if not isinstance(critic, dict):
+        return False
+    verdict = str(critic.get("verdict", "")).strip().lower()
+    action = str(critic.get("action", "")).strip().lower()
+    return verdict == "retry" and action != "replan"
+
+
+def _filter_phase2_retry_scope(
+    *,
+    plan_data: Optional[Dict[str, Any]],
+    run_control_mode: str,
+    run_source_task: Optional[Dict[str, Any]],
+    retry_critic: Optional[Dict[str, Any]] = None,
+) -> tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+    if not _should_filter_retry_phase2_plan(
+        run_control_mode=run_control_mode,
+        run_source_task=run_source_task,
+        retry_critic=retry_critic,
+    ):
+        return plan_data, {}
+    if not isinstance(plan_data, dict):
+        return plan_data, {}
+
+    critic = retry_critic if isinstance(retry_critic, dict) else (
+        run_source_task.get("exec_critic") if isinstance(run_source_task, dict) else {}
+    )
+    meta = plan_data.get("meta") if isinstance(plan_data.get("meta"), dict) else {}
+    exec_plan = meta.get("phase2_execution_plan") if isinstance(meta.get("phase2_execution_plan"), dict) else {}
+    if not exec_plan:
+        return plan_data, {}
+
+    execution_rows = exec_plan.get("execution_lanes") if isinstance(exec_plan.get("execution_lanes"), list) else []
+    review_rows = exec_plan.get("review_lanes") if isinstance(exec_plan.get("review_lanes"), list) else []
+    if not execution_rows:
+        return plan_data, {}
+
+    target_exec_ids = {
+        str(item).strip()[:32]
+        for item in (critic.get("rerun_execution_lane_ids") or [])
+        if str(item).strip()
+    }
+    target_review_ids = {
+        str(item).strip()[:32]
+        for item in (critic.get("rerun_review_lane_ids") or [])
+        if str(item).strip()
+    }
+
+    if target_review_ids and not target_exec_ids:
+        for row in review_rows:
+            if not isinstance(row, dict):
+                continue
+            if _lane_id_token(row) not in target_review_ids:
+                continue
+            for lane_id in (row.get("depends_on") or []):
+                token = str(lane_id).strip()[:32]
+                if token:
+                    target_exec_ids.add(token)
+
+    filtered_execution = [
+        copy.deepcopy(row)
+        for row in execution_rows
+        if isinstance(row, dict) and (not target_exec_ids or _lane_id_token(row) in target_exec_ids)
+    ]
+    if not filtered_execution:
+        return plan_data, {}
+
+    selected_exec_ids = {
+        _lane_id_token(row) for row in filtered_execution if isinstance(row, dict) and _lane_id_token(row)
+    }
+    selected_subtask_ids = {
+        str(item).strip()[:32]
+        for row in filtered_execution
+        if isinstance(row, dict)
+        for item in (row.get("subtask_ids") or [])
+        if str(item).strip()
+    }
+
+    filtered_review: List[Dict[str, Any]] = []
+    for row in review_rows:
+        if not isinstance(row, dict):
+            continue
+        lane_id = _lane_id_token(row)
+        depends_on = {
+            str(item).strip()[:32]
+            for item in (row.get("depends_on") or [])
+            if str(item).strip()
+        }
+        if target_review_ids:
+            if lane_id in target_review_ids:
+                filtered_review.append(copy.deepcopy(row))
+            continue
+        if not depends_on or depends_on.intersection(selected_exec_ids):
+            filtered_review.append(copy.deepcopy(row))
+
+    execution_roles = _dedupe_role_tokens(
+        [str(row.get("role", "")).strip() for row in filtered_execution if isinstance(row, dict)]
+    )
+    review_roles = _dedupe_role_tokens(
+        [str(row.get("role", "")).strip() for row in filtered_review if isinstance(row, dict)]
+    )
+    planned_roles = _dedupe_role_tokens(execution_roles + review_roles)
+    if not planned_roles:
+        return plan_data, {}
+
+    filtered_plan = copy.deepcopy(plan_data)
+    if isinstance(filtered_plan.get("subtasks"), list):
+        filtered_plan["subtasks"] = [
+            row
+            for row in filtered_plan["subtasks"]
+            if isinstance(row, dict)
+            and (
+                (selected_subtask_ids and str(row.get("id", "")).strip()[:32] in selected_subtask_ids)
+                or (not selected_subtask_ids and str(row.get("owner_role", "")).strip() in planned_roles)
+            )
+        ]
+    if isinstance(filtered_plan.get("assignments"), list):
+        filtered_plan["assignments"] = [
+            row
+            for row in filtered_plan["assignments"]
+            if isinstance(row, dict)
+            and (
+                (selected_subtask_ids and str(row.get("subtask_id", row.get("id", ""))).strip()[:32] in selected_subtask_ids)
+                or str(row.get("role", "")).strip() in planned_roles
+            )
+        ]
+    if isinstance(filtered_plan.get("execution_order"), list):
+        filtered_plan["execution_order"] = [
+            str(role).strip()
+            for role in filtered_plan["execution_order"]
+            if str(role).strip() in planned_roles
+        ]
+
+    meta_out = filtered_plan.get("meta") if isinstance(filtered_plan.get("meta"), dict) else {}
+    team_spec = meta_out.get("phase2_team_spec") if isinstance(meta_out.get("phase2_team_spec"), dict) else {}
+    exec_groups = team_spec.get("execution_groups") if isinstance(team_spec.get("execution_groups"), list) else []
+    review_groups = team_spec.get("review_groups") if isinstance(team_spec.get("review_groups"), list) else []
+    filtered_exec_groups = [
+        copy.deepcopy(row)
+        for row in exec_groups
+        if isinstance(row, dict) and _lane_id_token(row) in selected_exec_ids
+    ]
+    filtered_review_groups = [
+        copy.deepcopy(row)
+        for row in review_groups
+        if isinstance(row, dict)
+        and (
+            _lane_id_token(row) in { _lane_id_token(item) for item in filtered_review if isinstance(item, dict) }
+            or not str(row.get("group_id", "")).strip()
+        )
+    ]
+    filtered_team_spec = normalize_phase2_team_spec(
+        {
+            **team_spec,
+            "execution_groups": filtered_exec_groups,
+            "review_groups": filtered_review_groups,
+            "team_roles": planned_roles,
+        },
+        plan=filtered_plan,
+        roles=planned_roles,
+        verifier_roles=review_roles,
+        require_verifier=bool(review_roles),
+    )
+    filtered_exec_plan = normalize_phase2_execution_plan(
+        {
+            **exec_plan,
+            "execution_lanes": filtered_execution,
+            "review_lanes": filtered_review,
+            "execution_mode": "parallel" if len(filtered_execution) > 1 else "single",
+            "review_mode": (
+                "parallel"
+                if len(filtered_review) > 1
+                else ("single" if filtered_review else "skip")
+            ),
+            "parallel_workers": len(filtered_execution) > 1,
+            "parallel_reviews": len(filtered_review) > 1,
+        },
+        team_spec=filtered_team_spec,
+        readonly=bool(exec_plan.get("readonly", True)),
+    )
+    meta_out["phase2_team_spec"] = filtered_team_spec
+    meta_out["phase2_execution_plan"] = filtered_exec_plan
+    filtered_plan["meta"] = meta_out
+    return filtered_plan, {
+        "rerun_execution_lane_ids": sorted(selected_exec_ids),
+        "rerun_review_lane_ids": [
+            _lane_id_token(row) for row in filtered_review if isinstance(row, dict) and _lane_id_token(row)
+        ],
+        "execution_roles": execution_roles,
+        "review_roles": review_roles,
+        "planned_roles": planned_roles,
+        "subtask_ids": sorted(selected_subtask_ids),
+    }
 
 
 def _cmd_prefix() -> str:
@@ -229,6 +461,7 @@ class RunPlanningDeps:
     repair_task_execution_plan: Callable[..., Dict[str, Any]]
     plan_roles_from_subtasks: Callable[[Optional[Dict[str, Any]]], List[str]]
     build_planned_dispatch_prompt: Callable[[str, Dict[str, Any], Dict[str, Any]], str]
+    phase1_ensemble_planning: Callable[..., Dict[str, Any]]
 
 
 @dataclass
@@ -236,6 +469,8 @@ class RunRoutingDeps:
     get_context: Callable[[Optional[str]], tuple[str, Dict[str, Any], Any]]
     run_orchestrator_direct: Callable[[Any, str], str]
     run_aoe_orch: Callable[..., Dict[str, Any]]
+    create_request_id: Callable[[], str]
+    ensure_task_record: Callable[..., Dict[str, Any]]
     finalize_request_reply_messages: Callable[..., Dict[str, Any]]
     touch_chat_recent_task_ref: Callable[..., None]
     set_chat_selected_task_ref: Callable[..., None]
@@ -322,8 +557,11 @@ def build_run_deps(
     repair_task_execution_plan: Callable[..., Dict[str, Any]],
     plan_roles_from_subtasks: Callable[[Optional[Dict[str, Any]]], List[str]],
     build_planned_dispatch_prompt: Callable[[str, Dict[str, Any], Dict[str, Any]], str],
+    phase1_ensemble_planning: Callable[..., Dict[str, Any]],
     run_orchestrator_direct: Callable[[Any, str], str],
     run_aoe_orch: Callable[..., Dict[str, Any]],
+    create_request_id: Callable[[], str],
+    ensure_task_record: Callable[..., Dict[str, Any]],
     finalize_request_reply_messages: Callable[..., Dict[str, Any]],
     touch_chat_recent_task_ref: Callable[..., None],
     set_chat_selected_task_ref: Callable[..., None],
@@ -363,11 +601,14 @@ def build_run_deps(
             repair_task_execution_plan=repair_task_execution_plan,
             plan_roles_from_subtasks=plan_roles_from_subtasks,
             build_planned_dispatch_prompt=build_planned_dispatch_prompt,
+            phase1_ensemble_planning=phase1_ensemble_planning,
         ),
         routing=RunRoutingDeps(
             get_context=get_context,
             run_orchestrator_direct=run_orchestrator_direct,
             run_aoe_orch=run_aoe_orch,
+            create_request_id=create_request_id,
+            ensure_task_record=ensure_task_record,
             finalize_request_reply_messages=finalize_request_reply_messages,
             touch_chat_recent_task_ref=touch_chat_recent_task_ref,
             set_chat_selected_task_ref=set_chat_selected_task_ref,
@@ -425,6 +666,105 @@ def _resolve_prompt_or_handle_unknown(
         send("empty prompt", context="empty prompt")
         return None
     return prompt
+
+
+def _provision_planning_task(
+    *,
+    entry: Dict[str, Any],
+    manager_state: Dict[str, Any],
+    chat_id: str,
+    key: str,
+    prompt: str,
+    selected_roles: List[str],
+    require_verifier: bool,
+    create_request_id: Callable[[], str],
+    ensure_task_record: Callable[..., Dict[str, Any]],
+    lifecycle_set_stage: Callable[..., None],
+    touch_chat_recent_task_ref: Callable[..., None],
+    set_chat_selected_task_ref: Callable[..., None],
+    now_iso: Callable[[], str],
+) -> tuple[str, Dict[str, Any]]:
+    request_id = str(create_request_id() or "").strip()
+    task = ensure_task_record(
+        entry=entry,
+        request_id=request_id,
+        prompt=prompt,
+        mode="dispatch",
+        roles=list(selected_roles or []),
+        verifier_roles=[],
+        require_verifier=bool(require_verifier),
+    )
+    task["initiator_chat_id"] = str(chat_id)
+    task["status"] = "running"
+    lifecycle_set_stage(task, "intake", "done", note="request accepted")
+    lifecycle_set_stage(task, "planning", "running", note="phase1 planning queued")
+    task["tf_phase"] = "planning"
+    task["tf_phase_reason"] = "phase1 planning queued"
+    task["updated_at"] = now_iso()
+    entry["last_request_id"] = request_id
+    entry["updated_at"] = now_iso()
+    touch_chat_recent_task_ref(manager_state, chat_id, key, request_id)
+    set_chat_selected_task_ref(manager_state, chat_id, key, request_id)
+    return request_id, task
+
+
+def _update_provisional_planning_task(
+    *,
+    task: Optional[Dict[str, Any]],
+    phase: str,
+    detail: str,
+    attempt: int,
+    total: int,
+    lifecycle_set_stage: Callable[..., None],
+    now_iso: Callable[[], str],
+) -> None:
+    if not isinstance(task, dict):
+        return
+    note_parts: List[str] = []
+    token = str(phase or "").strip()
+    if token:
+        note_parts.append(token)
+    if attempt > 0 and total > 0:
+        note_parts.append(f"{attempt}/{total}")
+    if str(detail or "").strip():
+        note_parts.append(str(detail).strip())
+    note = " | ".join(note_parts)[:240] or "phase1 planning in progress"
+    lifecycle_set_stage(task, "planning", "running", note=note)
+    task["status"] = "running"
+    task["tf_phase"] = "planning"
+    task["tf_phase_reason"] = note
+    task["updated_at"] = now_iso()
+
+
+def _finalize_provisional_task(
+    *,
+    task: Optional[Dict[str, Any]],
+    outcome: str,
+    reason: str,
+    lifecycle_set_stage: Callable[..., None],
+    now_iso: Callable[[], str],
+) -> None:
+    if not isinstance(task, dict):
+        return
+    note = str(reason or "").strip()[:240]
+    if outcome == "blocked":
+        task["plan_gate_passed"] = False
+        if note:
+            task["plan_gate_reason"] = note
+        lifecycle_set_stage(task, "planning", "failed", note=note or "planning blocked")
+        lifecycle_set_stage(task, "close", "failed", note=note or "planning blocked")
+        task["status"] = "failed"
+        task["tf_phase"] = "blocked"
+        task["tf_phase_reason"] = note or "planning blocked"
+    elif outcome == "dispatch_failed":
+        lifecycle_set_stage(task, "planning", "done", note="planning completed")
+        lifecycle_set_stage(task, "staffing", "running", note="dispatch started")
+        lifecycle_set_stage(task, "execution", "failed", note=note or "dispatch failed")
+        lifecycle_set_stage(task, "close", "failed", note=note or "dispatch failed")
+        task["status"] = "failed"
+        task["tf_phase"] = "manual_intervention"
+        task["tf_phase_reason"] = note or "dispatch failed"
+    task["updated_at"] = now_iso()
 
 
 def _apply_success_first_prompt_fallbacks(prompt: str) -> tuple[str, List[str]]:
@@ -658,6 +998,7 @@ def _compute_dispatch_plan(
     critic_has_blockers: Callable[[Dict[str, Any]], bool],
     repair_task_execution_plan: Callable[..., Dict[str, Any]],
     plan_roles_from_subtasks: Callable[[Optional[Dict[str, Any]]], List[str]],
+    phase1_ensemble_planning: Optional[Callable[..., Dict[str, Any]]] = None,
     report_progress: Optional[Callable[..., None]] = None,
 ) -> PlanMeta:
     return plan_compute_dispatch_plan(
@@ -676,6 +1017,7 @@ def _compute_dispatch_plan(
         critic_has_blockers=critic_has_blockers,
         repair_task_execution_plan=repair_task_execution_plan,
         plan_roles_from_subtasks=plan_roles_from_subtasks,
+        phase1_ensemble_planning=phase1_ensemble_planning,
         report_progress=report_progress,
     )
 
@@ -712,6 +1054,7 @@ def _dispatch_and_sync_task(
     run_priority_override: Optional[str],
     run_timeout_override: Optional[int],
     run_no_wait_override: Optional[bool],
+    dispatch_metadata: Optional[Dict[str, Any]],
     key: str,
     entry: Dict[str, Any],
     manager_state: Dict[str, Any],
@@ -734,6 +1077,7 @@ def _dispatch_and_sync_task(
         run_priority_override=run_priority_override,
         run_timeout_override=run_timeout_override,
         run_no_wait_override=run_no_wait_override,
+        dispatch_metadata=dispatch_metadata,
         key=key,
         entry=entry,
         manager_state=manager_state,
@@ -758,6 +1102,9 @@ def _apply_plan_and_lineage(
     plan_roles: List[str],
     plan_replans: List[Dict[str, Any]],
     plan_error: str,
+    phase1_mode: str = "",
+    phase1_rounds: int = 0,
+    phase1_providers: Optional[List[str]] = None,
     critic_has_blockers: Callable[[Dict[str, Any]], bool],
     lifecycle_set_stage: Callable[..., None],
     run_control_mode: str,
@@ -773,6 +1120,9 @@ def _apply_plan_and_lineage(
         plan_roles=plan_roles,
         plan_replans=plan_replans,
         plan_error=plan_error,
+        phase1_mode=phase1_mode,
+        phase1_rounds=phase1_rounds,
+        phase1_providers=phase1_providers,
         critic_has_blockers=critic_has_blockers,
         lifecycle_set_stage=lifecycle_set_stage,
         run_control_mode=run_control_mode,
@@ -987,6 +1337,8 @@ def handle_run_or_unknown_command(
     build_planned_dispatch_prompt = deps.planning.build_planned_dispatch_prompt
     run_orchestrator_direct = deps.routing.run_orchestrator_direct
     run_aoe_orch = deps.routing.run_aoe_orch
+    create_request_id = deps.routing.create_request_id
+    ensure_task_record = deps.routing.ensure_task_record
     touch_chat_recent_task_ref = deps.routing.touch_chat_recent_task_ref
     set_chat_selected_task_ref = deps.routing.set_chat_selected_task_ref
     now_iso = deps.routing.now_iso
@@ -1085,6 +1437,27 @@ def handle_run_or_unknown_command(
     effective_timeout = int(effective.timeout)
     effective_no_wait = bool(effective.no_wait)
 
+    planning_requested = bool(getattr(args, "task_planning", False)) or (run_control_mode in {"retry", "replan"})
+    provisional_req_id = ""
+    provisional_task: Optional[Dict[str, Any]] = None
+    if dispatch_mode and planning_requested and (not args.dry_run):
+        provisional_req_id, provisional_task = _provision_planning_task(
+            entry=entry,
+            manager_state=manager_state,
+            chat_id=chat_id,
+            key=key,
+            prompt=prompt,
+            selected_roles=parse_roles_csv(dispatch_roles),
+            require_verifier=bool(args.require_verifier),
+            create_request_id=create_request_id,
+            ensure_task_record=ensure_task_record,
+            lifecycle_set_stage=lifecycle_set_stage,
+            touch_chat_recent_task_ref=touch_chat_recent_task_ref,
+            set_chat_selected_task_ref=set_chat_selected_task_ref,
+            now_iso=now_iso,
+        )
+        save_manager_state(args.manager_state_file, manager_state)
+
     if args.dry_run:
         selected_roles = parse_roles_csv(dispatch_roles)
         plan_meta = _compute_dispatch_plan(
@@ -1103,6 +1476,7 @@ def handle_run_or_unknown_command(
             critic_has_blockers=critic_has_blockers,
             repair_task_execution_plan=repair_task_execution_plan,
             plan_roles_from_subtasks=plan_roles_from_subtasks,
+            phase1_ensemble_planning=deps.planning.phase1_ensemble_planning,
             report_progress=None,
         )
         selected_roles = list(plan_meta.selected_roles or selected_roles)
@@ -1199,7 +1573,7 @@ def handle_run_or_unknown_command(
     final_task: Optional[Dict[str, Any]] = None
     final_control_mode = run_control_mode
     final_source_request_id = run_source_request_id
-    emit_planning_chat = str(run_auto_source or "").strip().lower().startswith("todo")
+    emit_planning_chat = True
 
     def _report_plan_progress(*, phase: str, detail: str = "", attempt: int = 0, total: int = 0) -> None:
         _emit_planning_progress(
@@ -1212,6 +1586,17 @@ def handle_run_or_unknown_command(
             attempt=attempt,
             total=total,
         )
+        _update_provisional_planning_task(
+            task=provisional_task,
+            phase=phase,
+            detail=detail,
+            attempt=attempt,
+            total=total,
+            lifecycle_set_stage=lifecycle_set_stage,
+            now_iso=now_iso,
+        )
+        if isinstance(provisional_task, dict) and (not args.dry_run):
+            save_manager_state(args.manager_state_file, manager_state)
 
     while True:
         attempt_prompt = prompt
@@ -1235,6 +1620,7 @@ def handle_run_or_unknown_command(
             critic_has_blockers=critic_has_blockers,
             repair_task_execution_plan=repair_task_execution_plan,
             plan_roles_from_subtasks=plan_roles_from_subtasks,
+            phase1_ensemble_planning=deps.planning.phase1_ensemble_planning,
             report_progress=_report_plan_progress,
         )
         selected_roles = list(plan_meta.selected_roles or selected_roles)
@@ -1247,6 +1633,9 @@ def handle_run_or_unknown_command(
         plan_gate_reason = str(plan_meta.plan_gate_reason or "")
         planning_enabled = bool(plan_meta.planning_enabled)
         reuse_source_plan = bool(plan_meta.reuse_source_plan)
+        phase1_mode = str(plan_meta.phase1_mode or "")
+        phase1_rounds = max(0, int(plan_meta.phase1_rounds or 0))
+        phase1_providers = [str(item).strip() for item in (plan_meta.phase1_providers or []) if str(item).strip()]
 
         policy = _enforce_dispatch_policies(
             dispatch_mode=dispatch_mode,
@@ -1264,6 +1653,13 @@ def handle_run_or_unknown_command(
             send=send,
         )
         if bool(policy.terminal):
+            _finalize_provisional_task(
+                task=provisional_task,
+                outcome="blocked",
+                reason=str(plan_gate_reason or policy.terminal_reason or "dispatch policy blocked").strip(),
+                lifecycle_set_stage=lifecycle_set_stage,
+                now_iso=now_iso,
+            )
             effective_todo_id = _effective_todo_token(
                 entry=entry,
                 chat_id=chat_id,
@@ -1293,6 +1689,67 @@ def handle_run_or_unknown_command(
         selected_roles = list(policy.selected_roles or selected_roles)
         verifier_roles = list(policy.verifier_roles or [])
 
+        rerun_scope: Dict[str, Any] = {}
+        if isinstance(plan_data, dict):
+            plan_data = attach_phase2_team_spec(
+                plan_data,
+                roles=selected_roles,
+                verifier_roles=verifier_roles,
+                require_verifier=bool(args.require_verifier),
+            )
+            plan_data, rerun_scope = _filter_phase2_retry_scope(
+                plan_data=plan_data,
+                run_control_mode=run_control_mode,
+                run_source_task=run_source_task,
+                retry_critic=last_exec_critic,
+            )
+            if rerun_scope:
+                selected_roles = list(rerun_scope.get("planned_roles") or selected_roles)
+                plan_roles = list(rerun_scope.get("planned_roles") or plan_roles)
+                verifier_roles = list(rerun_scope.get("review_roles") or verifier_roles)
+                if selected_roles:
+                    dispatch_roles_effective = ",".join(selected_roles)
+                log_event(
+                    event="exec_critic_rerun_scope",
+                    project=key,
+                    request_id=str(run_source_request_id or "").strip(),
+                    task=run_source_task if isinstance(run_source_task, dict) else None,
+                    stage="planning",
+                    status="running",
+                    detail=(
+                        "execution={execs} review={reviews}".format(
+                            execs=",".join(rerun_scope.get("rerun_execution_lane_ids") or []) or "-",
+                            reviews=",".join(rerun_scope.get("rerun_review_lane_ids") or []) or "-",
+                        )
+                    ),
+                )
+
+        dispatch_metadata: Dict[str, Any] = {}
+        if isinstance(plan_data, dict):
+            plan_meta = plan_data.get("meta") if isinstance(plan_data.get("meta"), dict) else {}
+            phase2_team_spec = plan_meta.get("phase2_team_spec")
+            if isinstance(phase2_team_spec, dict) and phase2_team_spec:
+                dispatch_metadata["phase2_team_spec"] = phase2_team_spec
+            phase2_execution_plan = plan_meta.get("phase2_execution_plan")
+            if isinstance(phase2_execution_plan, dict) and phase2_execution_plan:
+                dispatch_metadata["phase2_execution_plan"] = phase2_execution_plan
+            phase1_mode = str(plan_meta.get("phase1_mode", "")).strip().lower()
+            if phase1_mode:
+                dispatch_metadata["phase1_mode"] = phase1_mode
+            try:
+                phase1_rounds = max(0, int(plan_meta.get("phase1_rounds", 0) or 0))
+            except Exception:
+                phase1_rounds = 0
+            if phase1_rounds > 0:
+                dispatch_metadata["phase1_rounds"] = phase1_rounds
+            phase1_providers = plan_meta.get("phase1_providers")
+            if isinstance(phase1_providers, list) and phase1_providers:
+                dispatch_metadata["phase1_providers"] = [
+                    str(row).strip() for row in phase1_providers if str(row).strip()
+                ]
+        if provisional_req_id:
+            dispatch_metadata["request_id"] = provisional_req_id
+
         dispatch_prompt = attempt_prompt
         if isinstance(plan_data, dict):
             dispatch_prompt = build_planned_dispatch_prompt(attempt_prompt, plan_data, plan_critic)
@@ -1306,6 +1763,7 @@ def handle_run_or_unknown_command(
                 run_priority_override=run_priority_override,
                 run_timeout_override=run_timeout_override,
                 run_no_wait_override=run_no_wait_override,
+                dispatch_metadata=dispatch_metadata,
                 key=key,
                 entry=entry,
                 manager_state=manager_state,
@@ -1364,6 +1822,14 @@ def handle_run_or_unknown_command(
                 entry.pop("pending_todo", None)
                 pending_todo_used = False
 
+            _finalize_provisional_task(
+                task=provisional_task,
+                outcome="dispatch_failed",
+                reason=reason,
+                lifecycle_set_stage=lifecycle_set_stage,
+                now_iso=now_iso,
+            )
+
             entry["updated_at"] = now_iso()
             if not args.dry_run:
                 save_manager_state(args.manager_state_file, manager_state)
@@ -1396,6 +1862,9 @@ def handle_run_or_unknown_command(
             plan_roles=plan_roles,
             plan_replans=plan_replans,
             plan_error=plan_error,
+            phase1_mode=phase1_mode,
+            phase1_rounds=phase1_rounds,
+            phase1_providers=phase1_providers,
             critic_has_blockers=critic_has_blockers,
             lifecycle_set_stage=lifecycle_set_stage,
             run_control_mode=run_control_mode,
@@ -1404,6 +1873,13 @@ def handle_run_or_unknown_command(
             req_id=req_id,
             now_iso=now_iso,
         )
+        if isinstance(task, dict):
+            task["tf_phase"] = normalize_tf_phase(derive_tf_phase(task), "queued")
+            tf_phase_reason = derive_tf_phase_reason(task)
+            if tf_phase_reason:
+                task["tf_phase_reason"] = tf_phase_reason
+            else:
+                task.pop("tf_phase_reason", None)
 
         if todo_id:
             _attach_todo_to_task_and_entry(
@@ -1458,6 +1934,11 @@ def handle_run_or_unknown_command(
         last_exec_critic = critic if isinstance(critic, dict) else {}
         if isinstance(task, dict):
             task["exec_critic"] = dict(last_exec_critic)
+            apply_exec_critic_lifecycle(
+                task,
+                last_exec_critic,
+                lifecycle_set_stage=lifecycle_set_stage,
+            )
             task["updated_at"] = now_iso()
         if not args.dry_run:
             save_manager_state(args.manager_state_file, manager_state)

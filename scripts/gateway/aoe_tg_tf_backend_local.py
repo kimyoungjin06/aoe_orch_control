@@ -34,6 +34,7 @@ class LocalTFBackend(TFBackendAdapter):
             priority_override=request.priority_override,
             timeout_override=request.timeout_override,
             no_wait_override=request.no_wait_override,
+            metadata=request.metadata,
         )
 
 

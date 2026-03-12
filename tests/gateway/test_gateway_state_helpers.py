@@ -55,6 +55,7 @@ import aoe_tg_plan_pipeline as plan_pipeline
 import aoe_tg_project_runtime as runtime_helpers
 import aoe_tg_runtime_core as runtime_core
 import aoe_tg_queue_engine as queue_engine
+import aoe_tg_runtime_seed as runtime_seed
 import aoe_tg_todo_policy as todo_policy
 import aoe_tg_run_handlers as run_handlers
 import aoe_tg_scheduler_handlers as sched
@@ -1698,6 +1699,8 @@ def test_sanitize_task_record_preserves_context_and_lineage_fields() -> None:
     assert task["context"]["project_alias"] == "O9"
     assert task["context"]["task_short_id"] == "T-007"
     assert task["context"]["tf_id"] == "TF-007"
+    assert task["tf_phase"] == "needs_retry"
+    assert task["tf_phase_reason"] == "critic_parse_error"
 
 
 def test_schema_normalizes_plan_and_exec_critic_payloads() -> None:
@@ -1757,6 +1760,8 @@ def test_sanitize_task_record_normalizes_nested_schema_fields() -> None:
     assert task["plan_gate_reason"] == "missing acceptance"
     assert task["exec_critic"]["verdict"] == "success"
     assert task["exec_critic"]["action"] == "none"
+    assert task["tf_phase"] == "blocked"
+    assert task["tf_phase_reason"] == "missing acceptance"
 
 
 def test_plan_critic_primary_issue_and_lifecycle_summary_use_schema_reason() -> None:
@@ -1775,6 +1780,34 @@ def test_plan_critic_primary_issue_and_lifecycle_summary_use_schema_reason() -> 
             "plan": {
                 "summary": "demo plan",
                 "subtasks": [{"id": "S1", "title": "collect data", "owner_role": "Local-Dev"}],
+                "meta": {
+                    "phase2_team_spec": {
+                        "execution_mode": "single",
+                        "execution_groups": [
+                            {"group_id": "E1", "role": "Local-Dev", "subtask_ids": ["S1"], "subtask_titles": ["collect data"], "goals": ["collect data"]}
+                        ],
+                        "review_mode": "single",
+                        "review_groups": [
+                            {"group_id": "R1", "role": "Reviewer", "kind": "verifier", "scope": "phase2_outputs", "depends_on": ["E1"]}
+                        ],
+                        "team_roles": ["Local-Dev", "Reviewer"],
+                        "critic_role": "Reviewer",
+                        "integration_role": "Reviewer",
+                    },
+                    "phase2_execution_plan": {
+                        "execution_mode": "single",
+                        "execution_lanes": [
+                            {"lane_id": "L1", "role": "Local-Dev", "subtask_ids": ["S1"], "parallel": False}
+                        ],
+                        "review_mode": "single",
+                        "review_lanes": [
+                            {"lane_id": "R1", "role": "Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": False}
+                        ],
+                        "parallel_workers": False,
+                        "parallel_reviews": False,
+                        "readonly": True,
+                    },
+                },
             },
             "plan_critic": {"approved": False, "issues": ["missing acceptance criteria"]},
             "plan_gate_passed": False,
@@ -1792,6 +1825,14 @@ def test_plan_critic_primary_issue_and_lifecycle_summary_use_schema_reason() -> 
 
     assert "plan_gate: blocked" in summary
     assert "plan_gate_reason: missing acceptance criteria" in summary
+    assert "tf_phase: blocked" in summary
+    assert "phase2_execution: single lanes=1" in summary
+    assert "phase2_review: single lanes=1" in summary
+    assert "phase2_exec_plan: single workers_parallel=no reviews_parallel=no readonly=yes" in summary
+    assert "- exec L1 [Local-Dev/serial]" in summary
+    assert "-> S1" in summary
+    assert "- critic R1 [Reviewer/verifier/serial]" in summary
+    assert "after L1" in summary
     assert "exec_critic: retry (action=replan)" in summary
     assert "exec_attempts: 2/3" in summary
     assert "exec_reason: need a stricter acceptance contract" in summary
@@ -1829,6 +1870,139 @@ def test_blocked_state_helpers_clear_and_promote_manual_followup() -> None:
     assert "blocked_bucket" not in item
     assert "blocked_reason" not in item
     assert "current_request_id" not in item
+
+
+def test_apply_exec_critic_lifecycle_marks_retry_replan_as_planning_and_needs_retry() -> None:
+    task = {
+        "status": "running",
+        "stages": {
+            "intake": "done",
+            "planning": "done",
+            "staffing": "done",
+            "execution": "done",
+            "verification": "done",
+            "integration": "running",
+            "close": "running",
+        },
+    }
+
+    task_state.apply_exec_critic_lifecycle(
+        task,
+        {"verdict": "retry", "action": "replan", "reason": "split the scope first"},
+        lifecycle_set_stage=gw.lifecycle_set_stage,
+    )
+
+    assert task["stages"]["planning"] == "running"
+    assert task["stages"]["integration"] == "running"
+    assert task["tf_phase"] == "needs_retry"
+    assert task["tf_phase_reason"] == "split the scope first"
+
+
+def test_apply_exec_critic_lifecycle_marks_intervention_as_manual_intervention() -> None:
+    task = {
+        "status": "running",
+        "stages": {
+            "intake": "done",
+            "planning": "done",
+            "staffing": "done",
+            "execution": "done",
+            "verification": "done",
+            "integration": "running",
+            "close": "running",
+        },
+    }
+
+    task_state.apply_exec_critic_lifecycle(
+        task,
+        {"verdict": "intervention", "action": "escalate", "reason": "operator decision required"},
+        lifecycle_set_stage=gw.lifecycle_set_stage,
+    )
+
+    assert task["stages"]["integration"] == "failed"
+    assert task["stages"]["close"] == "failed"
+    assert task["tf_phase"] == "manual_intervention"
+    assert task["tf_phase_reason"] == "operator decision required"
+
+
+def test_apply_exec_critic_lifecycle_overlays_review_lane_verdicts() -> None:
+    task = {
+        "status": "running",
+        "stages": {
+            "intake": "done",
+            "planning": "done",
+            "staffing": "done",
+            "execution": "done",
+            "verification": "done",
+            "integration": "running",
+            "close": "running",
+        },
+        "plan": {"meta": {}},
+        "lane_states": {
+            "execution": [{"lane_id": "L1", "role": "Local-Dev", "status": "done"}],
+            "review": [{"lane_id": "R1", "role": "Reviewer", "kind": "verifier", "status": "done", "depends_on": ["L1"]}],
+            "summary": {
+                "execution": {"done": 1},
+                "review": {"done": 1},
+            },
+        },
+    }
+
+    task_state.apply_exec_critic_lifecycle(
+        task,
+        {"verdict": "retry", "action": "replan", "reason": "review lane found missing acceptance"},
+        lifecycle_set_stage=gw.lifecycle_set_stage,
+    )
+
+    review_row = task["lane_states"]["review"][0]
+    assert review_row["status"] == "done"
+    assert review_row["verdict"] == "retry"
+    assert review_row["action"] == "replan"
+    assert review_row["reason"] == "review lane found missing acceptance"
+    assert task["lane_states"]["summary"]["review_verdicts"] == {"retry": 1}
+    assert task["exec_critic"]["rerun_execution_lane_ids"] == ["L1"]
+    assert task["exec_critic"]["rerun_review_lane_ids"] == ["R1"]
+    summary = gw.summarize_task_lifecycle("Demo", task)
+    assert "phase2_lane_state: exec done=1 | review done=1 | review_verdict retry=1" in summary
+    assert "- critic R1 [Reviewer/verifier/serial] [done] -> retry/replan after L1" in summary
+    assert "exec_rerun_targets: execution=L1 review=R1" in summary
+
+
+def test_apply_exec_critic_lifecycle_marks_manual_followup_lane_targets() -> None:
+    task = {
+        "status": "running",
+        "stages": {
+            "intake": "done",
+            "planning": "done",
+            "staffing": "done",
+            "execution": "done",
+            "verification": "done",
+            "integration": "running",
+            "close": "running",
+        },
+        "plan": {"meta": {}},
+        "lane_states": {
+            "execution": [
+                {"lane_id": "L1", "role": "Local-Dev", "status": "done"},
+                {"lane_id": "L2", "role": "Local-Writer", "status": "done"},
+            ],
+            "review": [{"lane_id": "R1", "role": "Reviewer", "kind": "verifier", "status": "done", "depends_on": ["L1", "L2"]}],
+            "summary": {
+                "execution": {"done": 2},
+                "review": {"done": 1},
+            },
+        },
+    }
+
+    task_state.apply_exec_critic_lifecycle(
+        task,
+        {"verdict": "intervention", "action": "escalate", "reason": "operator decision required"},
+        lifecycle_set_stage=gw.lifecycle_set_stage,
+    )
+
+    assert task["exec_critic"]["manual_followup_execution_lane_ids"] == ["L1", "L2"]
+    assert task["exec_critic"]["manual_followup_review_lane_ids"] == ["R1"]
+    summary = gw.summarize_task_lifecycle("Demo", task)
+    assert "exec_manual_followup_targets: execution=L1, L2 review=R1" in summary
 
 
 def test_blocked_state_helpers_render_manual_followup_summary() -> None:
@@ -1886,6 +2060,16 @@ def test_task_state_module_matches_gateway_alias_and_monitor_helpers() -> None:
                 "status": "running",
                 "stage": "execution",
                 "roles": ["Local-Dev", "Reviewer"],
+                "plan": {
+                    "meta": {
+                        "phase2_execution_plan": {
+                            "execution_mode": "single",
+                            "execution_lanes": [{"lane_id": "L1", "role": "Local-Dev"}],
+                            "review_mode": "single",
+                            "review_lanes": [{"lane_id": "R1", "role": "Reviewer"}],
+                        }
+                    }
+                },
                 "updated_at": "2026-03-10T10:00:00+0900",
                 "created_at": "2026-03-10T09:00:00+0900",
             }
@@ -1911,6 +2095,7 @@ def test_task_state_module_matches_gateway_alias_and_monitor_helpers() -> None:
         lifecycle_stages=gw.LIFECYCLE_STAGES,
     )
     assert state_summary == gw_summary
+    assert "lanes E1/R1" in gw_summary
 
 
 def test_task_state_snapshot_and_sync_match_gateway() -> None:
@@ -1963,6 +2148,244 @@ def test_task_state_snapshot_and_sync_match_gateway() -> None:
     assert task_b["verifier_roles"] == task_a["verifier_roles"]
     assert task_b["result"] == task_a["result"]
     assert task_b["stages"] == task_a["stages"]
+
+
+def test_task_state_sync_derives_lane_states_and_review_waits_on_dependencies() -> None:
+    request_data = {
+        "request_id": "REQ-302",
+        "role_states": [
+            {"role": "Local-Dev", "status": "done"},
+            {"role": "Local-Writer", "status": "running"},
+            {"role": "Reviewer", "status": "pending"},
+        ],
+        "counts": {"assignments": 3, "replies": 1},
+        "complete": False,
+    }
+    plan = {
+        "summary": "parallel execution",
+        "subtasks": [
+            {"id": "S1", "title": "implement", "owner_role": "Local-Dev"},
+            {"id": "S2", "title": "write report", "owner_role": "Local-Writer"},
+        ],
+        "meta": {
+            "phase2_execution_plan": {
+                "execution_mode": "parallel",
+                "execution_lanes": [
+                    {"lane_id": "L1", "role": "Local-Dev", "subtask_ids": ["S1"], "parallel": True},
+                    {"lane_id": "L2", "role": "Local-Writer", "subtask_ids": ["S2"], "parallel": True},
+                ],
+                "review_mode": "single",
+                "review_lanes": [
+                    {"lane_id": "R1", "role": "Reviewer", "kind": "verifier", "depends_on": ["L1", "L2"], "parallel": False}
+                ],
+                "parallel_workers": True,
+                "parallel_reviews": False,
+                "readonly": True,
+            }
+        },
+    }
+
+    entry = {"name": "demo_proj", "project_alias": "O9", "project_root": "/tmp/demo", "team_dir": "/tmp/demo/.aoe-team", "tasks": {}, "task_alias_index": {}, "task_seq": 0}
+    task = gw.ensure_task_record(
+        entry=entry,
+        request_id="REQ-302",
+        prompt="Parallelize implementation and reporting",
+        mode="dispatch",
+        roles=["Local-Dev", "Local-Writer", "Reviewer"],
+        verifier_roles=["Reviewer"],
+        require_verifier=True,
+    )
+    task["plan"] = copy.deepcopy(plan)
+
+    synced = task_state.sync_task_lifecycle(
+        entry,
+        request_data,
+        prompt="Parallelize implementation and reporting",
+        mode="dispatch",
+        selected_roles=["Local-Dev", "Local-Writer", "Reviewer"],
+        verifier_roles=["Reviewer"],
+        require_verifier=True,
+        verifier_candidates=["Reviewer"],
+        dedupe_roles=gw.dedupe_roles,
+        ensure_task_record=gw.ensure_task_record,
+        lifecycle_set_stage=gw.lifecycle_set_stage,
+        normalize_task_status=gw.normalize_task_status,
+        sync_task_exec_context=lambda current_entry, current_task: current_task.get("context", {}) if isinstance(current_task, dict) else {},
+    )
+
+    lane_states = synced["lane_states"]
+    assert lane_states["summary"]["execution"] == {"done": 1, "running": 1}
+    assert lane_states["summary"]["review"] == {"waiting_on_dependencies": 1}
+    assert lane_states["execution"][0]["lane_id"] == "L1"
+    assert lane_states["execution"][0]["status"] == "done"
+    assert lane_states["execution"][1]["lane_id"] == "L2"
+    assert lane_states["execution"][1]["status"] == "running"
+    assert lane_states["review"][0]["lane_id"] == "R1"
+    assert lane_states["review"][0]["status"] == "waiting_on_dependencies"
+    assert lane_states["review"][0]["waiting_on"] == ["L2"]
+
+    summary = gw.summarize_task_lifecycle("Demo", synced)
+    assert "phase2_lane_state: exec done=1, running=1 | review waiting_on_dependencies=1" in summary
+    assert "- exec L1 [Local-Dev/parallel] [done] -> S1" in summary
+    assert "- exec L2 [Local-Writer/parallel] [running] -> S2" in summary
+    assert "- critic R1 [Reviewer/verifier/serial] [waiting_on_dependencies] after L1, L2" in summary
+
+
+def test_task_state_sync_records_phase2_review_trigger_metadata() -> None:
+    request_data = {
+        "request_id": "REQ-303",
+        "role_states": [
+            {"role": "Local-Dev", "status": "done"},
+            {"role": "Reviewer", "status": "done"},
+        ],
+        "counts": {"assignments": 2, "replies": 2},
+        "complete": True,
+        "phase2_request_ids": {"execution": "REQ-EXEC", "review": "REQ-REVIEW"},
+        "phase2_review_triggered": True,
+    }
+    plan = {
+        "summary": "execution then review",
+        "subtasks": [{"id": "S1", "title": "implement", "owner_role": "Local-Dev"}],
+        "meta": {
+            "phase2_execution_plan": {
+                "execution_mode": "single",
+                "execution_lanes": [{"lane_id": "L1", "role": "Local-Dev", "subtask_ids": ["S1"], "parallel": False}],
+                "review_mode": "single",
+                "review_lanes": [{"lane_id": "R1", "role": "Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": False}],
+                "parallel_workers": False,
+                "parallel_reviews": False,
+                "readonly": True,
+            }
+        },
+    }
+    entry = {"name": "demo_proj", "project_alias": "O9", "project_root": "/tmp/demo", "team_dir": "/tmp/demo/.aoe-team", "tasks": {}, "task_alias_index": {}, "task_seq": 0}
+    task = gw.ensure_task_record(
+        entry=entry,
+        request_id="REQ-303",
+        prompt="Implement and verify",
+        mode="dispatch",
+        roles=["Local-Dev", "Reviewer"],
+        verifier_roles=["Reviewer"],
+        require_verifier=True,
+    )
+    task["plan"] = copy.deepcopy(plan)
+
+    synced = task_state.sync_task_lifecycle(
+        entry,
+        request_data,
+        prompt="Implement and verify",
+        mode="dispatch",
+        selected_roles=["Local-Dev", "Reviewer"],
+        verifier_roles=["Reviewer"],
+        require_verifier=True,
+        verifier_candidates=["Reviewer"],
+        dedupe_roles=gw.dedupe_roles,
+        ensure_task_record=gw.ensure_task_record,
+        lifecycle_set_stage=gw.lifecycle_set_stage,
+        normalize_task_status=gw.normalize_task_status,
+        sync_task_exec_context=lambda current_entry, current_task: current_task.get("context", {}) if isinstance(current_task, dict) else {},
+    )
+
+    assert synced["result"]["phase2_request_ids"] == {"execution": "REQ-EXEC", "review": "REQ-REVIEW"}
+    assert synced["result"]["phase2_review_triggered"] is True
+    summary = gw.summarize_task_lifecycle("Demo", synced)
+    assert "phase2_requests: execution=REQ-EXEC review=REQ-REVIEW" in summary
+    assert "phase2_review_triggered: yes" in summary
+
+
+def test_task_monitor_includes_lane_state_summary() -> None:
+    entry = {
+        "tasks": {
+            "REQ-1": {
+                "request_id": "REQ-1",
+                "prompt": "collect data and write memo",
+                "status": "running",
+                "stage": "execution",
+                "roles": ["Local-Dev", "Reviewer"],
+                "lane_states": {
+                    "execution": [{"lane_id": "L1", "role": "Local-Dev", "status": "running"}],
+                    "review": [{"lane_id": "R1", "role": "Reviewer", "status": "waiting_on_dependencies", "depends_on": ["L1"]}],
+                    "summary": {
+                        "execution": {"running": 1},
+                        "review": {"waiting_on_dependencies": 1},
+                    },
+                },
+                "plan": {
+                    "meta": {
+                        "phase2_execution_plan": {
+                            "execution_mode": "single",
+                            "execution_lanes": [{"lane_id": "L1", "role": "Local-Dev"}],
+                            "review_mode": "single",
+                            "review_lanes": [{"lane_id": "R1", "role": "Reviewer"}],
+                        }
+                    }
+                },
+                "updated_at": "2026-03-10T10:00:00+0900",
+                "created_at": "2026-03-10T09:00:00+0900",
+            }
+        },
+        "task_alias_index": {},
+        "task_seq": 0,
+    }
+
+    summary = task_state.summarize_task_monitor(
+        "Demo",
+        entry,
+        limit=5,
+        normalize_task_status=gw.normalize_task_status,
+        dedupe_roles=gw.dedupe_roles,
+        task_display_label=gw.task_display_label,
+        lifecycle_stages=gw.LIFECYCLE_STAGES,
+    )
+    assert "lanes E1/R1 [exec running=1 | review waiting_on_dependencies=1]" in summary
+
+
+def test_task_monitor_includes_review_verdict_summary() -> None:
+    entry = {
+        "tasks": {
+            "REQ-1": {
+                "request_id": "REQ-1",
+                "prompt": "collect data and write memo",
+                "status": "running",
+                "stage": "integration",
+                "roles": ["Local-Dev", "Reviewer"],
+                "lane_states": {
+                    "execution": [{"lane_id": "L1", "role": "Local-Dev", "status": "done"}],
+                    "review": [{"lane_id": "R1", "role": "Reviewer", "status": "done", "verdict": "retry", "action": "replan", "depends_on": ["L1"]}],
+                    "summary": {
+                        "execution": {"done": 1},
+                        "review": {"done": 1},
+                        "review_verdicts": {"retry": 1},
+                    },
+                },
+                "plan": {
+                    "meta": {
+                        "phase2_execution_plan": {
+                            "execution_mode": "single",
+                            "execution_lanes": [{"lane_id": "L1", "role": "Local-Dev"}],
+                            "review_mode": "single",
+                            "review_lanes": [{"lane_id": "R1", "role": "Reviewer"}],
+                        }
+                    }
+                },
+                "updated_at": "2026-03-10T10:00:00+0900",
+                "created_at": "2026-03-10T09:00:00+0900",
+            }
+        },
+        "task_alias_index": {},
+        "task_seq": 0,
+    }
+
+    summary = task_state.summarize_task_monitor(
+        "Demo",
+        entry,
+        limit=5,
+        normalize_task_status=gw.normalize_task_status,
+        dedupe_roles=gw.dedupe_roles,
+        task_display_label=gw.task_display_label,
+        lifecycle_stages=gw.LIFECYCLE_STAGES,
+    )
+    assert "lanes E1/R1 [exec done=1 | review done=1 | review_verdict retry=1]" in summary
 
 
 def test_task_state_sanitize_task_record_matches_gateway(monkeypatch) -> None:
@@ -2111,6 +2534,27 @@ def test_choose_auto_dispatch_roles_prefers_reviewer_for_simple_check(tmp_path: 
     assert roles == ["Reviewer"]
 
 
+def test_choose_auto_dispatch_roles_adds_claude_companion_for_multi_review_request(tmp_path: Path) -> None:
+    team_dir = tmp_path / ".aoe-team"
+    for role, mission in (
+        ("Reviewer", "Find risks, regressions, and missing tests before merge."),
+        ("Claude-Reviewer", "Find risks, regressions, and missing tests before merge."),
+    ):
+        (team_dir / "agents" / role).mkdir(parents=True, exist_ok=True)
+        (team_dir / "agents" / role / "AGENTS.md").write_text(
+            f"# AGENTS.md - {role}\n\n## Mission\n{mission}\n",
+            encoding="utf-8",
+        )
+
+    roles = gw.choose_auto_dispatch_roles(
+        "현재 변경사항을 검토하고 각각 교차검증해서 리스크를 짚어줘.",
+        available_roles=["Reviewer", "Claude-Reviewer"],
+        team_dir=team_dir,
+    )
+
+    assert roles == ["Reviewer", "Claude-Reviewer"]
+
+
 def test_choose_auto_dispatch_roles_builds_multi_role_tf_from_prompt_mix(tmp_path: Path) -> None:
     team_dir = tmp_path / ".aoe-team"
     (team_dir / "agents" / "Local-Dev").mkdir(parents=True, exist_ok=True)
@@ -2183,14 +2627,102 @@ def test_choose_auto_dispatch_roles_prefers_local_writer_for_doc_request(tmp_pat
     assert roles == ["Local-Writer"]
 
 
+def test_choose_auto_dispatch_roles_adds_claude_writer_and_analyst_companions_when_available(tmp_path: Path) -> None:
+    team_dir = tmp_path / ".aoe-team"
+    for role, mission in (
+        ("Local-Writer", "Write concise project documents and reports."),
+        ("Claude-Writer", "Write concise project documents and reports."),
+        ("Local-Analyst", "Investigate project state, compare options, and recommend next steps."),
+        ("Claude-Analyst", "Investigate project state, compare options, and recommend next steps."),
+    ):
+        (team_dir / "agents" / role).mkdir(parents=True, exist_ok=True)
+        (team_dir / "agents" / role / "AGENTS.md").write_text(
+            f"# AGENTS.md - {role}\n\n## Mission\n{mission}\n",
+            encoding="utf-8",
+        )
+
+    writer_roles = gw.choose_auto_dispatch_roles(
+        "문서를 정리하고 각각 교차검증해서 handoff 초안을 만들어줘.",
+        available_roles=["Local-Writer", "Claude-Writer", "Local-Analyst", "Claude-Analyst"],
+        team_dir=team_dir,
+    )
+    analyst_roles = gw.choose_auto_dispatch_roles(
+        "현재 구조를 조사하고 각각 비교해서 추천안을 정리해줘.",
+        available_roles=["Local-Writer", "Claude-Writer", "Local-Analyst", "Claude-Analyst"],
+        team_dir=team_dir,
+    )
+
+    assert writer_roles == ["Local-Writer", "Claude-Writer"]
+    assert analyst_roles == ["Local-Analyst", "Claude-Analyst"]
+
+
 def test_available_worker_roles_uses_expanded_default_pool() -> None:
     assert gw.available_worker_roles([]) == [
         "DataEngineer",
         "Reviewer",
+        "Claude-Reviewer",
         "Local-Dev",
         "Local-Writer",
+        "Claude-Writer",
         "Local-Analyst",
+        "Claude-Analyst",
     ]
+
+
+def test_runtime_seed_default_repair_agents_include_claude_companions() -> None:
+    assert runtime_seed.DEFAULT_REPAIR_AGENTS == [
+        "DataEngineer:codex",
+        "Reviewer:codex",
+        "Claude-Reviewer:claude",
+        "Local-Dev:codex",
+        "Local-Writer:codex",
+        "Claude-Writer:claude",
+        "Local-Analyst:codex",
+        "Claude-Analyst:claude",
+    ]
+
+
+def test_seed_runtime_from_spec_copies_claude_companion_templates(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    team_dir = project_root / ".aoe-team"
+    template_root = ROOT / "templates" / "aoe-team"
+    project_root.mkdir(parents=True, exist_ok=True)
+
+    spec = {
+        "version": 1,
+        "created_at": "2026-03-12T00:00:00+09:00",
+        "project_root": str(project_root),
+        "team_dir": str(team_dir),
+        "overview": "test",
+        "coordinator": {"role": "Orchestrator"},
+        "agents": [
+            {"role": "Reviewer"},
+            {"role": "Claude-Reviewer"},
+            {"role": "Local-Writer"},
+            {"role": "Claude-Writer"},
+            {"role": "Local-Analyst"},
+            {"role": "Claude-Analyst"},
+        ],
+    }
+
+    logs = runtime_seed.seed_runtime_from_spec(
+        template_root=template_root,
+        project_root=project_root,
+        team_dir=team_dir,
+        overview="test",
+        spec=spec,
+        force=False,
+    )
+
+    assert any("Claude-Reviewer" in row for row in logs)
+    assert any("Claude-Writer" in row for row in logs)
+    assert any("Claude-Analyst" in row for row in logs)
+    assert (team_dir / "agents" / "Claude-Reviewer" / "AGENTS.md").exists()
+    assert (team_dir / "agents" / "Claude-Writer" / "AGENTS.md").exists()
+    assert (team_dir / "agents" / "Claude-Analyst" / "AGENTS.md").exists()
+    assert (team_dir / "workers" / "Claude-Reviewer.json").exists()
+    assert (team_dir / "workers" / "Claude-Writer.json").exists()
+    assert (team_dir / "workers" / "Claude-Analyst.json").exists()
 
 
 def test_finalize_tf_exec_meta_marks_failed_roles_and_syncs_run_meta(tmp_path: Path) -> None:
@@ -2365,11 +2897,28 @@ def test_tf_exec_module_matches_gateway_exec_helpers(tmp_path: Path, monkeypatch
     )
     args_b = copy.deepcopy(args_a)
     args_b._aoe_default_tf_worker_session_prefix = gw.DEFAULT_TF_WORKER_SESSION_PREFIX
+    lane_summary = {
+        "execution_lanes": [
+            {"lane_id": "L1", "role": "Reviewer", "subtask_ids": ["S1"]},
+        ],
+        "review_lanes": [
+            {"lane_id": "R1", "role": "QA", "depends_on": ["L1"]},
+        ],
+    }
 
-    meta_a = gw.ensure_tf_exec_workspace(args_a, "REQ-001")
+    dispatch_metadata = {
+        "phase2_team_spec": {"execution_mode": "parallel", "execution_groups": [{"group_id": "E1", "role": "Local-Dev"}]},
+        "phase2_execution_plan": {"execution_mode": "parallel", "execution_lanes": [{"lane_id": "L1", "role": "Local-Dev"}]},
+        "phase1_mode": "ensemble",
+        "phase1_rounds": 3,
+        "phase1_providers": ["codex", "claude"],
+    }
+
+    meta_a = gw.ensure_tf_exec_workspace(args_a, "REQ-001", metadata=dispatch_metadata)
     meta_b = tf_exec.ensure_tf_exec_workspace(
         args_b,
         "REQ-002",
+        metadata=dispatch_metadata,
         default_tf_exec_mode=gw.DEFAULT_TF_EXEC_MODE,
         default_tf_work_root_name=gw.DEFAULT_TF_WORK_ROOT_NAME,
         default_tf_exec_map_file=gw.DEFAULT_TF_EXEC_MAP_FILE,
@@ -2378,10 +2927,15 @@ def test_tf_exec_module_matches_gateway_exec_helpers(tmp_path: Path, monkeypatch
     )
     assert meta_a["project_key"] == meta_b["project_key"] == "demo_proj"
     assert meta_a["project_alias"] == meta_b["project_alias"] == "O9"
+    assert meta_a["phase2_execution_plan"]["execution_mode"] == "parallel"
+    assert meta_b["phase2_execution_plan"]["execution_mode"] == "parallel"
+    assert meta_a["phase1_providers"] == meta_b["phase1_providers"] == ["codex", "claude"]
 
-    specs_a = gw.tf_worker_specs(args_a, "REQ-123", ["Reviewer"], startup_timeout_sec=120)
-    specs_b = tf_exec.tf_worker_specs(args_b, "REQ-123", ["Reviewer"], startup_timeout_sec=120)
+    specs_a = gw.tf_worker_specs(args_a, "REQ-123", ["Reviewer"], startup_timeout_sec=120, lane_summary=lane_summary)
+    specs_b = tf_exec.tf_worker_specs(args_b, "REQ-123", ["Reviewer"], startup_timeout_sec=120, lane_summary=lane_summary)
     assert specs_a == specs_b
+    assert specs_a[0]["execution_lane_ids"] == ["L1"]
+    assert specs_a[0]["review_lane_ids"] == []
 
     class Proc:
         returncode = 0
@@ -2404,6 +2958,32 @@ def test_tf_exec_module_matches_gateway_exec_helpers(tmp_path: Path, monkeypatch
     finally:
         gw.run_command = original_run_command
     assert roles_a == roles_b == ["DataEngineer", "Reviewer"]
+
+
+def test_tf_exec_lane_summary_and_role_merge_helpers() -> None:
+    metadata = {
+        "phase2_execution_plan": {
+            "execution_mode": "parallel",
+            "execution_lanes": [
+                {"lane_id": "L1", "role": "Local-Dev", "subtask_ids": ["S1"], "parallel": True},
+                {"lane_id": "L2", "role": "Local-Writer", "subtask_ids": ["S2"], "parallel": True},
+            ],
+            "review_mode": "single",
+            "review_lanes": [
+                {"lane_id": "R1", "role": "Reviewer", "kind": "verifier", "depends_on": ["L1", "L2"], "parallel": False},
+            ],
+            "parallel_workers": True,
+            "parallel_reviews": False,
+            "readonly": True,
+        }
+    }
+    summary = tf_exec.phase2_execution_lane_summary(metadata)
+    merged = tf_exec.merge_worker_roles_with_lane_summary(["Reviewer"], summary)
+
+    assert summary["execution_roles"] == ["Local-Dev", "Local-Writer"]
+    assert summary["review_roles"] == ["Reviewer"]
+    assert summary["planned_roles"] == ["Local-Dev", "Local-Writer", "Reviewer"]
+    assert merged == ["Local-Dev", "Local-Writer", "Reviewer"]
 
 
 def test_infer_natural_run_mode_treats_direct_as_bias_not_force() -> None:
@@ -2539,6 +3119,50 @@ def test_parse_focus_and_unlock_commands() -> None:
 
     assert resolved.cmd == "focus"
     assert resolved.rest == "off"
+
+
+def test_parse_add_provider_shortcuts_and_resolve_slash_add_claude() -> None:
+    assert tg_parse.parse_cli_message("aoe add-claude Reviewer") == {
+        "cmd": "add-role",
+        "role": "Reviewer",
+        "provider": "claude",
+        "launch": "claude",
+        "spawn": True,
+    }
+    assert tg_parse.parse_cli_message("aoe add-codex Local-Dev --no-spawn") == {
+        "cmd": "add-role",
+        "role": "Local-Dev",
+        "provider": "codex",
+        "launch": "codex",
+        "spawn": False,
+    }
+    assert tg_parse.parse_cli_message("aoe add-claude --name ClaudeReviewer --no-spawn") == {
+        "cmd": "add-role",
+        "role": "ClaudeReviewer",
+        "provider": "claude",
+        "launch": "claude",
+        "spawn": False,
+    }
+
+    manager_state = _empty_state()
+    resolved = resolver.resolve_message_command(
+        text="/add-claude --name Reviewer --spawn",
+        slash_only=False,
+        manager_state=manager_state,
+        chat_id="939062873",
+        dry_run=True,
+        manager_state_file=ROOT / ".aoe-team" / "orch_manager_state.json",
+        get_pending_mode=gw.get_pending_mode,
+        get_default_mode=gw.get_default_mode,
+        clear_pending_mode=gw.clear_pending_mode,
+        save_manager_state=lambda path, state: None,
+    )
+
+    assert resolved.cmd == "add-role"
+    assert resolved.add_role_name == "Reviewer"
+    assert resolved.add_role_provider == "claude"
+    assert resolved.add_role_launch == "claude"
+    assert resolved.add_role_spawn is True
 
 
 def test_summarize_orch_registry_shows_focus_counts_and_sync() -> None:
@@ -4911,6 +5535,7 @@ def test_handle_run_or_unknown_command_sends_dispatch_exception_and_returns_true
             repair_task_execution_plan=lambda **kwargs: {},
             plan_roles_from_subtasks=lambda payload: [],
             build_planned_dispatch_prompt=lambda prompt, plan_data, plan_critic: prompt,
+            phase1_ensemble_planning=lambda *args, **kwargs: {},
         ),
         routing=run_handlers.RunRoutingDeps(
             get_context=lambda raw: (
@@ -4927,6 +5552,8 @@ def test_handle_run_or_unknown_command_sends_dispatch_exception_and_returns_true
             ),
             run_orchestrator_direct=lambda p_args, prompt: "direct",
             run_aoe_orch=lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("missing orchestrator.json")),
+            create_request_id=lambda: "REQ-EXC",
+            ensure_task_record=lambda **kwargs: {},
             finalize_request_reply_messages=lambda *args, **kwargs: {},
             touch_chat_recent_task_ref=lambda *args, **kwargs: None,
             set_chat_selected_task_ref=lambda *args, **kwargs: None,
@@ -4956,6 +5583,612 @@ def test_handle_run_or_unknown_command_sends_dispatch_exception_and_returns_true
     assert "pending_todo" not in manager_state["projects"]["twinpaper"]
     assert saved
     assert any(evt.get("event") == "dispatch_failed" and evt.get("error_code") == "E_DISPATCH" for evt in logged)
+
+
+def test_handle_run_or_unknown_command_materializes_provisional_task_before_plan_gate(tmp_path: Path) -> None:
+    project_root = tmp_path / "TwinPaper"
+    team_dir = project_root / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (team_dir / "orchestrator.json").write_text("{}", encoding="utf-8")
+    manager_state = {
+        "projects": {
+            "twinpaper": {
+                "name": "twinpaper",
+                "display_name": "TwinPaper",
+                "project_alias": "O2",
+                "project_root": str(project_root),
+                "team_dir": str(team_dir),
+                "todos": [],
+            }
+        }
+    }
+    sent: list[tuple[str, str, dict | None]] = []
+    logged: list[dict] = []
+    saved: list[Path] = []
+
+    ctx = run_handlers.build_run_context(
+        cmd="run",
+        args=argparse.Namespace(
+            dry_run=False,
+            manager_state_file=team_dir / "orch_manager_state.json",
+            auto_dispatch=False,
+            require_verifier=False,
+            verifier_roles="",
+            task_planning=True,
+            plan_phase1_ensemble=True,
+            plan_max_subtasks=6,
+            plan_auto_replan=False,
+            plan_replan_attempts=0,
+            plan_block_on_critic=True,
+            exec_critic=False,
+            exec_critic_retry_max=3,
+            chat_max_running=3,
+            chat_daily_cap=20,
+        ),
+        manager_state=manager_state,
+        chat_id="939062873",
+        text="plan it",
+        rest="plan it",
+        orch_target="O2",
+        run_prompt="plan it",
+        run_roles_override=None,
+        run_priority_override=None,
+        run_timeout_override=None,
+        run_no_wait_override=None,
+        run_force_mode="dispatch",
+        run_auto_source="default",
+        run_control_mode="normal",
+        run_source_request_id="",
+        run_source_task=None,
+    )
+
+    deps = run_handlers.RunDeps(
+        core=run_handlers.RunCoreDeps(
+            send=lambda body, **kwargs: sent.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+            log_event=lambda **kwargs: logged.append(kwargs),
+            help_text=lambda: "help",
+        ),
+        guard=run_handlers.RunGuardDeps(
+            summarize_chat_usage=lambda manager_state, chat_id: (0, 0),
+            detect_high_risk_prompt=lambda prompt: "",
+            set_confirm_action=lambda *args, **kwargs: None,
+            save_manager_state=lambda path, manager_state: saved.append(path),
+        ),
+        planning=run_handlers.RunPlanningDeps(
+            choose_auto_dispatch_roles=lambda *args, **kwargs: ["Local-Dev"],
+            resolve_verifier_candidates=lambda text: [],
+            load_orchestrator_roles=lambda team_dir: ["Local-Dev", "Reviewer"],
+            parse_roles_csv=lambda csv: [token for token in str(csv or "").split(",") if token],
+            ensure_verifier_roles=lambda **kwargs: (kwargs.get("selected_roles", []), [], False, []),
+            available_worker_roles=lambda roles: roles,
+            normalize_task_plan_payload=lambda payload, **kwargs: payload or {},
+            build_task_execution_plan=lambda **kwargs: {},
+            critique_task_execution_plan=lambda **kwargs: {"approved": True, "issues": [], "recommendations": []},
+            critic_has_blockers=lambda critic: False,
+            repair_task_execution_plan=lambda **kwargs: {},
+            plan_roles_from_subtasks=lambda payload: [],
+            build_planned_dispatch_prompt=lambda prompt, plan_data, plan_critic: prompt,
+            phase1_ensemble_planning=lambda *args, **kwargs: (
+                kwargs.get("report_progress") and kwargs["report_progress"](phase="planner", detail="phase1 round 1/3 provider=codex")
+            ) or {
+                "plan_data": {"summary": "blocked", "subtasks": []},
+                "plan_critic": {"approved": False, "issues": [{"issue": "missing acceptance"}], "recommendations": []},
+                "plan_roles": ["Local-Dev"],
+                "plan_replans": [{"attempt": 1}],
+                "plan_error": "",
+                "plan_gate_blocked": True,
+                "plan_gate_reason": "missing acceptance",
+                "phase1_mode": "ensemble",
+                "phase1_rounds": 3,
+                "phase1_providers": ["codex", "claude"],
+            },
+        ),
+        routing=run_handlers.RunRoutingDeps(
+            get_context=lambda raw: (
+                "twinpaper",
+                manager_state["projects"]["twinpaper"],
+                argparse.Namespace(
+                    project_root=project_root,
+                    team_dir=team_dir,
+                    roles="Local-Dev",
+                    priority="P2",
+                    orch_timeout_sec=120,
+                    no_wait=False,
+                ),
+            ),
+            run_orchestrator_direct=lambda p_args, prompt: "direct",
+            run_aoe_orch=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("dispatch should not run")),
+            create_request_id=lambda: "REQ-PLAN",
+            ensure_task_record=lambda **kwargs: gw.ensure_task_record(
+                kwargs["entry"],
+                kwargs["request_id"],
+                kwargs["prompt"],
+                kwargs["mode"],
+                kwargs["roles"],
+                kwargs["verifier_roles"],
+                kwargs["require_verifier"],
+            ),
+            finalize_request_reply_messages=lambda *args, **kwargs: {},
+            touch_chat_recent_task_ref=gw.touch_chat_recent_task_ref,
+            set_chat_selected_task_ref=gw.set_chat_selected_task_ref,
+            now_iso=lambda: "2026-03-12T23:40:00+0900",
+            sync_task_lifecycle=lambda **kwargs: None,
+            lifecycle_set_stage=gw.lifecycle_set_stage,
+            summarize_task_lifecycle=lambda key, task: "",
+            synthesize_orchestrator_response=lambda p_args, prompt, state: "",
+            critique_task_result=lambda **kwargs: {"verdict": "success", "reason": ""},
+            extract_todo_proposals=lambda *args, **kwargs: [],
+            merge_todo_proposals=lambda **kwargs: {"created_count": 0, "created_ids": [], "duplicate_count": 0, "skipped_count": 0},
+            render_run_response=lambda state, task=None: "result",
+        ),
+    )
+
+    handled = run_handlers.handle_run_or_unknown_command(ctx=ctx, deps=deps)
+
+    assert handled is True
+    task = manager_state["projects"]["twinpaper"]["tasks"]["REQ-PLAN"]
+    assert task["request_id"] == "REQ-PLAN"
+    assert task["tf_phase"] == "blocked"
+    assert task["tf_phase_reason"] == "missing acceptance"
+    assert task["status"] == "failed"
+    assert task["plan_gate_reason"] == "missing acceptance"
+    assert task["stages"]["planning"] == "failed"
+    assert task["stages"]["close"] == "failed"
+    assert manager_state["projects"]["twinpaper"]["last_request_id"] == "REQ-PLAN"
+    assert sent[-1][0] == "planning-gate"
+    assert any(evt.get("event") == "planning_planner" for evt in logged)
+    assert saved
+
+
+def test_handle_run_or_unknown_command_reuses_provisional_request_id_for_dispatch(tmp_path: Path) -> None:
+    project_root = tmp_path / "TwinPaper"
+    team_dir = project_root / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (team_dir / "orchestrator.json").write_text("{}", encoding="utf-8")
+    manager_state = {
+        "projects": {
+            "twinpaper": {
+                "name": "twinpaper",
+                "display_name": "TwinPaper",
+                "project_alias": "O2",
+                "project_root": str(project_root),
+                "team_dir": str(team_dir),
+                "todos": [],
+            }
+        }
+    }
+    sent: list[tuple[str, str, dict | None]] = []
+    logged: list[dict] = []
+    metadata_seen: list[dict] = []
+
+    def _run_aoe_orch(_p_args, _prompt, **kwargs):
+        metadata = dict(kwargs.get("metadata") or {})
+        metadata_seen.append(metadata)
+        req_id = str(metadata.get("request_id", "")).strip()
+        return {
+            "request_id": req_id,
+            "complete": True,
+            "roles": ["Local-Dev"],
+            "role_states": [{"role": "Local-Dev", "status": "done"}],
+            "replies": [{"role": "Local-Dev", "text": "done"}],
+            "counts": {"assignments": 1, "replies": 1},
+            "done_roles": ["Local-Dev"],
+            "failed_roles": [],
+            "pending_roles": [],
+        }
+
+    ctx = run_handlers.build_run_context(
+        cmd="run",
+        args=argparse.Namespace(
+            dry_run=False,
+            manager_state_file=team_dir / "orch_manager_state.json",
+            auto_dispatch=False,
+            require_verifier=False,
+            verifier_roles="",
+            task_planning=True,
+            plan_phase1_ensemble=True,
+            plan_max_subtasks=6,
+            plan_auto_replan=False,
+            plan_replan_attempts=0,
+            plan_block_on_critic=True,
+            exec_critic=False,
+            exec_critic_retry_max=3,
+            chat_max_running=3,
+            chat_daily_cap=20,
+        ),
+        manager_state=manager_state,
+        chat_id="939062873",
+        text="run it",
+        rest="run it",
+        orch_target="O2",
+        run_prompt="run it",
+        run_roles_override=None,
+        run_priority_override=None,
+        run_timeout_override=None,
+        run_no_wait_override=None,
+        run_force_mode="dispatch",
+        run_auto_source="default",
+        run_control_mode="normal",
+        run_source_request_id="",
+        run_source_task=None,
+    )
+
+    deps = run_handlers.RunDeps(
+        core=run_handlers.RunCoreDeps(
+            send=lambda body, **kwargs: sent.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+            log_event=lambda **kwargs: logged.append(kwargs),
+            help_text=lambda: "help",
+        ),
+        guard=run_handlers.RunGuardDeps(
+            summarize_chat_usage=lambda manager_state, chat_id: (0, 0),
+            detect_high_risk_prompt=lambda prompt: "",
+            set_confirm_action=lambda *args, **kwargs: None,
+            save_manager_state=lambda path, manager_state: None,
+        ),
+        planning=run_handlers.RunPlanningDeps(
+            choose_auto_dispatch_roles=lambda *args, **kwargs: ["Local-Dev"],
+            resolve_verifier_candidates=lambda text: [],
+            load_orchestrator_roles=lambda team_dir: ["Local-Dev"],
+            parse_roles_csv=lambda csv: [token for token in str(csv or "").split(",") if token],
+            ensure_verifier_roles=lambda **kwargs: (kwargs.get("selected_roles", []), [], False, []),
+            available_worker_roles=lambda roles: roles,
+            normalize_task_plan_payload=lambda payload, **kwargs: payload or {},
+            build_task_execution_plan=lambda **kwargs: {},
+            critique_task_execution_plan=lambda **kwargs: {"approved": True, "issues": [], "recommendations": []},
+            critic_has_blockers=lambda critic: False,
+            repair_task_execution_plan=lambda **kwargs: {},
+            plan_roles_from_subtasks=lambda payload: ["Local-Dev"],
+            build_planned_dispatch_prompt=lambda prompt, plan_data, plan_critic: prompt,
+            phase1_ensemble_planning=lambda *args, **kwargs: {
+                "plan_data": {"summary": "ready", "subtasks": [{"id": "S1", "owner_role": "Local-Dev", "title": "Implement", "goal": "do it", "acceptance": ["done"]}]},
+                "plan_critic": {"approved": True, "issues": [], "recommendations": []},
+                "plan_roles": ["Local-Dev"],
+                "plan_replans": [{"attempt": 1}, {"attempt": 2}, {"attempt": 3}],
+                "plan_error": "",
+                "plan_gate_blocked": False,
+                "plan_gate_reason": "",
+                "phase1_mode": "ensemble",
+                "phase1_rounds": 3,
+                "phase1_providers": ["codex", "claude"],
+            },
+        ),
+        routing=run_handlers.RunRoutingDeps(
+            get_context=lambda raw: (
+                "twinpaper",
+                manager_state["projects"]["twinpaper"],
+                argparse.Namespace(
+                    project_root=project_root,
+                    team_dir=team_dir,
+                    roles="Local-Dev",
+                    priority="P2",
+                    orch_timeout_sec=120,
+                    no_wait=False,
+                ),
+            ),
+            run_orchestrator_direct=lambda p_args, prompt: "direct",
+            run_aoe_orch=_run_aoe_orch,
+            create_request_id=lambda: "REQ-DISPATCH",
+            ensure_task_record=lambda **kwargs: gw.ensure_task_record(
+                kwargs["entry"],
+                kwargs["request_id"],
+                kwargs["prompt"],
+                kwargs["mode"],
+                kwargs["roles"],
+                kwargs["verifier_roles"],
+                kwargs["require_verifier"],
+            ),
+            finalize_request_reply_messages=lambda *args, **kwargs: {},
+            touch_chat_recent_task_ref=gw.touch_chat_recent_task_ref,
+            set_chat_selected_task_ref=gw.set_chat_selected_task_ref,
+            now_iso=lambda: "2026-03-12T23:50:00+0900",
+            sync_task_lifecycle=gw.sync_task_lifecycle,
+            lifecycle_set_stage=gw.lifecycle_set_stage,
+            summarize_task_lifecycle=lambda key, task: "",
+            synthesize_orchestrator_response=lambda p_args, prompt, state: "",
+            critique_task_result=lambda **kwargs: {"verdict": "success", "reason": ""},
+            extract_todo_proposals=lambda *args, **kwargs: [],
+            merge_todo_proposals=lambda **kwargs: {"created_count": 0, "created_ids": [], "duplicate_count": 0, "skipped_count": 0},
+            render_run_response=lambda state, task=None: "result",
+        ),
+    )
+
+    handled = run_handlers.handle_run_or_unknown_command(ctx=ctx, deps=deps)
+
+    assert handled is True
+    assert metadata_seen
+    assert metadata_seen[0]["request_id"] == "REQ-DISPATCH"
+    tasks = manager_state["projects"]["twinpaper"]["tasks"]
+    assert list(tasks.keys()) == ["REQ-DISPATCH"]
+    task = tasks["REQ-DISPATCH"]
+    assert task["request_id"] == "REQ-DISPATCH"
+    assert task["status"] == "completed"
+    assert task["tf_phase"] == "completed"
+    assert any(row[0] in {"result", "synth"} for row in sent)
+
+
+def test_filter_phase2_retry_scope_limits_plan_to_target_lanes() -> None:
+    plan_data = {
+        "summary": "ready",
+        "subtasks": [
+            {"id": "S1", "owner_role": "Local-Dev", "title": "Implement", "goal": "do impl"},
+            {"id": "S2", "owner_role": "Local-Writer", "title": "Document", "goal": "write handoff"},
+        ],
+        "meta": {
+            "phase2_team_spec": {
+                "execution_mode": "parallel",
+                "execution_groups": [
+                    {"group_id": "L1", "role": "Local-Dev", "subtask_ids": ["S1"], "parallel": True},
+                    {"group_id": "L2", "role": "Local-Writer", "subtask_ids": ["S2"], "parallel": True},
+                ],
+                "review_mode": "parallel",
+                "review_groups": [
+                    {"group_id": "R1", "role": "Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": True},
+                    {"group_id": "R2", "role": "Reviewer", "kind": "verifier", "depends_on": ["L2"], "parallel": True},
+                ],
+                "team_roles": ["Local-Dev", "Local-Writer", "Reviewer"],
+                "critic_role": "Reviewer",
+                "integration_role": "Reviewer",
+            },
+            "phase2_execution_plan": {
+                "execution_mode": "parallel",
+                "execution_lanes": [
+                    {"lane_id": "L1", "role": "Local-Dev", "subtask_ids": ["S1"], "parallel": True},
+                    {"lane_id": "L2", "role": "Local-Writer", "subtask_ids": ["S2"], "parallel": True},
+                ],
+                "review_mode": "parallel",
+                "review_lanes": [
+                    {"lane_id": "R1", "role": "Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": True},
+                    {"lane_id": "R2", "role": "Reviewer", "kind": "verifier", "depends_on": ["L2"], "parallel": True},
+                ],
+                "parallel_workers": True,
+                "parallel_reviews": True,
+                "readonly": True,
+            },
+        },
+    }
+    filtered, scope = run_handlers._filter_phase2_retry_scope(
+        plan_data=plan_data,
+        run_control_mode="retry",
+        run_source_task={
+            "exec_critic": {
+                "verdict": "retry",
+                "action": "retry",
+                "rerun_execution_lane_ids": ["L2"],
+                "rerun_review_lane_ids": ["R2"],
+            }
+        },
+    )
+
+    assert filtered is not None
+    meta = filtered["meta"]
+    exec_plan = meta["phase2_execution_plan"]
+    assert [row["lane_id"] for row in exec_plan["execution_lanes"]] == ["L2"]
+    assert [row["lane_id"] for row in exec_plan["review_lanes"]] == ["R2"]
+    assert [row["id"] for row in filtered["subtasks"]] == ["S2"]
+    assert scope["planned_roles"] == ["Local-Writer", "Reviewer"]
+
+
+def test_handle_run_or_unknown_command_retry_filters_phase2_dispatch_to_target_lanes(tmp_path: Path) -> None:
+    project_root = tmp_path / "TwinPaper"
+    team_dir = project_root / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (team_dir / "orchestrator.json").write_text("{}", encoding="utf-8")
+    manager_state = {
+        "projects": {
+            "twinpaper": {
+                "name": "twinpaper",
+                "display_name": "TwinPaper",
+                "project_alias": "O2",
+                "project_root": str(project_root),
+                "team_dir": str(team_dir),
+                "todos": [],
+            }
+        }
+    }
+    metadata_seen: list[dict[str, Any]] = []
+    sent: list[tuple[str, str, dict | None]] = []
+    critic_calls = {"count": 0}
+
+    def _run_aoe_orch(_p_args, _prompt, **kwargs):
+        metadata = copy.deepcopy(kwargs.get("metadata") or {})
+        metadata_seen.append(metadata)
+        req_id = str(metadata.get("request_id", "")).strip() or f"REQ-{len(metadata_seen)}"
+        return {
+            "request_id": req_id,
+            "complete": True,
+            "roles": ["Local-Dev", "Local-Writer", "Reviewer"],
+            "role_states": [
+                {"role": "Local-Dev", "status": "done"},
+                {"role": "Local-Writer", "status": "done"},
+                {"role": "Reviewer", "status": "done"},
+            ],
+            "replies": [{"role": "Reviewer", "text": "done"}],
+            "counts": {"assignments": 1, "replies": 1},
+            "done_roles": ["Local-Dev", "Local-Writer", "Reviewer"],
+            "failed_roles": [],
+            "pending_roles": [],
+        }
+
+    def _critique_task_result(*_args, **_kwargs):
+        critic_calls["count"] += 1
+        if critic_calls["count"] == 1:
+            return {
+                "verdict": "retry",
+                "action": "retry",
+                "reason": "rerun writer lane only",
+                "rerun_execution_lane_ids": ["L2"],
+                "rerun_review_lane_ids": ["R2"],
+            }
+        return {"verdict": "success", "action": "none", "reason": ""}
+
+    plan_payload = {
+        "summary": "ready",
+        "subtasks": [
+            {"id": "S1", "owner_role": "Local-Dev", "title": "Implement", "goal": "do impl", "acceptance": ["done"]},
+            {"id": "S2", "owner_role": "Local-Writer", "title": "Document", "goal": "write handoff", "acceptance": ["done"]},
+        ],
+        "meta": {
+            "phase2_team_spec": {
+                "execution_mode": "parallel",
+                "execution_groups": [
+                    {"group_id": "L1", "role": "Local-Dev", "subtask_ids": ["S1"], "parallel": True},
+                    {"group_id": "L2", "role": "Local-Writer", "subtask_ids": ["S2"], "parallel": True},
+                ],
+                "review_mode": "parallel",
+                "review_groups": [
+                    {"group_id": "R1", "role": "Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": True},
+                    {"group_id": "R2", "role": "Reviewer", "kind": "verifier", "depends_on": ["L2"], "parallel": True},
+                ],
+                "team_roles": ["Local-Dev", "Local-Writer", "Reviewer"],
+                "critic_role": "Reviewer",
+                "integration_role": "Reviewer",
+            },
+            "phase2_execution_plan": {
+                "execution_mode": "parallel",
+                "execution_lanes": [
+                    {"lane_id": "L1", "role": "Local-Dev", "subtask_ids": ["S1"], "parallel": True},
+                    {"lane_id": "L2", "role": "Local-Writer", "subtask_ids": ["S2"], "parallel": True},
+                ],
+                "review_mode": "parallel",
+                "review_lanes": [
+                    {"lane_id": "R1", "role": "Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": True},
+                    {"lane_id": "R2", "role": "Reviewer", "kind": "verifier", "depends_on": ["L2"], "parallel": True},
+                ],
+                "parallel_workers": True,
+                "parallel_reviews": True,
+                "readonly": True,
+            },
+        },
+    }
+
+    ctx = run_handlers.build_run_context(
+        cmd="run",
+        args=argparse.Namespace(
+            dry_run=False,
+            manager_state_file=team_dir / "orch_manager_state.json",
+            auto_dispatch=False,
+            require_verifier=False,
+            verifier_roles="",
+            task_planning=True,
+            plan_phase1_ensemble=True,
+            plan_max_subtasks=6,
+            plan_auto_replan=False,
+            plan_replan_attempts=0,
+            plan_block_on_critic=True,
+            exec_critic=True,
+            exec_critic_retry_max=3,
+            chat_max_running=3,
+            chat_daily_cap=20,
+        ),
+        manager_state=manager_state,
+        chat_id="939062873",
+        text="run it",
+        rest="run it",
+        orch_target="O2",
+        run_prompt="run it",
+        run_roles_override=None,
+        run_priority_override=None,
+        run_timeout_override=None,
+        run_no_wait_override=None,
+        run_force_mode="dispatch",
+        run_auto_source="default",
+        run_control_mode="normal",
+        run_source_request_id="",
+        run_source_task=None,
+    )
+
+    deps = run_handlers.RunDeps(
+        core=run_handlers.RunCoreDeps(
+            send=lambda body, **kwargs: sent.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
+            log_event=lambda **kwargs: None,
+            help_text=lambda: "help",
+        ),
+        guard=run_handlers.RunGuardDeps(
+            summarize_chat_usage=lambda manager_state, chat_id: (0, 0),
+            detect_high_risk_prompt=lambda prompt: "",
+            set_confirm_action=lambda *args, **kwargs: None,
+            save_manager_state=lambda *args, **kwargs: None,
+        ),
+        planning=run_handlers.RunPlanningDeps(
+            choose_auto_dispatch_roles=lambda *args, **kwargs: ["Local-Dev", "Local-Writer", "Reviewer"],
+            resolve_verifier_candidates=lambda text: [],
+            load_orchestrator_roles=lambda team_dir: ["Local-Dev", "Local-Writer", "Reviewer"],
+            parse_roles_csv=lambda csv: [token for token in str(csv or "").split(",") if token],
+            ensure_verifier_roles=lambda **kwargs: (kwargs.get("selected_roles", []), [], False, []),
+            available_worker_roles=lambda roles: roles,
+            normalize_task_plan_payload=lambda payload, **kwargs: payload or {},
+            build_task_execution_plan=lambda **kwargs: {},
+            critique_task_execution_plan=lambda **kwargs: {"approved": True, "issues": [], "recommendations": []},
+            critic_has_blockers=lambda critic: False,
+            repair_task_execution_plan=lambda **kwargs: {},
+            plan_roles_from_subtasks=lambda payload: ["Local-Dev", "Local-Writer", "Reviewer"],
+            build_planned_dispatch_prompt=lambda prompt, plan_data, plan_critic: prompt,
+            phase1_ensemble_planning=lambda *args, **kwargs: {
+                "plan_data": copy.deepcopy(plan_payload),
+                "plan_critic": {"approved": True, "issues": [], "recommendations": []},
+                "plan_roles": ["Local-Dev", "Local-Writer", "Reviewer"],
+                "plan_replans": [{"attempt": 1}, {"attempt": 2}, {"attempt": 3}],
+                "plan_error": "",
+                "plan_gate_blocked": False,
+                "plan_gate_reason": "",
+                "phase1_mode": "ensemble",
+                "phase1_rounds": 3,
+                "phase1_providers": ["codex", "claude"],
+            },
+        ),
+        routing=run_handlers.RunRoutingDeps(
+            get_context=lambda raw: (
+                "twinpaper",
+                manager_state["projects"]["twinpaper"],
+                argparse.Namespace(
+                    project_root=project_root,
+                    team_dir=team_dir,
+                    roles="Local-Dev,Local-Writer,Reviewer",
+                    priority="P2",
+                    orch_timeout_sec=120,
+                    no_wait=False,
+                ),
+            ),
+            run_orchestrator_direct=lambda p_args, prompt: "direct",
+            run_aoe_orch=_run_aoe_orch,
+            create_request_id=lambda: "REQ-RETRY",
+            ensure_task_record=lambda **kwargs: gw.ensure_task_record(
+                kwargs["entry"],
+                kwargs["request_id"],
+                kwargs["prompt"],
+                kwargs["mode"],
+                kwargs["roles"],
+                kwargs["verifier_roles"],
+                kwargs["require_verifier"],
+            ),
+            finalize_request_reply_messages=lambda *args, **kwargs: {},
+            touch_chat_recent_task_ref=gw.touch_chat_recent_task_ref,
+            set_chat_selected_task_ref=gw.set_chat_selected_task_ref,
+            now_iso=lambda: "2026-03-12T23:55:00+0900",
+            sync_task_lifecycle=gw.sync_task_lifecycle,
+            lifecycle_set_stage=gw.lifecycle_set_stage,
+            summarize_task_lifecycle=lambda key, task: "",
+            synthesize_orchestrator_response=lambda p_args, prompt, state: "",
+            critique_task_result=_critique_task_result,
+            extract_todo_proposals=lambda *args, **kwargs: [],
+            merge_todo_proposals=lambda **kwargs: {"created_count": 0, "created_ids": [], "duplicate_count": 0, "skipped_count": 0},
+            render_run_response=lambda state, task=None: "result",
+        ),
+    )
+
+    handled = run_handlers.handle_run_or_unknown_command(ctx=ctx, deps=deps)
+
+    assert handled is True
+    assert len(metadata_seen) == 2
+    first_plan = metadata_seen[0]["phase2_execution_plan"]
+    second_plan = metadata_seen[1]["phase2_execution_plan"]
+    assert [row["lane_id"] for row in first_plan["execution_lanes"]] == ["L1", "L2"]
+    assert [row["lane_id"] for row in second_plan["execution_lanes"]] == ["L2"]
+    assert [row["lane_id"] for row in second_plan["review_lanes"]] == ["R2"]
+    task = manager_state["projects"]["twinpaper"]["tasks"]["REQ-RETRY"]
+    assert task["status"] == "completed"
+    assert task["tf_phase"] == "completed"
+    assert any(row[0] in {"result", "synth"} for row in sent)
 
 
 def test_todo_next_blocks_unready_project(tmp_path: Path) -> None:
@@ -5364,8 +6597,15 @@ def test_exec_pipeline_module_matches_run_dispatch_sync_and_proposal_capture() -
     touches_b: list[tuple] = []
     selects_a: list[tuple] = []
     selects_b: list[tuple] = []
+    run_calls_a: list[dict] = []
+    run_calls_b: list[dict] = []
 
     def _run_aoe_orch(*_args, **_kwargs):
+        run_calls_a.append(dict(_kwargs))
+        return {"request_id": "REQ-123", "complete": False, "replies": []}
+
+    def _run_aoe_orch_b(*_args, **_kwargs):
+        run_calls_b.append(dict(_kwargs))
         return {"request_id": "REQ-123", "complete": False, "replies": []}
 
     def _sync_task_lifecycle(**kwargs):
@@ -5383,6 +6623,7 @@ def test_exec_pipeline_module_matches_run_dispatch_sync_and_proposal_capture() -
         run_priority_override=None,
         run_timeout_override=None,
         run_no_wait_override=None,
+        dispatch_metadata={"phase2_execution_plan": {"execution_mode": "single", "execution_lanes": []}},
         key="twinpaper",
         entry=entry_a,
         manager_state=manager_state_a,
@@ -5405,6 +6646,7 @@ def test_exec_pipeline_module_matches_run_dispatch_sync_and_proposal_capture() -
         run_priority_override=None,
         run_timeout_override=None,
         run_no_wait_override=None,
+        dispatch_metadata={"phase2_execution_plan": {"execution_mode": "single", "execution_lanes": []}},
         key="twinpaper",
         entry=entry_b,
         manager_state=manager_state_b,
@@ -5413,7 +6655,7 @@ def test_exec_pipeline_module_matches_run_dispatch_sync_and_proposal_capture() -
         verifier_roles=[],
         require_verifier=False,
         verifier_candidates=[],
-        run_aoe_orch=_run_aoe_orch,
+        run_aoe_orch=_run_aoe_orch_b,
         touch_chat_recent_task_ref=lambda *args: touches_b.append(args),
         set_chat_selected_task_ref=lambda *args: selects_b.append(args),
         now_iso=lambda: "2026-03-11T10:00:00+09:00",
@@ -5424,6 +6666,8 @@ def test_exec_pipeline_module_matches_run_dispatch_sync_and_proposal_capture() -
     assert entry_a == entry_b
     assert touches_a == touches_b
     assert selects_a == selects_b
+    assert run_calls_a == run_calls_b
+    assert run_calls_a[0]["metadata"]["phase2_execution_plan"]["execution_mode"] == "single"
 
     proposal_entry_a = {
         "project_alias": "O2",
@@ -5708,6 +6952,28 @@ def test_resolve_message_command_auto_routes_plain_text_from_direct_bias() -> No
 
     resolved = resolver.resolve_message_command(
         text="결측치 규칙을 검토해줘",
+        slash_only=False,
+        manager_state=manager_state,
+        chat_id="939062873",
+        dry_run=True,
+        manager_state_file=ROOT / ".aoe-team" / "orch_manager_state.json",
+        get_pending_mode=gw.get_pending_mode,
+        get_default_mode=gw.get_default_mode,
+        clear_pending_mode=gw.clear_pending_mode,
+        save_manager_state=lambda path, state: None,
+    )
+
+    assert resolved.cmd == "run"
+    assert resolved.run_force_mode == "dispatch"
+    assert resolved.run_auto_source == "default-intent"
+
+
+def test_resolve_message_command_forces_dispatch_for_repo_mutation_prompt() -> None:
+    manager_state = gw.default_manager_state(ROOT, ROOT / ".aoe-team")
+    gw.set_default_mode(manager_state, "939062873", "direct")
+
+    resolved = resolver.resolve_message_command(
+        text="KRISS 폴더에서 키워드 추세기가 왜 안 되는지 확인하고 고쳐서 다시 푸시해줘",
         slash_only=False,
         manager_state=manager_state,
         chat_id="939062873",
@@ -7922,6 +9188,7 @@ def test_local_tf_backend_delegates_to_run_aoe_orch() -> None:
             priority_override="P1",
             timeout_override=30,
             no_wait_override=True,
+            metadata={"phase2_execution_plan": {"execution_mode": "single", "execution_lanes": []}},
         )
         deps = tf_backend.build_tf_backend_deps(
             default_tf_exec_mode="local",
@@ -7942,6 +9209,7 @@ def test_local_tf_backend_delegates_to_run_aoe_orch() -> None:
     assert calls["kwargs"]["priority_override"] == "P1"
     assert calls["kwargs"]["timeout_override"] == 30
     assert calls["kwargs"]["no_wait_override"] is True
+    assert calls["kwargs"]["metadata"]["phase2_execution_plan"]["execution_mode"] == "single"
 
 
 def test_autogen_backend_reports_availability_and_stays_not_implemented(tmp_path: Path) -> None:
@@ -8395,7 +9663,13 @@ def test_gateway_run_aoe_orch_uses_local_backend_by_default(tmp_path: Path) -> N
     gw.tf_backend_local_mod.local_backend = lambda: _FakeLocalBackend()
     gw.tf_backend_autogen_mod.autogen_core_backend = lambda: (_ for _ in ()).throw(AssertionError("autogen backend should not be selected"))
     try:
-        result = gw.run_aoe_orch(args, "review this", "chat-1", roles_override="Reviewer")
+        result = gw.run_aoe_orch(
+            args,
+            "review this",
+            "chat-1",
+            roles_override="Reviewer",
+            metadata={"phase2_execution_plan": {"execution_mode": "single", "execution_lanes": [{"lane_id": "L1", "role": "Reviewer"}]}},
+        )
     finally:
         gw.tf_backend_local_mod.local_backend = original_local_backend
         gw.tf_backend_autogen_mod.autogen_core_backend = original_autogen_backend
@@ -8404,7 +9678,246 @@ def test_gateway_run_aoe_orch_uses_local_backend_by_default(tmp_path: Path) -> N
     assert result["backend_selection_reason"] == "default_local"
     assert calls["request"].prompt == "review this"
     assert calls["request"].roles_override == "Reviewer"
+    assert calls["request"].metadata["phase2_execution_plan"]["execution_mode"] == "single"
     assert calls["deps"].default_tf_exec_map_file == gw.DEFAULT_TF_EXEC_MAP_FILE
+
+
+def test_run_claude_exec_full_mode_uses_add_dir_and_bypass_permissions(tmp_path: Path, monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    class Proc:
+        def __init__(self, code: int = 0, stdout: str = "ok", stderr: str = "") -> None:
+            self.returncode = code
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def _fake_run(cmd, *args, **kwargs):
+        row = list(cmd)
+        calls.append(row)
+        if row[:3] == ["sudo", "-n", "true"]:
+            return Proc(code=1)
+        return Proc()
+
+    monkeypatch.setattr(gw.subprocess, "run", _fake_run)
+    monkeypatch.setenv("AOE_CLAUDE_PERMISSION_MODE", "full")
+    args = argparse.Namespace(project_root=tmp_path)
+
+    body = gw.run_claude_exec(args, "hello", timeout_sec=33)
+
+    assert body == "ok"
+    cmd = calls[-1]
+    assert cmd[0] == "claude"
+    assert "--add-dir" in cmd
+    assert str(tmp_path) in cmd
+    assert "--dangerously-skip-permissions" in cmd
+    idx = cmd.index("--permission-mode")
+    assert cmd[idx + 1] == "bypassPermissions"
+    assert "--tools" not in cmd
+
+
+def test_run_claude_exec_readonly_maps_to_plan_mode(tmp_path: Path, monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    class Proc:
+        def __init__(self, code: int = 0, stdout: str = "ok", stderr: str = "") -> None:
+            self.returncode = code
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def _fake_run(cmd, *args, **kwargs):
+        row = list(cmd)
+        calls.append(row)
+        if row[:3] == ["sudo", "-n", "true"]:
+            return Proc(code=1)
+        return Proc()
+
+    monkeypatch.setattr(gw.subprocess, "run", _fake_run)
+    monkeypatch.setenv("AOE_CLAUDE_PERMISSION_MODE", "read-only")
+    args = argparse.Namespace(project_root=tmp_path)
+
+    body = gw.run_claude_exec(args, "hello", timeout_sec=21)
+
+    assert body == "ok"
+    cmd = calls[-1]
+    idx = cmd.index("--permission-mode")
+    assert cmd[idx + 1] == "plan"
+    assert "--dangerously-skip-permissions" not in cmd
+
+
+def test_run_claude_exec_can_wrap_with_sudo_when_root_mode_enabled(tmp_path: Path, monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    class Proc:
+        def __init__(self, code: int = 0, stdout: str = "ok", stderr: str = "") -> None:
+            self.returncode = code
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def _fake_run(cmd, *args, **kwargs):
+        row = list(cmd)
+        calls.append(row)
+        if row[:3] == ["sudo", "-n", "true"]:
+            return Proc(code=0)
+        return Proc()
+
+    monkeypatch.setattr(gw.subprocess, "run", _fake_run)
+    monkeypatch.setenv("AOE_CLAUDE_PERMISSION_MODE", "full")
+    monkeypatch.setenv("AOE_CLAUDE_RUN_AS_ROOT", "1")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "demo-key")
+    args = argparse.Namespace(project_root=tmp_path)
+
+    body = gw.run_claude_exec(args, "hello", timeout_sec=21)
+
+    assert body == "ok"
+    assert calls[0][:3] == ["sudo", "-n", "true"]
+    wrapped = calls[-1]
+    assert wrapped[:3] == ["sudo", "-n", "env"]
+    assert "ANTHROPIC_API_KEY=demo-key" in wrapped
+    assert "claude" in wrapped
+
+
+def test_local_run_aoe_orch_stages_review_lanes_after_execution(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    team_dir = project_root / ".aoe-team"
+    team_dir.mkdir(parents=True)
+    monkeypatch.setenv("AOE_TF_EXEC_MODE", "inplace")
+    request_ids = iter(["REQ-EXEC", "REQ-REVIEW"])
+    monkeypatch.setattr(tf_exec, "create_request_id", lambda: next(request_ids))
+
+    recorded_roles: list[tuple[str, str]] = []
+
+    class Proc:
+        def __init__(self, returncode=0, stdout="", stderr=""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def fake_run_command(cmd, env=None, timeout_sec=0):
+        if cmd[:3] == ["git", "-C", str(project_root)]:
+            return Proc(returncode=1, stdout="", stderr="not git")
+        if cmd[:2] == ["tmux", "has-session"]:
+            return Proc(returncode=1, stdout="", stderr="")
+        if cmd[:2] == ["tmux", "new-session"]:
+            return Proc(returncode=0, stdout="", stderr="")
+        if cmd[:2] == ["tmux", "kill-session"]:
+            return Proc(returncode=0, stdout="", stderr="")
+        if cmd[:2] == ["aoe-orch", "run"] and "--dry-run" in cmd:
+            roles = cmd[cmd.index("--roles") + 1] if "--roles" in cmd else ""
+            dispatch_roles = [token.strip() for token in roles.split(",") if token.strip()]
+            payload = {"request_id": cmd[cmd.index("--request-id") + 1], "dispatch_plan": [{"role": role} for role in dispatch_roles]}
+            return Proc(returncode=0, stdout=json.dumps(payload), stderr="")
+        if cmd[:2] == ["aoe-orch", "run"]:
+            roles = cmd[cmd.index("--roles") + 1] if "--roles" in cmd else ""
+            req_id = cmd[cmd.index("--request-id") + 1]
+            recorded_roles.append((req_id, roles))
+            if roles == "Local-Dev":
+                payload = {
+                    "request_id": req_id,
+                    "complete": True,
+                    "counts": {"assignments": 1, "replies": 1},
+                    "roles": [{"role": "Local-Dev", "status": "done", "message_id": "MSG-EXEC"}],
+                    "done_roles": ["Local-Dev"],
+                    "failed_roles": [],
+                    "pending_roles": [],
+                    "replies": [{"role": "Local-Dev", "body": "execution done"}],
+                    "reply_messages": [{"id": "REP-EXEC", "from": "Local-Dev", "status": "sent"}],
+                }
+                return Proc(returncode=0, stdout=json.dumps(payload), stderr="")
+            if roles == "Reviewer":
+                payload = {
+                    "request_id": req_id,
+                    "complete": True,
+                    "counts": {"assignments": 1, "replies": 1},
+                    "roles": [{"role": "Reviewer", "status": "done", "message_id": "MSG-REVIEW"}],
+                    "done_roles": ["Reviewer"],
+                    "failed_roles": [],
+                    "pending_roles": [],
+                    "replies": [{"role": "Reviewer", "body": "review done"}],
+                    "reply_messages": [{"id": "REP-REVIEW", "from": "Reviewer", "status": "sent"}],
+                }
+                return Proc(returncode=0, stdout=json.dumps(payload), stderr="")
+            raise AssertionError(f"unexpected roles {roles}")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    args = argparse.Namespace(
+        project_root=project_root,
+        team_dir=team_dir,
+        aoe_orch_bin="aoe-orch",
+        orch_poll_sec=2.0,
+        orch_timeout_sec=180,
+        orch_command_timeout_sec=180,
+        no_wait=False,
+        roles="",
+        priority="P2",
+    )
+
+    result = tf_exec.run_aoe_orch(
+        args,
+        "Implement and then review",
+        "chat-1",
+        default_tf_exec_mode=gw.DEFAULT_TF_EXEC_MODE,
+        default_tf_work_root_name=gw.DEFAULT_TF_WORK_ROOT_NAME,
+        default_tf_exec_map_file=gw.DEFAULT_TF_EXEC_MAP_FILE,
+        default_tf_worker_startup_grace_sec=gw.DEFAULT_TF_WORKER_STARTUP_GRACE_SEC,
+        now_iso=gw.now_iso,
+        run_command=fake_run_command,
+        roles_override="Local-Dev,Reviewer",
+        metadata={
+            "phase2_execution_plan": {
+                "execution_mode": "single",
+                "execution_lanes": [{"lane_id": "L1", "role": "Local-Dev", "subtask_ids": ["S1"], "parallel": False}],
+                "review_mode": "single",
+                "review_lanes": [{"lane_id": "R1", "role": "Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": False}],
+                "parallel_workers": False,
+                "parallel_reviews": False,
+                "readonly": True,
+            }
+        },
+    )
+
+    assert recorded_roles == [("REQ-EXEC", "Local-Dev"), ("REQ-REVIEW", "Reviewer")]
+    assert result["phase2_review_triggered"] is True
+    assert result["phase2_request_ids"] == {"execution": "REQ-EXEC", "review": "REQ-REVIEW"}
+    assert result["linked_request_ids"] == ["REQ-EXEC", "REQ-REVIEW"]
+    assert len(result["replies"]) == 2
+    assert {row["role"] for row in result["role_states"]} == {"Local-Dev", "Reviewer"}
+    assert result["tf_workers"]["execution"]["sessions"][0]["execution_lane_ids"] == ["L1"]
+    assert result["tf_workers"]["review"]["sessions"][0]["review_lane_ids"] == ["R1"]
+
+
+def test_send_dispatch_result_finalizes_linked_request_ids() -> None:
+    sent: list[dict] = []
+    finalized: list[str] = []
+    logged: list[dict] = []
+    ok = exec_results.send_dispatch_result(
+        args=object(),
+        key="demo",
+        entry={"project_alias": "O3"},
+        p_args=argparse.Namespace(default_report_level="short", report_level="short"),
+        prompt="Review output",
+        state={
+            "request_id": "REQ-EXEC",
+            "linked_request_ids": ["REQ-EXEC", "REQ-REVIEW"],
+            "complete": True,
+            "replies": [{"role": "Reviewer", "body": "done"}],
+        },
+        req_id="REQ-EXEC",
+        task=None,
+        run_control_mode="dispatch",
+        run_source_request_id="",
+        run_auto_source="",
+        send=lambda text, **kwargs: sent.append({"text": text, **kwargs}) or True,
+        log_event=lambda **kwargs: logged.append(kwargs),
+        summarize_task_lifecycle=lambda *_args, **_kwargs: "summary",
+        synthesize_orchestrator_response=lambda *_args, **_kwargs: "synthesized",
+        render_run_response=lambda *_args, **_kwargs: "rendered",
+        finalize_request_reply_messages=lambda _args, rid: finalized.append(rid) or {"request_id": rid},
+    )
+
+    assert ok is True
+    assert finalized == ["REQ-EXEC", "REQ-REVIEW"]
+    assert sent[-1]["context"] == "synth"
+    assert logged[-1]["event"] == "dispatch_completed"
 
 
 def test_gateway_run_aoe_orch_selects_sandbox_backend_and_mirrors_runtime_events(tmp_path: Path) -> None:

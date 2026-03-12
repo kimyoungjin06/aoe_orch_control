@@ -7,9 +7,12 @@
     "Orchestrator",
     "DataEngineer",
     "Reviewer",
+    "Claude-Reviewer",
     "Local-Dev",
     "Local-Writer",
-    "Local-Analyst"
+    "Claude-Writer",
+    "Local-Analyst",
+    "Claude-Analyst"
   ],
   "created_at": "__CREATED_AT__",
   "overview": "__OVERVIEW__"

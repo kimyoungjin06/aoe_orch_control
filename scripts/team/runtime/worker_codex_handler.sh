@@ -12,6 +12,95 @@ TEAM_DIR="${AOE_TEAM_DIR:-$PROJECT_ROOT/.aoe-team}"
 LOG_DIR="$TEAM_DIR/logs"
 mkdir -p "$LOG_DIR"
 
+worker_runtime_meta() {
+  TEAM_DIR="$TEAM_DIR" ROLE="$ROLE" AOE_WORKER_PROVIDER="${AOE_WORKER_PROVIDER:-}" AOE_WORKER_LAUNCH="${AOE_WORKER_LAUNCH:-}" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+team_dir = Path(os.environ.get("TEAM_DIR", ".")).expanduser().resolve()
+role = str(os.environ.get("ROLE", "")).strip()
+provider_override = str(os.environ.get("AOE_WORKER_PROVIDER", "")).strip()
+launch_override = str(os.environ.get("AOE_WORKER_LAUNCH", "")).strip()
+provider = provider_override
+launch = launch_override
+
+cfg = team_dir / "orchestrator.json"
+provider_commands = {}
+row = {}
+try:
+    data = json.loads(cfg.read_text(encoding="utf-8"))
+    if isinstance(data, dict):
+        raw_cmds = data.get("provider_commands")
+        if isinstance(raw_cmds, dict):
+            provider_commands = {
+                str(k).strip().casefold(): str(v).strip()
+                for k, v in raw_cmds.items()
+                if str(k).strip() and str(v).strip()
+            }
+        candidates = []
+        coordinator = data.get("coordinator")
+        if isinstance(coordinator, dict):
+            candidates.append(coordinator)
+        agents = data.get("agents")
+        if isinstance(agents, list):
+            candidates.extend(item for item in agents if isinstance(item, dict))
+        role_key = role.casefold()
+        for item in candidates:
+            item_role = str(item.get("role", "")).strip()
+            if item_role and item_role.casefold() == role_key:
+                row = item
+                break
+except Exception:
+    row = {}
+
+if not provider:
+    provider = str(row.get("provider", "")).strip()
+if not provider:
+    provider = "codex"
+
+if not launch:
+    launch = str(row.get("launch", "")).strip()
+if not launch:
+    launch = provider_commands.get(provider.casefold(), "")
+if not launch:
+    launch = provider
+
+print(provider)
+print(launch)
+PY
+}
+
+shell_join() {
+  local out="" arg
+  for arg in "$@"; do
+    out+="${out:+ }$(printf '%q' "$arg")"
+  done
+  printf '%s\n' "$out"
+}
+
+build_launch_parts() {
+  local launch="$1"
+  local -n target_ref="$2"
+  target_ref=()
+  if [[ -n "$launch" ]]; then
+    # launch is a simple CLI command string from orchestrator.json (for example "claude" or "codex").
+    read -r -a target_ref <<<"$launch"
+  fi
+}
+
+append_env_exports() {
+  local -n target_ref="$1"
+  shift
+  local key value
+  for key in "$@"; do
+    value="${!key-}"
+    if [[ -n "$value" ]]; then
+      target_ref+=("$key=$value")
+    fi
+  done
+}
+
 extract_request_id() {
   local env_rid="${AOE_REQUEST_ID:-}"
   local body="${AOE_MSG_BODY:-}"
@@ -92,36 +181,38 @@ extract_user_request() {
 }
 
 role_guide() {
-  case "$ROLE" in
-    Reviewer)
+  local role_key
+  role_key="$(printf '%s' "$ROLE" | tr '[:upper:]' '[:lower:]')"
+  case "$role_key" in
+    *review*|*qa*|*verif*|*critic*)
       cat <<'R'
 - 리스크/회귀/누락 테스트를 우선 본다.
 - 문제가 있으면 원인과 영향 범위를 먼저 말한다.
 - 해결책은 바로 실행 가능한 형태로 제시한다.
 R
       ;;
-    DataEngineer)
+    *data*engineer*|*dataengineer*|*schema*|*etl*)
       cat <<'R'
 - 데이터 품질, 스키마 정합성, 재현 가능성을 우선 본다.
 - 검증 쿼리/체크포인트를 짧게 제시한다.
 - 결과는 운영 적용 순서로 정리한다.
 R
       ;;
-    Local-Dev)
+    *local-dev*|*local_dev*|*localdev*|*developer*|*builder*|*implement*)
       cat <<'R'
 - 코드 수정, 버그 재현, 검증 순서를 우선 본다.
 - 변경 파일과 검증 결과를 분명히 적는다.
 - 애매하면 추측하지 말고 가장 작은 안전한 수정안을 제시한다.
 R
       ;;
-    Local-Writer)
+    *writer*|*doc*|*scribe*)
       cat <<'R'
 - 문서 구조를 먼저 잡고, 사람이 바로 쓸 수 있는 형태로 정리한다.
 - 근거가 된 파일/명령/결정사항을 짧게 연결한다.
 - 장황한 설명보다 전달력과 재사용성을 우선한다.
 R
       ;;
-    Local-Analyst)
+    *analyst*|*analysis*|*research*|*tuner*)
       cat <<'R'
 - 현재 상태를 조사하고, 선택지와 트레이드오프를 분리해서 정리한다.
 - 사실과 해석을 섞지 말고, 결론에는 이유를 붙인다.
@@ -209,6 +300,11 @@ else
   LOG_FILE="$LOG_DIR/worker_${ROLE_SAFE}.log"
 fi
 
+runtime_meta="$(worker_runtime_meta || true)"
+WORKER_PROVIDER="$(sed -n '1p' <<<"$runtime_meta" | tr -d '\r')"
+WORKER_LAUNCH="$(sed -n '2p' <<<"$runtime_meta" | tr -d '\r')"
+WORKER_PROVIDER_KEY="$(printf '%s' "${WORKER_PROVIDER:-codex}" | tr '[:upper:]' '[:lower:]')"
+
 # Never use an unquoted heredoc here: USER_REQ can contain backticks/$(...) from Telegram,
 # which would trigger command substitution during prompt generation.
 {
@@ -244,48 +340,117 @@ fi
 RULES
 } >"$PROMPT_FILE"
 
-PERM_MODE_RAW="${AOE_CODEX_PERMISSION_MODE:-full}"
-PERM_MODE="$(printf '%s' "$PERM_MODE_RAW" | tr '[:upper:]' '[:lower:]')"
-RUN_AS_ROOT_RAW="${AOE_CODEX_RUN_AS_ROOT:-0}"
-RUN_AS_ROOT="$(printf '%s' "$RUN_AS_ROOT_RAW" | tr '[:upper:]' '[:lower:]')"
-CODEX_ARGS=(exec --skip-git-repo-check --disable multi_agent -C "$WORKDIR" -o "$OUT_FILE")
-CODEX_CMD=(codex)
-ROOT_OUTPUT_MODE=0
+LAUNCH_PARTS=()
+build_launch_parts "$WORKER_LAUNCH" LAUNCH_PARTS
+if [[ "${#LAUNCH_PARTS[@]}" -eq 0 ]]; then
+  LAUNCH_PARTS=("$WORKER_PROVIDER_KEY")
+fi
 
-case "$PERM_MODE" in
-  full|unsafe|bypass|dangerous)
-    CODEX_ARGS+=(--dangerously-bypass-approvals-and-sandbox)
+TOOL_BIN="${LAUNCH_PARTS[0]}"
+if ! command -v "$TOOL_BIN" >/dev/null 2>&1; then
+  echo "${WORKER_PROVIDER_KEY} CLI not found: $TOOL_BIN" >&2
+  exit 1
+fi
+TOOL_PATH="$(command -v "$TOOL_BIN")"
+BASE_CMD=("$TOOL_PATH")
+if (( ${#LAUNCH_PARTS[@]} > 1 )); then
+  BASE_CMD+=("${LAUNCH_PARTS[@]:1}")
+fi
+
+ROOT_OUTPUT_MODE=0
+ACTIVE_PERM_MODE=""
+ACTIVE_RUN_AS_ROOT=""
+RUN_CMD=()
+RUN_ARGS=()
+
+case "$WORKER_PROVIDER_KEY" in
+  codex|"")
+    ACTIVE_PERM_MODE="$(printf '%s' "${AOE_CODEX_PERMISSION_MODE:-full}" | tr '[:upper:]' '[:lower:]')"
+    ACTIVE_RUN_AS_ROOT="$(printf '%s' "${AOE_CODEX_RUN_AS_ROOT:-0}" | tr '[:upper:]' '[:lower:]')"
+    RUN_ARGS=(exec --skip-git-repo-check --disable multi_agent -C "$WORKDIR" -o "$OUT_FILE")
+    case "$ACTIVE_PERM_MODE" in
+      full|unsafe|bypass|dangerous)
+        RUN_ARGS+=(--dangerously-bypass-approvals-and-sandbox)
+        ;;
+      danger|danger-full-access)
+        RUN_ARGS+=(--sandbox danger-full-access)
+        ;;
+      workspace|workspace-write|safe|"")
+        ACTIVE_PERM_MODE="workspace-write"
+        RUN_ARGS+=(--sandbox workspace-write)
+        ;;
+      read-only|readonly)
+        ACTIVE_PERM_MODE="read-only"
+        RUN_ARGS+=(--sandbox read-only)
+        ;;
+      *)
+        ACTIVE_PERM_MODE="workspace-write"
+        RUN_ARGS+=(--sandbox workspace-write)
+        ;;
+    esac
+    RUN_CMD=("${BASE_CMD[@]}")
+    if [[ "$ACTIVE_RUN_AS_ROOT" == "1" || "$ACTIVE_RUN_AS_ROOT" == "true" || "$ACTIVE_RUN_AS_ROOT" == "yes" ]]; then
+      if sudo -n true >/dev/null 2>&1; then
+        RUN_CMD=(sudo -n env)
+        append_env_exports RUN_CMD HOME PATH OPENAI_API_KEY OPENAI_BASE_URL OPENAI_ORG_ID OPENAI_PROJECT_ID HTTP_PROXY HTTPS_PROXY NO_PROXY ALL_PROXY
+        RUN_CMD+=("${BASE_CMD[@]}")
+        ROOT_OUTPUT_MODE=1
+      else
+        echo "[WARN] AOE_CODEX_RUN_AS_ROOT=1 but sudo -n unavailable; fallback user mode" >>"$LOG_FILE"
+      fi
+    fi
     ;;
-  danger|danger-full-access)
-    CODEX_ARGS+=(--sandbox danger-full-access)
-    ;;
-  workspace|workspace-write|safe|"")
-    CODEX_ARGS+=(--sandbox workspace-write)
-    ;;
-  read-only|readonly)
-    CODEX_ARGS+=(--sandbox read-only)
+  claude)
+    ACTIVE_PERM_MODE="$(printf '%s' "${AOE_CLAUDE_PERMISSION_MODE:-${AOE_CODEX_PERMISSION_MODE:-full}}" | tr '[:upper:]' '[:lower:]')"
+    ACTIVE_RUN_AS_ROOT="$(printf '%s' "${AOE_CLAUDE_RUN_AS_ROOT:-${AOE_CODEX_RUN_AS_ROOT:-0}}" | tr '[:upper:]' '[:lower:]')"
+    RUN_ARGS=(-p --output-format text --add-dir "$WORKDIR")
+    case "$ACTIVE_PERM_MODE" in
+      full|unsafe|bypass|dangerous|danger|danger-full-access)
+        ACTIVE_PERM_MODE="bypassPermissions"
+        RUN_ARGS+=(--dangerously-skip-permissions --permission-mode bypassPermissions)
+        ;;
+      workspace|workspace-write|safe|"")
+        ACTIVE_PERM_MODE="acceptEdits"
+        RUN_ARGS+=(--permission-mode acceptEdits)
+        ;;
+      read-only|readonly)
+        ACTIVE_PERM_MODE="plan"
+        RUN_ARGS+=(--permission-mode plan)
+        ;;
+      auto|default|dontask|dont-ask|acceptedits|bypasspermissions|plan)
+        case "$ACTIVE_PERM_MODE" in
+          dontask|dont-ask) ACTIVE_PERM_MODE="dontAsk" ;;
+          acceptedits) ACTIVE_PERM_MODE="acceptEdits" ;;
+          bypasspermissions) ACTIVE_PERM_MODE="bypassPermissions" ;;
+        esac
+        RUN_ARGS+=(--permission-mode "$ACTIVE_PERM_MODE")
+        ;;
+      *)
+        ACTIVE_PERM_MODE="bypassPermissions"
+        RUN_ARGS+=(--dangerously-skip-permissions --permission-mode bypassPermissions)
+        ;;
+    esac
+    RUN_CMD=("${BASE_CMD[@]}")
+    if [[ "$ACTIVE_RUN_AS_ROOT" == "1" || "$ACTIVE_RUN_AS_ROOT" == "true" || "$ACTIVE_RUN_AS_ROOT" == "yes" ]]; then
+      if sudo -n true >/dev/null 2>&1; then
+        RUN_CMD=(sudo -n env)
+        append_env_exports RUN_CMD \
+          HOME PATH ANTHROPIC_API_KEY ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN \
+          CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CONFIG_DIR \
+          AWS_REGION AWS_DEFAULT_REGION AWS_PROFILE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN \
+          HTTP_PROXY HTTPS_PROXY NO_PROXY ALL_PROXY
+        RUN_CMD+=("${BASE_CMD[@]}")
+        ROOT_OUTPUT_MODE=1
+      else
+        echo "[WARN] AOE_CLAUDE_RUN_AS_ROOT=1 but sudo -n unavailable; fallback user mode" >>"$LOG_FILE"
+      fi
+    fi
     ;;
   *)
-    PERM_MODE="workspace-write"
-    CODEX_ARGS+=(--sandbox workspace-write)
+    echo "unsupported worker provider: ${WORKER_PROVIDER_KEY} (launch=${WORKER_LAUNCH:-$TOOL_BIN})" >&2
+    exit 1
     ;;
 esac
-
-if [[ "$RUN_AS_ROOT" == "1" || "$RUN_AS_ROOT" == "true" || "$RUN_AS_ROOT" == "yes" ]]; then
-  if sudo -n true >/dev/null 2>&1; then
-    CODEX_CMD=(sudo -n env)
-    for k in HOME OPENAI_API_KEY OPENAI_BASE_URL OPENAI_ORG_ID OPENAI_PROJECT_ID HTTP_PROXY HTTPS_PROXY NO_PROXY ALL_PROXY; do
-      v="${!k-}"
-      if [[ -n "$v" ]]; then
-        CODEX_CMD+=("$k=$v")
-      fi
-    done
-    CODEX_CMD+=(codex)
-    ROOT_OUTPUT_MODE=1
-  else
-    echo "[WARN] AOE_CODEX_RUN_AS_ROOT=1 but sudo -n unavailable; fallback user mode" >>"$LOG_FILE"
-  fi
-fi
 
 cleanup_temp_files() {
   if [[ "$ROOT_OUTPUT_MODE" == "1" ]] && sudo -n true >/dev/null 2>&1; then
@@ -294,9 +459,44 @@ cleanup_temp_files() {
   rm -f "$PROMPT_FILE" "$OUT_FILE" >/dev/null 2>&1 || true
 }
 
-echo "[INFO] role=${ROLE} request_id=${REQ_ID:-} tf_id=${TF_ID:-} project=${TF_PROJECT_KEY:-} workdir=${WORKDIR} permission_mode=${PERM_MODE} run_as_root=${RUN_AS_ROOT}" >>"$LOG_FILE"
-if ! "${CODEX_CMD[@]}" "${CODEX_ARGS[@]}" "$(cat "$PROMPT_FILE")" >>"$LOG_FILE" 2>&1; then
-  echo "codex exec failed (role=${ROLE})" >&2
+if [[ "${AOE_WORKER_DRY_RUN:-0}" == "1" || "${AOE_WORKER_DRY_RUN:-}" == "true" || "${AOE_WORKER_DRY_RUN:-}" == "yes" ]]; then
+  printf 'provider=%s\n' "$WORKER_PROVIDER_KEY"
+  printf 'launch=%s\n' "${WORKER_LAUNCH:-$TOOL_BIN}"
+  printf 'permission_mode=%s\n' "$ACTIVE_PERM_MODE"
+  printf 'run_as_root=%s\n' "${ACTIVE_RUN_AS_ROOT:-0}"
+  printf 'workdir=%s\n' "$WORKDIR"
+  printf 'command=%s\n' "$(shell_join "${RUN_CMD[@]}" "${RUN_ARGS[@]}" "<PROMPT>")"
+  cleanup_temp_files
+  exit 0
+fi
+
+echo "[INFO] role=${ROLE} request_id=${REQ_ID:-} tf_id=${TF_ID:-} project=${TF_PROJECT_KEY:-} workdir=${WORKDIR} provider=${WORKER_PROVIDER_KEY} launch=${WORKER_LAUNCH:-$TOOL_BIN} permission_mode=${ACTIVE_PERM_MODE} run_as_root=${ACTIVE_RUN_AS_ROOT:-0}" >>"$LOG_FILE"
+if [[ "$WORKER_PROVIDER_KEY" == "claude" ]]; then
+  if ! "${RUN_CMD[@]}" "${RUN_ARGS[@]}" "$(cat "$PROMPT_FILE")" >"$OUT_FILE" 2>>"$LOG_FILE"; then
+    echo "claude exec failed (role=${ROLE})" >&2
+    tail -n 40 "$LOG_FILE" >&2 || true
+    cleanup_temp_files
+    exit 1
+  fi
+else
+  if ! "${RUN_CMD[@]}" "${RUN_ARGS[@]}" "$(cat "$PROMPT_FILE")" >>"$LOG_FILE" 2>&1; then
+    echo "${WORKER_PROVIDER_KEY} exec failed (role=${ROLE})" >&2
+    tail -n 40 "$LOG_FILE" >&2 || true
+    cleanup_temp_files
+    exit 1
+  fi
+fi
+
+if [[ "$WORKER_PROVIDER_KEY" != "claude" ]]; then
+  :
+elif [[ "$ROOT_OUTPUT_MODE" == "1" ]]; then
+  if ! sudo -n test -s "$OUT_FILE" >/dev/null 2>&1 && [[ ! -s "$OUT_FILE" ]]; then
+    echo "empty claude output (role=${ROLE})" >&2
+    cleanup_temp_files
+    exit 1
+  fi
+elif [[ ! -s "$OUT_FILE" ]]; then
+  echo "empty claude output (role=${ROLE})" >&2
   tail -n 40 "$LOG_FILE" >&2 || true
   cleanup_temp_files
   exit 1
