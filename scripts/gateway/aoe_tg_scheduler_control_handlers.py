@@ -493,6 +493,9 @@ def _handle_offdesk_command(
                 actions.append(f"/todo {alias}")
             lines.append(f"- {alias} {display} [{row.get('status', '-')}]")
             lines.append(f"  attention: {str(row.get('attention_summary', '-')).strip() or '-'}")
+            first_action = str(row.get("priority_action", "")).strip() or "-"
+            first_reason = str(row.get("priority_reason", "")).strip() or "-"
+            lines.append(f"  first: {first_action} | {first_reason}")
             note_rows = list(row.get("notes") or [])
             for note in note_rows[:2]:
                 lines.append(f"  note: {note}")

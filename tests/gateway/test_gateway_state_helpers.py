@@ -8799,6 +8799,8 @@ def test_offdesk_prepare_includes_proposal_triage_summary(tmp_path: Path) -> Non
     assert "PROP-002[P2 risk 0.71] capture residual risk note for benchmark drift" in body
     assert "high-priority proposals pending review (P1=1, P2=1)" in body
     assert "attention: proposals:2, proposal_p1:P1=1, P2=1" in body or "attention: proposal_p1:P1=1, P2=1, proposals:2" in body
+    assert "first: /todo O3 syncback preview | canonical TODO drift pending syncback" in body
+    assert _button_texts(_markup)[0] == "/todo O3 syncback preview"
 
 
 def test_offdesk_review_includes_proposal_triage_summary(tmp_path: Path) -> None:
@@ -8845,6 +8847,7 @@ def test_offdesk_review_includes_proposal_triage_summary(tmp_path: Path) -> None
 
     assert "proposal_triage: priorities=P2=1 | kinds=handoff=1" in body
     assert "proposal_top: PROP-001[P2 handoff 0.88] draft publish-ready caption set for map panels" in body
+    assert "first: /todo O4 syncback preview | canonical TODO drift pending syncback" in body
 
 
 def test_offdesk_review_sorts_flagged_projects_by_severity(tmp_path: Path) -> None:
@@ -8895,6 +8898,7 @@ def test_offdesk_review_sorts_flagged_projects_by_severity(tmp_path: Path) -> No
     idx_o3 = body.index("- O3 Nano [warn]")
     assert idx_o4 < idx_o3
     assert "attention: backlog:none, sync:never" in body
+    assert "first: /sync bootstrap O4 24h | bootstrap backlog from recent project documents" in body
 
 
 def test_offdesk_prepare_reply_markup_includes_clean_actions(tmp_path: Path) -> None:
