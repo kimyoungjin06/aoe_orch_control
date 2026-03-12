@@ -1014,6 +1014,28 @@ def summarize_task_monitor(
             lane_parts.append("review_verdict " + ",".join(f"{key}={value}" for key, value in sorted(review_verdicts.items())))
         if lane_parts:
             lane_text += " [" + " | ".join(lane_parts) + "]"
+        exec_critic = task.get("exec_critic") if isinstance(task.get("exec_critic"), dict) else {}
+        rerun_exec = [str(x).strip() for x in (exec_critic.get("rerun_execution_lane_ids") or []) if str(x).strip()]
+        rerun_review = [str(x).strip() for x in (exec_critic.get("rerun_review_lane_ids") or []) if str(x).strip()]
+        manual_exec = [str(x).strip() for x in (exec_critic.get("manual_followup_execution_lane_ids") or []) if str(x).strip()]
+        manual_review = [str(x).strip() for x in (exec_critic.get("manual_followup_review_lane_ids") or []) if str(x).strip()]
+        target_parts: List[str] = []
+        if rerun_exec or rerun_review:
+            target_parts.append(
+                "rerun E:{exec_ids} R:{review_ids}".format(
+                    exec_ids=",".join(rerun_exec) if rerun_exec else "-",
+                    review_ids=",".join(rerun_review) if rerun_review else "-",
+                )
+            )
+        if manual_exec or manual_review:
+            target_parts.append(
+                "followup E:{exec_ids} R:{review_ids}".format(
+                    exec_ids=",".join(manual_exec) if manual_exec else "-",
+                    review_ids=",".join(manual_review) if manual_review else "-",
+                )
+            )
+        if target_parts:
+            lane_text += " {" + " | ".join(target_parts) + "}"
         updated = str(task.get("updated_at", "")).strip() or "-"
         lines.append(f"- {idx}. {label} | {status}/{stage}/{tf_phase} | {role_text or '-'}{lane_text} | {updated}")
 
