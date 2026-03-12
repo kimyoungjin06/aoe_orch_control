@@ -8532,7 +8532,9 @@ def test_offdesk_review_surfaces_flagged_projects_and_next_actions(tmp_path: Pat
     assert "- reviewed: 2" in text
     assert "- flagged: 2" in text
     assert "- O2 TwinPaper [warn]" in text
-    assert "do: /todo O2 syncback preview, /todo O2 proposals, /todo O2 followup, /sync preview O2 24h" in text
+    assert "proposal_triage: priorities=P2=1 | kinds=followup=1" in text
+    assert "proposal_top: PROP-001[P2 followup 0.00] shadow gate follow-up" in text
+    assert "do: /todo O2 syncback preview, /todo O2 proposals, /todo O2 followup" in text
     assert "- O3 Nano [warn]" in text
     assert "do: /todo O3 syncback preview" in text
     assert "- resolve flagged items, then /offdesk on" in text
