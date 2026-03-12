@@ -6946,6 +6946,49 @@ def test_orch_status_reply_markup_contains_monitor_todo_sync_and_focus_controls(
     assert "/focus O2" not in buttons2
 
 
+def test_orch_task_reply_markup_exposes_lane_retry_and_followup_actions(tmp_path: Path) -> None:
+    manager_state = _empty_state()
+    team_dir = tmp_path / "TwinPaper" / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (team_dir / "orchestrator.json").write_text("{}", encoding="utf-8")
+    manager_state["projects"]["twinpaper"] = {
+        "name": "twinpaper",
+        "display_name": "TwinPaper",
+        "project_alias": "O2",
+        "project_root": str(tmp_path / "TwinPaper"),
+        "team_dir": str(team_dir),
+    }
+    entry = manager_state["projects"]["twinpaper"]
+    task = {
+        "request_id": "REQ-123",
+        "context": {"task_short_id": "T-123"},
+        "exec_critic": {
+            "verdict": "retry",
+            "action": "replan",
+            "rerun_execution_lane_ids": ["L2"],
+            "rerun_review_lane_ids": ["R2"],
+            "manual_followup_execution_lane_ids": ["L2"],
+            "manual_followup_review_lane_ids": ["R2"],
+        },
+    }
+
+    markup = orch_task_handlers._orch_task_reply_markup("twinpaper", entry, "REQ-123", task)
+    buttons = [btn["text"] for row in markup.get("keyboard", []) for btn in row]
+
+    for expected in [
+        "/check T-123",
+        "/task T-123",
+        "/retry T-123",
+        "/replan T-123",
+        "/todo O2 followup",
+        "/orch monitor O2",
+        "/orch status O2",
+        "/queue",
+        "/map",
+    ]:
+        assert expected in buttons
+
+
 def test_resolve_message_command_auto_routes_plain_text_from_direct_bias() -> None:
     manager_state = gw.default_manager_state(ROOT, ROOT / ".aoe-team")
     gw.set_default_mode(manager_state, "939062873", "direct")
