@@ -8353,6 +8353,69 @@ def test_offdesk_prepare_warns_when_last_sync_uses_non_backlog_doc_types(tmp_pat
     assert "do: /todo O5 syncback preview, /sync preview O5 24h" in text
 
 
+def test_offdesk_prepare_reports_active_task_lane_summary_and_targets(tmp_path: Path) -> None:
+    state = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+    project_root = tmp_path / "LaneProject"
+    team_dir = project_root / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (project_root / "TODO.md").write_text("# Tasks\n- [ ] lane retry task\n", encoding="utf-8")
+    (team_dir / "AOE_TODO.md").write_text("@include ../TODO.md\n", encoding="utf-8")
+    (team_dir / "orchestrator.json").write_text("{}", encoding="utf-8")
+    state["projects"]["lane_project"] = {
+        "name": "lane_project",
+        "display_name": "LaneProject",
+        "project_alias": "O6",
+        "project_root": str(project_root),
+        "team_dir": str(team_dir),
+        "runtime_ready": True,
+        "todos": [{"id": "TODO-001", "summary": "lane retry task", "priority": "P1", "status": "open"}],
+        "todo_proposals": [],
+        "last_sync_at": "2026-03-12T20:00:00+0900",
+        "last_sync_mode": "scenario",
+        "last_sync_candidate_classes": {"scenario": 1},
+        "last_sync_candidate_doc_types": {"todo": 1},
+        "tasks": {
+            "req-lane": {
+                "request_id": "req-lane",
+                "short_id": "T-101",
+                "status": "running",
+                "updated_at": "2026-03-12T21:00:00+0900",
+                "created_at": "2026-03-12T20:55:00+0900",
+                "exec_critic": {
+                    "verdict": "retry",
+                    "action": "retry",
+                    "reason": "review lane requested rerun",
+                    "rerun_execution_lane_ids": ["L2"],
+                    "rerun_review_lane_ids": ["R1"],
+                },
+                "plan": {
+                    "meta": {
+                        "phase2_execution_plan": {
+                            "execution_lanes": [{"id": "L1"}, {"id": "L2"}],
+                            "review_lanes": [{"id": "R1", "depends_on": ["L2"]}],
+                        }
+                    }
+                },
+                "lane_states": {
+                    "summary": {
+                        "execution": {"done": 1, "running": 1},
+                        "review": {"waiting_on_dependencies": 1},
+                        "review_verdicts": {"retry": 1},
+                    }
+                },
+            }
+        },
+    }
+
+    text = _call_management_status(tmp_path=tmp_path, manager_state=state, cmd="offdesk", rest="prepare O6")
+
+    assert "- O6 LaneProject [warn]" in text
+    assert "active task needs attention (needs_retry)" in text
+    assert "active_task: T-101 | running/needs_retry" in text
+    assert "active_task_lanes: lanes E2/R1 | exec done=1, running=1 | review waiting_on_dependencies=1 | review_verdict retry=1" in text
+    assert "active_task_rerun: execution=L2 review=R1" in text
+
+
 def test_offdesk_review_surfaces_flagged_projects_and_next_actions(tmp_path: Path) -> None:
     state = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
 
@@ -8410,6 +8473,77 @@ def test_offdesk_review_surfaces_flagged_projects_and_next_actions(tmp_path: Pat
     assert "- O3 Nano [warn]" in text
     assert "do: /todo O3 syncback preview" in text
     assert "- resolve flagged items, then /offdesk on" in text
+
+
+def test_offdesk_review_reply_markup_includes_active_task_retry_actions(tmp_path: Path) -> None:
+    state = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+    project_root = tmp_path / "LaneProject"
+    team_dir = project_root / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (project_root / "TODO.md").write_text("# Tasks\n- [ ] lane retry task\n", encoding="utf-8")
+    (team_dir / "AOE_TODO.md").write_text("@include ../TODO.md\n", encoding="utf-8")
+    (team_dir / "orchestrator.json").write_text("{}", encoding="utf-8")
+    state["projects"]["lane_project"] = {
+        "name": "lane_project",
+        "display_name": "LaneProject",
+        "project_alias": "O6",
+        "project_root": str(project_root),
+        "team_dir": str(team_dir),
+        "runtime_ready": True,
+        "todos": [{"id": "TODO-001", "summary": "lane retry task", "priority": "P1", "status": "open"}],
+        "todo_proposals": [],
+        "last_sync_at": "2026-03-12T20:00:00+0900",
+        "last_sync_mode": "scenario",
+        "last_sync_candidate_classes": {"scenario": 1},
+        "last_sync_candidate_doc_types": {"todo": 1},
+        "tasks": {
+            "req-lane": {
+                "request_id": "req-lane",
+                "short_id": "T-101",
+                "status": "running",
+                "updated_at": "2026-03-12T21:00:00+0900",
+                "created_at": "2026-03-12T20:55:00+0900",
+                "exec_critic": {
+                    "verdict": "retry",
+                    "action": "retry",
+                    "reason": "review lane requested rerun",
+                    "rerun_execution_lane_ids": ["L2"],
+                    "rerun_review_lane_ids": ["R1"],
+                },
+                "plan": {
+                    "meta": {
+                        "phase2_execution_plan": {
+                            "execution_lanes": [{"id": "L1"}, {"id": "L2"}],
+                            "review_lanes": [{"id": "R1", "depends_on": ["L2"]}],
+                        }
+                    }
+                },
+                "lane_states": {
+                    "summary": {
+                        "execution": {"done": 1, "running": 1},
+                        "review": {"waiting_on_dependencies": 1},
+                        "review_verdicts": {"retry": 1},
+                    }
+                },
+            }
+        },
+    }
+
+    body, markup = _call_management_status_with_markup(
+        tmp_path=tmp_path,
+        manager_state=state,
+        cmd="offdesk",
+        rest="review O6",
+    )
+
+    assert "offdesk review" in body
+    assert "active task needs attention (needs_retry)" in body
+    assert "/task T-101, /retry T-101" in body
+    buttons = _button_texts(markup)
+    assert "/task T-101" in buttons
+    assert "/retry T-101" in buttons
+    assert "/orch status O6" in buttons
+    assert "/todo O6" in buttons
 
 
 def test_offdesk_review_reply_markup_includes_flagged_project_drilldowns(tmp_path: Path) -> None:
