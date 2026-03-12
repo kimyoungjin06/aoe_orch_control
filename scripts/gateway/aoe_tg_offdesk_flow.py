@@ -525,39 +525,63 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
     manual_followup_count = blocked_bucket_count(todos, "manual_followup")
     blocked_head = blocked_head_summary(todos)
     notes: List[str] = []
+    attention: List[str] = []
+    severity_score = 0
     status = "ready"
     if runtime_issue:
         status = "blocked"
         notes.append(f"runtime not ready: {runtime_label}")
+        attention.append("runtime")
+        severity_score += 100
     if not scenario_exists:
         status = "blocked"
         notes.append("missing .aoe-team/AOE_TODO.md")
+        attention.append("bootstrap")
+        severity_score += 90
     if not canonical_exists:
         status = "warn" if status == "ready" else status
         notes.append("missing canonical TODO.md")
+        attention.append("bootstrap")
+        severity_score += 70
     if canonical_exists and not include_ok:
         status = "warn" if status == "ready" else status
         notes.append("AOE_TODO.md does not include canonical TODO.md")
+        attention.append("bootstrap")
+        severity_score += 65
     if counts["open"] == 0 and counts["running"] == 0 and counts["blocked"] == 0 and open_proposals == 0:
         status = "blocked" if status == "ready" else status
         notes.append("no runnable backlog")
+        attention.append("backlog:none")
+        severity_score += 85
     if pending_flag:
         status = "warn" if status == "ready" else status
         notes.append("pending todo awaiting dispatch/approval")
+        attention.append("pending")
+        severity_score += 20
     if counts["running"] > 0:
         status = "warn" if status == "ready" else status
         notes.append("task already running")
+        attention.append("running")
+        severity_score += 15
     if counts["blocked"] > 0:
         status = "warn" if status == "ready" else status
         notes.append(f"blocked backlog present ({counts['blocked']})")
+        attention.append(f"blocked:{counts['blocked']}")
+        severity_score += 45
     if manual_followup_count > 0:
         status = "warn" if status == "ready" else status
         notes.append(f"manual follow-up backlog present ({manual_followup_count})")
+        attention.append(f"followup:{manual_followup_count}")
+        severity_score += 55
     if open_proposals > 0:
         status = "warn" if status == "ready" else status
         notes.append(f"open todo proposals pending review ({open_proposals})")
+        attention.append(f"proposals:{open_proposals}")
+        severity_score += 25
         if bool(proposal_triage.get("high_priority", False)):
             notes.append(f"high-priority proposals pending review ({proposal_triage.get('priority_summary', '-')})")
+            attention.append(f"proposal_p1:{proposal_triage.get('priority_summary', '-')}")
+            severity_score += 20
     if syncback_pending:
         status = "warn" if status == "ready" else status
         notes.append(
@@ -565,31 +589,56 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
             f"(done={syncback_counts['done']} reopen={syncback_counts['reopen']} "
             f"append={syncback_counts['append']} blocked_notes={syncback_counts['blocked']})"
         )
+        attention.append("syncback")
+        severity_score += 15
     if syncback_error:
         status = "warn" if status == "ready" else status
         notes.append(f"syncback preview failed: {syncback_error}")
+        attention.append("syncback:error")
+        severity_score += 20
     if bool(sync_quality.get("warn")):
         status = "warn" if status == "ready" else status
         note = str(sync_quality.get("note", "")).strip()
         if note:
             notes.append(note)
+        attention.append(f"sync:{sync_quality.get('quality', 'unknown')}")
+        severity_score += 35
     task_tf_phase = str(latest_task.get("tf_phase", "")).strip()
     task_status = str(latest_task.get("status", "")).strip()
     if task_tf_phase in {"needs_retry", "manual_intervention", "blocked", "critic_review"}:
         status = "warn" if status == "ready" else status
         notes.append(f"active task needs attention ({task_tf_phase})")
+        attention.append(f"task:{task_tf_phase}")
+        severity_score += 60
     elif task_status in {"running", "pending"}:
         status = "warn" if status == "ready" else status
         notes.append(f"active task in progress ({task_tf_phase or task_status})")
+        attention.append(f"task:{task_tf_phase or task_status}")
+        severity_score += 15
     if last_sync_mode == "never" or not last_sync_at:
         status = "warn" if status == "ready" else status
         notes.append("queue has not been synced yet")
+        attention.append("sync:never")
+        severity_score += 30
     elif sync_stale:
         status = "warn" if status == "ready" else status
         notes.append(f"last sync is stale ({last_sync_disp})")
+        attention.append(f"sync:stale:{last_sync_disp}")
+        severity_score += 25
+
+    dedup_attention: List[str] = []
+    seen_attention: set[str] = set()
+    for item in attention:
+        token = str(item or "").strip()
+        if not token or token in seen_attention:
+            continue
+        seen_attention.add(token)
+        dedup_attention.append(token)
+    attention_summary = ", ".join(dedup_attention[:4]) if dedup_attention else "-"
 
     lines = [
         f"- {alias} {display} [{status}]",
+        f"  attention: {attention_summary}",
         f"  runtime: {runtime_label}",
         f"  canonical: {canonical_rel if canonical_exists else 'missing TODO.md'}",
         f"  scenario_include: {include_display}",
@@ -679,8 +728,29 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
         "sync_quality_warn": bool(sync_quality.get("warn", False)),
         "sync_candidate_classes": dict(sync_quality.get("candidate_classes") or {}),
         "sync_candidate_doc_types": dict(sync_quality.get("candidate_doc_types") or {}),
+        "severity_score": int(severity_score),
+        "attention_summary": attention_summary,
         "notes": list(notes),
     }
+
+
+def sort_offdesk_reports(reports: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _status_rank(row: Dict[str, Any]) -> int:
+        status = str(row.get("status", "ready")).strip().lower()
+        return {"blocked": 0, "warn": 1, "ready": 2}.get(status, 9)
+
+    def _alias_rank(row: Dict[str, Any]) -> int:
+        return alias_index(str(row.get("alias", "")).strip() or str(row.get("display", "")))
+
+    return sorted(
+        [row for row in reports if isinstance(row, dict)],
+        key=lambda row: (
+            _status_rank(row),
+            -int(row.get("severity_score", 0) or 0),
+            _alias_rank(row),
+            str(row.get("display", "")),
+        ),
+    )
 
 
 def offdesk_review_reply_markup(flagged: List[Dict[str, Any]], *, clean: bool = False) -> Dict[str, Any]:

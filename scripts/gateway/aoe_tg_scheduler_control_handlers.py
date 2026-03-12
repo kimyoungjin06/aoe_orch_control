@@ -265,6 +265,7 @@ def _handle_offdesk_command(
     project_lock_label: Callable[[Dict[str, Any]], str],
     offdesk_prepare_targets: Callable[[Dict[str, Any], str], List[tuple[str, Dict[str, Any]]]],
     offdesk_prepare_project_report: Callable[[Dict[str, Any], str, Dict[str, Any]], Dict[str, Any]],
+    sort_offdesk_reports: Callable[[List[Dict[str, Any]]], List[Dict[str, Any]]],
     offdesk_review_reply_markup: Callable[[List[Dict[str, Any]], bool], Dict[str, Any]],
     offdesk_prepare_reply_markup: Callable[[List[Dict[str, Any]], int, bool], Dict[str, Any]],
     auto_state_path: Callable[[Any], Any],
@@ -370,6 +371,7 @@ def _handle_offdesk_command(
             return True
 
         reports = [offdesk_prepare_project_report(manager_state, key, entry) for key, entry in targets]
+        reports = sort_offdesk_reports(reports)
         ready_count = sum(1 for row in reports if row.get("status") == "ready")
         warn_count = sum(1 for row in reports if row.get("status") == "warn")
         blocked_count = sum(1 for row in reports if row.get("status") == "blocked")
@@ -444,6 +446,7 @@ def _handle_offdesk_command(
             return True
 
         reports = [offdesk_prepare_project_report(manager_state, key, entry) for key, entry in targets]
+        reports = sort_offdesk_reports(reports)
         flagged = [row for row in reports if str(row.get("status", "")).strip().lower() in {"warn", "blocked"}]
         lines = [
             "offdesk review",
@@ -489,6 +492,7 @@ def _handle_offdesk_command(
             if not actions:
                 actions.append(f"/todo {alias}")
             lines.append(f"- {alias} {display} [{row.get('status', '-')}]")
+            lines.append(f"  attention: {str(row.get('attention_summary', '-')).strip() or '-'}")
             note_rows = list(row.get("notes") or [])
             for note in note_rows[:2]:
                 lines.append(f"  note: {note}")
@@ -1021,6 +1025,7 @@ def handle_scheduler_control_command(
     ops_scope_compact_lines: Callable[[Dict[str, Any], int, str], List[str]],
     offdesk_prepare_targets: Callable[[Dict[str, Any], str], List[tuple[str, Dict[str, Any]]]],
     offdesk_prepare_project_report: Callable[[Dict[str, Any], str, Dict[str, Any]], Dict[str, Any]],
+    sort_offdesk_reports: Callable[[List[Dict[str, Any]]], List[Dict[str, Any]]],
     offdesk_review_reply_markup: Callable[[List[Dict[str, Any]], bool], Dict[str, Any]],
     offdesk_prepare_reply_markup: Callable[[List[Dict[str, Any]], int, bool], Dict[str, Any]],
     auto_state_path: Callable[[Any], Any],
@@ -1111,6 +1116,7 @@ def handle_scheduler_control_command(
             project_lock_label=project_lock_label,
             offdesk_prepare_targets=offdesk_prepare_targets,
             offdesk_prepare_project_report=offdesk_prepare_project_report,
+            sort_offdesk_reports=sort_offdesk_reports,
             offdesk_review_reply_markup=offdesk_review_reply_markup,
             offdesk_prepare_reply_markup=offdesk_prepare_reply_markup,
             auto_state_path=auto_state_path,
