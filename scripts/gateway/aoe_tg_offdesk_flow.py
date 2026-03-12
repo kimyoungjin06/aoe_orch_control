@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from aoe_tg_orch_contract import derive_tf_phase, normalize_tf_phase
 from aoe_tg_ops_policy import list_ops_projects, summarize_ops_scope
 from aoe_tg_ops_view import (
     blocked_bucket_count,
@@ -21,6 +22,7 @@ from aoe_tg_ops_view import (
 )
 from aoe_tg_package_paths import team_tmux_script
 from aoe_tg_project_runtime import project_runtime_issue, project_runtime_label
+from aoe_tg_task_view import task_display_label
 from aoe_tg_todo_state import preview_syncback_plan
 
 
@@ -128,6 +130,104 @@ def _sync_quality_snapshot(entry: Dict[str, Any]) -> Dict[str, Any]:
         "candidate_doc_types": doc_types,
         "classes_summary": _sync_counter_summary(classes),
         "doc_types_summary": _sync_counter_summary(doc_types),
+    }
+
+
+def _normalize_task_status(raw: Any) -> str:
+    token = str(raw or "").strip().lower()
+    if token in {"pending", "running", "completed", "failed"}:
+        return token
+    aliases = {
+        "done": "completed",
+        "complete": "completed",
+        "success": "completed",
+        "fail": "failed",
+        "error": "failed",
+        "active": "running",
+        "in_progress": "running",
+        "progress": "running",
+    }
+    return aliases.get(token, "pending")
+
+
+def _compact_counter_summary(raw: Any) -> str:
+    if not isinstance(raw, dict):
+        return "-"
+    rows: List[tuple[str, int]] = []
+    for key, value in raw.items():
+        token = str(key or "").strip().lower()
+        if not token:
+            continue
+        try:
+            count = int(value or 0)
+        except Exception:
+            continue
+        if count <= 0:
+            continue
+        rows.append((token, count))
+    if not rows:
+        return "-"
+    rows.sort(key=lambda kv: (kv[0]))
+    return ", ".join(f"{key}={count}" for key, count in rows)
+
+
+def _latest_task_snapshot(entry: Dict[str, Any]) -> Dict[str, Any]:
+    tasks = entry.get("tasks")
+    if not isinstance(tasks, dict) or not tasks:
+        return {}
+
+    def sort_key(item: tuple[str, Dict[str, Any]]) -> tuple[int, str, str]:
+        req_id, task = item
+        if not isinstance(task, dict):
+            return (0, "", str(req_id or ""))
+        status = _normalize_task_status(task.get("status", "pending"))
+        priority = {"running": 4, "pending": 3, "failed": 2, "completed": 1}.get(status, 0)
+        updated = str(task.get("updated_at", "")).strip() or str(task.get("created_at", "")).strip()
+        return (priority, updated, str(req_id or "").strip())
+
+    best_req = ""
+    best_task: Dict[str, Any] | None = None
+    for req_id, task in tasks.items():
+        if not isinstance(task, dict):
+            continue
+        if best_task is None or sort_key((req_id, task)) > sort_key((best_req, best_task)):
+            best_req = str(req_id or "").strip()
+            best_task = task
+    if not isinstance(best_task, dict):
+        return {}
+
+    status = _normalize_task_status(best_task.get("status", "pending"))
+    tf_phase = normalize_tf_phase(derive_tf_phase(best_task), "queued")
+    label = task_display_label(best_task, fallback_request_id=best_req)
+    plan = best_task.get("plan") if isinstance(best_task.get("plan"), dict) else {}
+    meta = plan.get("meta") if isinstance(plan.get("meta"), dict) else {}
+    exec_plan = meta.get("phase2_execution_plan") if isinstance(meta.get("phase2_execution_plan"), dict) else {}
+    execution_lanes = exec_plan.get("execution_lanes") if isinstance(exec_plan.get("execution_lanes"), list) else []
+    review_lanes = exec_plan.get("review_lanes") if isinstance(exec_plan.get("review_lanes"), list) else []
+    lane_states = best_task.get("lane_states") if isinstance(best_task.get("lane_states"), dict) else {}
+    lane_summary = lane_states.get("summary") if isinstance(lane_states.get("summary"), dict) else {}
+    exec_summary = lane_summary.get("execution") if isinstance(lane_summary.get("execution"), dict) else {}
+    review_summary = lane_summary.get("review") if isinstance(lane_summary.get("review"), dict) else {}
+    review_verdicts = lane_summary.get("review_verdicts") if isinstance(lane_summary.get("review_verdicts"), dict) else {}
+    exec_critic = best_task.get("exec_critic") if isinstance(best_task.get("exec_critic"), dict) else {}
+    rerun_exec = [str(x).strip() for x in (exec_critic.get("rerun_execution_lane_ids") or []) if str(x).strip()]
+    rerun_review = [str(x).strip() for x in (exec_critic.get("rerun_review_lane_ids") or []) if str(x).strip()]
+    manual_exec = [str(x).strip() for x in (exec_critic.get("manual_followup_execution_lane_ids") or []) if str(x).strip()]
+    manual_review = [str(x).strip() for x in (exec_critic.get("manual_followup_review_lane_ids") or []) if str(x).strip()]
+    return {
+        "request_id": best_req,
+        "label": label,
+        "status": status,
+        "tf_phase": tf_phase,
+        "execution_lane_count": len(execution_lanes),
+        "review_lane_count": len(review_lanes),
+        "execution_summary": dict(exec_summary),
+        "review_summary": dict(review_summary),
+        "review_verdicts": dict(review_verdicts),
+        "rerun_execution_lane_ids": rerun_exec,
+        "rerun_review_lane_ids": rerun_review,
+        "manual_followup_execution_lane_ids": manual_exec,
+        "manual_followup_review_lane_ids": manual_review,
     }
 
 
@@ -336,6 +436,7 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
     last_sync_at = str(entry.get("last_sync_at", "")).strip()
     last_sync_disp = compact_age_label(last_sync_at)
     sync_quality = _sync_quality_snapshot(entry)
+    latest_task = _latest_task_snapshot(entry)
     last_sync_dt = parse_iso_datetime(last_sync_at)
     sync_stale = False
     if last_sync_dt is not None:
@@ -393,6 +494,14 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
         note = str(sync_quality.get("note", "")).strip()
         if note:
             notes.append(note)
+    task_tf_phase = str(latest_task.get("tf_phase", "")).strip()
+    task_status = str(latest_task.get("status", "")).strip()
+    if task_tf_phase in {"needs_retry", "manual_intervention", "blocked", "critic_review"}:
+        status = "warn" if status == "ready" else status
+        notes.append(f"active task needs attention ({task_tf_phase})")
+    elif task_status in {"running", "pending"}:
+        status = "warn" if status == "ready" else status
+        notes.append(f"active task in progress ({task_tf_phase or task_status})")
     if last_sync_mode == "never" or not last_sync_at:
         status = "warn" if status == "ready" else status
         notes.append("queue has not been synced yet")
@@ -413,6 +522,39 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
         f"classes={sync_quality.get('classes_summary', '-')} "
         f"doc_types={sync_quality.get('doc_types_summary', '-')}".rstrip(),
     ]
+    if latest_task:
+        lane_parts = [f"lanes E{int(latest_task.get('execution_lane_count', 0) or 0)}/R{int(latest_task.get('review_lane_count', 0) or 0)}"]
+        exec_summary_disp = _compact_counter_summary(latest_task.get("execution_summary"))
+        review_summary_disp = _compact_counter_summary(latest_task.get("review_summary"))
+        verdict_disp = _compact_counter_summary(latest_task.get("review_verdicts"))
+        if exec_summary_disp != "-":
+            lane_parts.append(f"exec {exec_summary_disp}")
+        if review_summary_disp != "-":
+            lane_parts.append(f"review {review_summary_disp}")
+        if verdict_disp != "-":
+            lane_parts.append(f"review_verdict {verdict_disp}")
+        lines.append(
+            f"  active_task: {latest_task.get('label', '-')} | {latest_task.get('status', '-')}/{latest_task.get('tf_phase', '-')}"
+        )
+        lines.append("  active_task_lanes: " + " | ".join(lane_parts))
+        rerun_exec = list(latest_task.get("rerun_execution_lane_ids") or [])
+        rerun_review = list(latest_task.get("rerun_review_lane_ids") or [])
+        manual_exec = list(latest_task.get("manual_followup_execution_lane_ids") or [])
+        manual_review = list(latest_task.get("manual_followup_review_lane_ids") or [])
+        if rerun_exec or rerun_review:
+            lines.append(
+                "  active_task_rerun: execution={exec_ids} review={review_ids}".format(
+                    exec_ids=",".join(rerun_exec) if rerun_exec else "-",
+                    review_ids=",".join(rerun_review) if rerun_review else "-",
+                )
+            )
+        if manual_exec or manual_review:
+            lines.append(
+                "  active_task_followup: execution={exec_ids} review={review_ids}".format(
+                    exec_ids=",".join(manual_exec) if manual_exec else "-",
+                    review_ids=",".join(manual_review) if manual_review else "-",
+                )
+            )
     if blocked_head:
         head = f"  blocked_head: {blocked_head.get('id', '-')} x{blocked_head.get('count', 1)}"
         bucket = str(blocked_head.get("bucket", "")).strip()
@@ -439,6 +581,10 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
         "syncback_pending": syncback_pending,
         "syncback_counts": dict(syncback_counts),
         "pending_flag": pending_flag,
+        "active_task_request_id": str(latest_task.get("request_id", "")).strip(),
+        "active_task_label": str(latest_task.get("label", "")).strip(),
+        "active_task_tf_phase": str(latest_task.get("tf_phase", "")).strip(),
+        "active_task_status": str(latest_task.get("status", "")).strip(),
         "sync_quality": str(sync_quality.get("quality", "")).strip(),
         "sync_quality_warn": bool(sync_quality.get("warn", False)),
         "sync_candidate_classes": dict(sync_quality.get("candidate_classes") or {}),
@@ -467,6 +613,7 @@ def offdesk_review_reply_markup(flagged: List[Dict[str, Any]], *, clean: bool = 
         alias = str(row.get("alias", "")).strip() or "-"
         primary: List[Dict[str, str]] = []
         secondary: List[Dict[str, str]] = []
+        tertiary: List[Dict[str, str]] = []
         if bool(row.get("syncback_pending", False)):
             primary.append({"text": f"/todo {alias} syncback preview"})
         if int(row.get("proposals", 0) or 0) > 0 and len(primary) < 3:
@@ -475,6 +622,12 @@ def offdesk_review_reply_markup(flagged: List[Dict[str, Any]], *, clean: bool = 
             primary.append({"text": f"/todo {alias} followup"})
         if primary:
             keyboard.append(primary[:3])
+
+        active_task_label = str(row.get("active_task_label", "")).strip()
+        active_task_tf_phase = str(row.get("active_task_tf_phase", "")).strip()
+        if active_task_label and active_task_tf_phase in {"needs_retry", "manual_intervention", "critic_review", "blocked"}:
+            tertiary.append({"text": f"/task {active_task_label}"})
+            tertiary.append({"text": f"/retry {active_task_label}"})
 
         if int(row.get("blocked_count", 0) or 0) > 0 or int(row.get("open", 0) or 0) == 0:
             secondary.append({"text": f"/sync preview {alias} 24h"})
@@ -490,6 +643,8 @@ def offdesk_review_reply_markup(flagged: List[Dict[str, Any]], *, clean: bool = 
             deduped_secondary.append(btn)
         if deduped_secondary:
             keyboard.append(deduped_secondary[:3])
+        if tertiary:
+            keyboard.append(tertiary[:3])
 
     keyboard.append([{"text": "/offdesk prepare"}, {"text": "/map"}, {"text": "/help"}])
     return {
@@ -526,6 +681,7 @@ def offdesk_prepare_reply_markup(
         alias = str(row.get("alias", "")).strip() or "-"
         primary: List[Dict[str, str]] = []
         secondary: List[Dict[str, str]] = []
+        tertiary: List[Dict[str, str]] = []
 
         if bool(row.get("syncback_pending", False)):
             primary.append({"text": f"/todo {alias} syncback preview"})
@@ -536,10 +692,18 @@ def offdesk_prepare_reply_markup(
         if primary:
             keyboard.append(primary[:3])
 
+        active_task_label = str(row.get("active_task_label", "")).strip()
+        active_task_tf_phase = str(row.get("active_task_tf_phase", "")).strip()
+        if active_task_label and active_task_tf_phase in {"needs_retry", "manual_intervention", "critic_review", "blocked"}:
+            tertiary.append({"text": f"/task {active_task_label}"})
+            tertiary.append({"text": f"/retry {active_task_label}"})
+
         secondary.append({"text": f"/sync preview {alias} 24h"})
         secondary.append({"text": f"/orch status {alias}"})
         secondary.append({"text": f"/todo {alias}"})
         keyboard.append(secondary[:3])
+        if tertiary:
+            keyboard.append(tertiary[:3])
 
     footer: List[Dict[str, str]] = []
     if blocked_count == 0:

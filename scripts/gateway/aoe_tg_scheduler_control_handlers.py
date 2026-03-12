@@ -471,6 +471,11 @@ def _handle_offdesk_command(
                 actions.append(f"/todo {alias} proposals")
             if int(row.get("followup_count", 0) or 0) > 0:
                 actions.append(f"/todo {alias} followup")
+            active_task_label = str(row.get("active_task_label", "")).strip()
+            active_task_tf_phase = str(row.get("active_task_tf_phase", "")).strip()
+            if active_task_label and active_task_tf_phase in {"needs_retry", "manual_intervention", "critic_review", "blocked"}:
+                actions.append(f"/task {active_task_label}")
+                actions.append(f"/retry {active_task_label}")
             if (
                 int(row.get("blocked_count", 0) or 0) > 0
                 or int(row.get("open", 0) or 0) == 0
