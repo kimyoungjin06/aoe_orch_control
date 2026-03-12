@@ -2388,6 +2388,61 @@ def test_task_monitor_includes_review_verdict_summary() -> None:
     assert "lanes E1/R1 [exec done=1 | review done=1 | review_verdict retry=1]" in summary
 
 
+def test_task_monitor_includes_lane_rerun_and_followup_targets() -> None:
+    entry = {
+        "tasks": {
+            "REQ-1": {
+                "request_id": "REQ-1",
+                "prompt": "collect data and write memo",
+                "status": "running",
+                "stage": "integration",
+                "roles": ["Local-Dev", "Reviewer"],
+                "exec_critic": {
+                    "verdict": "retry",
+                    "action": "retry",
+                    "rerun_execution_lane_ids": ["L2"],
+                    "rerun_review_lane_ids": ["R1"],
+                    "manual_followup_execution_lane_ids": ["L3"],
+                },
+                "lane_states": {
+                    "execution": [{"lane_id": "L1", "role": "Local-Dev", "status": "done"}],
+                    "review": [{"lane_id": "R1", "role": "Reviewer", "status": "done", "verdict": "retry", "action": "replan", "depends_on": ["L2"]}],
+                    "summary": {
+                        "execution": {"done": 1},
+                        "review": {"done": 1},
+                        "review_verdicts": {"retry": 1},
+                    },
+                },
+                "plan": {
+                    "meta": {
+                        "phase2_execution_plan": {
+                            "execution_mode": "parallel",
+                            "execution_lanes": [{"lane_id": "L1", "role": "Local-Dev"}, {"lane_id": "L2", "role": "Claude-Analyst"}],
+                            "review_mode": "single",
+                            "review_lanes": [{"lane_id": "R1", "role": "Reviewer"}],
+                        }
+                    }
+                },
+                "updated_at": "2026-03-10T10:00:00+0900",
+                "created_at": "2026-03-10T09:00:00+0900",
+            }
+        },
+        "task_alias_index": {},
+        "task_seq": 0,
+    }
+
+    summary = task_state.summarize_task_monitor(
+        "Demo",
+        entry,
+        limit=5,
+        normalize_task_status=gw.normalize_task_status,
+        dedupe_roles=gw.dedupe_roles,
+        task_display_label=gw.task_display_label,
+        lifecycle_stages=gw.LIFECYCLE_STAGES,
+    )
+    assert "{rerun E:L2 R:R1 | followup E:L3 R:-}" in summary
+
+
 def test_task_state_sanitize_task_record_matches_gateway(monkeypatch) -> None:
     monkeypatch.setattr(gw, "now_iso", lambda: "2026-03-11T10:00:00+0900")
     raw_task = {
