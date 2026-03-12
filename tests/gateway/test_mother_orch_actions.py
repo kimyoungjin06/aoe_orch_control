@@ -39,6 +39,7 @@ def test_list_mother_orch_actions_contains_core_operator_surface() -> None:
     assert "dispatch_task" in names
     assert "offdesk_prepare" in names
     assert "syncback_apply" in names
+    assert "sync_bootstrap" in names
 
 
 def test_normalize_action_call_maps_alias_to_project_status() -> None:
@@ -141,3 +142,12 @@ def test_action_call_to_resolved_command_maps_monitor_and_offdesk() -> None:
     assert monitor["orch_target"] == "O3"
     assert offdesk["cmd"] == "offdesk"
     assert offdesk["rest"] == "prepare"
+
+
+def test_action_call_maps_bootstrap_alias_to_sync_bootstrap_command() -> None:
+    row = mod.normalize_mother_orch_action_call({"action": "bootstrap", "project_key": "O4", "window": "48h"})
+    resolved = mod.action_call_to_resolved_command(row)
+
+    assert row["action"] == "sync_bootstrap"
+    assert resolved["cmd"] == "sync"
+    assert resolved["rest"] == "bootstrap O4 48h"

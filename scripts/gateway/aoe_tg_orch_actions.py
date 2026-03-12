@@ -46,6 +46,9 @@ ACTION_ALIASES = {
     "list_followups": "list_followups",
     "sync_preview": "sync_preview",
     "preview_sync": "sync_preview",
+    "sync_bootstrap": "sync_bootstrap",
+    "bootstrap": "sync_bootstrap",
+    "recover": "sync_bootstrap",
     "sync": "sync_apply",
     "sync_apply": "sync_apply",
     "sync_salvage": "sync_salvage",
@@ -162,6 +165,15 @@ ACTION_CATALOG: Dict[str, Dict[str, Any]] = {
         "operator_surface": ["/sync O# 24h", "/sync replace O#"],
         "required_args": [],
         "notes": ["Mutate runtime queue from canonical/recent/salvage sources."],
+    },
+    "sync_bootstrap": {
+        "family": "backlog_sync",
+        "intent_class": "work",
+        "risk_level": "runtime_mutation",
+        "requires_project": True,
+        "operator_surface": ["/sync bootstrap O# 24h"],
+        "required_args": [],
+        "notes": ["Bootstrap queue from recent docs plus salvage when canonical backlog is missing or unreliable."],
     },
     "sync_salvage": {
         "family": "backlog_sync",
@@ -298,6 +310,7 @@ def infer_mother_orch_action_call(
     queue_markers = ("queue", "대기열", "todo", "할일", "백로그")
     followup_markers = ("followup", "follow-up", "후속", "수동개입", "manual followup")
     sync_markers = ("sync", "동기화", "불러와", "가져와", "salvage")
+    sync_bootstrap_markers = ("sync bootstrap", "bootstrap sync", "동기화 bootstrap", "부트스트랩 동기화")
     preview_markers = ("preview", "미리보기", "보기만", "점검")
     status_markers = ("상태", "진행", "결과", "언제", "모니터", "monitor", "progress", "result", "status")
     inspect_markers = (
@@ -358,8 +371,11 @@ def infer_mother_orch_action_call(
     if _contains_any(low, map_markers):
         return normalize_mother_orch_action_call({"action": "list_projects"})
 
-    if _contains_any(low, sync_markers):
-        action = "sync_preview" if _contains_any(low, preview_markers) else "sync_apply"
+    if _contains_any(low, sync_markers) or _contains_any(low, sync_bootstrap_markers):
+        if _contains_any(low, sync_bootstrap_markers):
+            action = "sync_bootstrap"
+        else:
+            action = "sync_preview" if _contains_any(low, preview_markers) else "sync_apply"
         return normalize_mother_orch_action_call(
             {"action": action, "project_key": default_project_key, "window": "24h"}
         )
@@ -431,6 +447,10 @@ def action_call_to_resolved_command(call: Any) -> Dict[str, Any]:
         window = _trim_text(args.get("window", "24h"), 32) or "24h"
         replace = bool(args.get("replace", False))
         rest = " ".join(part for part in (("replace" if replace else ""), project_key, window) if part)
+        return {"cmd": "sync", "rest": rest}
+    if action == "sync_bootstrap":
+        window = _trim_text(args.get("window", "24h"), 32) or "24h"
+        rest = " ".join(part for part in ("bootstrap", project_key, window) if part)
         return {"cmd": "sync", "rest": rest}
     if action == "sync_salvage":
         window = _trim_text(args.get("window", "24h"), 32) or "24h"
@@ -588,7 +608,7 @@ def normalize_mother_orch_action_call(
         roles = args.get("requested_roles", data.get("requested_roles", []))
         if isinstance(roles, list):
             normalized_args["requested_roles"] = [_trim_text(item, 64) for item in roles if _trim_text(item, 64)]
-    elif action in {"sync_preview", "sync_apply", "sync_salvage"}:
+    elif action in {"sync_preview", "sync_apply", "sync_salvage", "sync_bootstrap"}:
         normalized_args["window"] = _trim_text(data.get("window", args.get("window", "")), 32) or "24h"
         if action == "sync_apply":
             normalized_args["replace"] = _normalize_bool(data.get("replace", args.get("replace", False)), False)

@@ -8375,6 +8375,14 @@ def test_offdesk_prepare_warns_when_last_sync_used_discovery_mode(tmp_path: Path
     assert "- O4 LocalMap [warn]" in text
     assert "sync_source: discovery classes=recent_doc=2, todo_file=1 doc_types=handoff=2, note=1" in text
     assert "last sync used non-canonical discovery mode (scenario-empty->fallback:bootstrap)" in text
+    body, markup = _call_management_status_with_markup(
+        tmp_path=tmp_path,
+        manager_state=state,
+        cmd="offdesk",
+        rest="prepare O4",
+    )
+    buttons = _button_texts(markup)
+    assert "/sync bootstrap O4 24h" in buttons
 
 
 def test_offdesk_prepare_warns_when_last_sync_uses_non_backlog_doc_types(tmp_path: Path) -> None:
@@ -8405,7 +8413,7 @@ def test_offdesk_prepare_warns_when_last_sync_uses_non_backlog_doc_types(tmp_pat
     assert "offdesk review" in text
     assert "- O5 Research [warn]" in text
     assert "last sync built backlog from non-backlog documents" in text
-    assert "do: /todo O5 syncback preview, /sync preview O5 24h" in text
+    assert "do: /todo O5 syncback preview, /sync bootstrap O5 24h, /sync preview O5 24h" in text
 
 
 def test_offdesk_prepare_reports_active_task_lane_summary_and_targets(tmp_path: Path) -> None:
