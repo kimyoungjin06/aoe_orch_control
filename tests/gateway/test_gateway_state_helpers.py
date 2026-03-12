@@ -8,6 +8,7 @@ import copy
 import importlib.util
 import json
 import os
+import pytest
 import sys
 from pathlib import Path
 
@@ -8125,6 +8126,244 @@ def test_gateway_run_aoe_orch_executes_writer_shape_with_real_autogen_backend_wh
     assert "Local-Writer, Reviewer" in result["replies"][1]["body"]
     assert result["followup_proposals"]
     assert result["followup_proposals"][0]["kind"] == "handoff"
+
+
+@pytest.mark.smoke
+def test_handle_text_message_operator_triggered_sandbox_run_merges_backend_native_proposals(
+    tmp_path: Path, monkeypatch
+) -> None:
+    if not tf_backend_autogen.autogen_core_backend().availability().available:
+        return
+
+    root_root = tmp_path / "mother"
+    root_team_dir = root_root / ".aoe-team"
+    project_root = tmp_path / "local_map_analysis"
+    team_dir = project_root / ".aoe-team"
+    root_team_dir.mkdir(parents=True)
+    team_dir.mkdir(parents=True)
+
+    (project_root / "TODO.md").write_text(
+        "\n".join(
+            [
+                "# Local Map Analysis TODO",
+                "",
+                "## Tasks",
+                "",
+                "- [ ] P1: Build the strict as-of time-generalization readout memo across completed fields and origin years.",
+                "- [ ] P1: Produce the machine-readable summary table with required robustness metrics and deltas.",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (team_dir / "tf_backend.json").write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "backend": "autogen_core",
+                "profile": "sandbox",
+                "sandbox_only": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manager_state = gw.default_manager_state(root_root, root_team_dir)
+    manager_state["projects"]["local_map_analysis"] = {
+        "name": "local_map_analysis",
+        "display_name": "Local Map Analysis",
+        "project_alias": "O4",
+        "project_root": str(project_root),
+        "team_dir": str(team_dir),
+        "overview": "",
+        "todos": [],
+        "todo_seq": 0,
+        "todo_proposals": [],
+        "todo_proposal_seq": 0,
+        "tasks": {},
+        "task_aliases": {},
+        "task_alias_seq": 0,
+        "last_request_id": "",
+        "created_at": "2026-03-11T20:00:00+0900",
+        "updated_at": "2026-03-11T20:00:00+0900",
+    }
+    manager_state["active"] = "local_map_analysis"
+    manager_state_file = root_team_dir / "orch_manager_state.json"
+    manager_state_file.write_text(json.dumps(manager_state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    sent: list[dict] = []
+    monkeypatch.setattr(gw, "safe_tg_send_text", lambda **kwargs: sent.append(kwargs) or True)
+    monkeypatch.setattr(gw, "room_autopublish_event", lambda **_kwargs: None)
+
+    parser = gw.build_parser()
+    args = parser.parse_args(
+        [
+            "--project-root",
+            str(root_root),
+            "--team-dir",
+            str(root_team_dir),
+            "--manager-state-file",
+            str(manager_state_file),
+            "--allow-chat-ids",
+            "operator-test",
+            "--admin-chat-ids",
+            "operator-test",
+            "--no-task-planning",
+            "--no-exec-critic",
+            "--default-report-level",
+            "short",
+        ]
+    )
+    args = cli_mod.normalize_main_args(args, deps=gw.__dict__)
+
+    gw.handle_text_message(
+        args,
+        token="",
+        chat_id="operator-test",
+        text="/dispatch Draft a short operator-facing handoff report from the canonical backlog without modifying files.",
+        trace_id="trace-operator-sandbox",
+    )
+
+    final_state = json.loads(manager_state_file.read_text(encoding="utf-8"))
+    entry = final_state["projects"]["local_map_analysis"]
+    proposals = entry.get("todo_proposals") or []
+
+    assert len(proposals) == 2
+    assert proposals[0]["status"] == "open"
+    assert proposals[0]["source_request_id"]
+    assert proposals[0]["created_by"] == "tf"
+    assert any(row.get("context") == "todo-proposals-alert" for row in sent)
+    assert any(row.get("context") == "result" for row in sent)
+
+    project_rows = [
+        json.loads(line)
+        for line in (team_dir / "logs" / "gateway_events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    root_rows = [
+        json.loads(line)
+        for line in (root_team_dir / "logs" / "gateway_events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert any(row["event"] == "tf_backend_runtime_event" and row["backend"] == "autogen_core" for row in project_rows)
+    assert any(row["event"] == "todo_proposals_created" for row in project_rows)
+    assert any(row.get("project_team_dir") == str(team_dir.resolve()) for row in root_rows)
+
+
+@pytest.mark.smoke
+def test_handle_text_message_operator_triggered_sandbox_run_exposes_todo_proposals_inbox(
+    tmp_path: Path, monkeypatch
+) -> None:
+    if not tf_backend_autogen.autogen_core_backend().availability().available:
+        return
+
+    root_root = tmp_path / "mother"
+    root_team_dir = root_root / ".aoe-team"
+    project_root = tmp_path / "local_map_analysis"
+    team_dir = project_root / ".aoe-team"
+    root_team_dir.mkdir(parents=True)
+    team_dir.mkdir(parents=True)
+
+    (project_root / "TODO.md").write_text(
+        "\n".join(
+            [
+                "# Local Map Analysis TODO",
+                "",
+                "## Tasks",
+                "",
+                "- [ ] P1: Build the strict as-of time-generalization readout memo across completed fields and origin years.",
+                "- [ ] P1: Produce the machine-readable summary table with required robustness metrics and deltas.",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (team_dir / "tf_backend.json").write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "backend": "autogen_core",
+                "profile": "sandbox",
+                "sandbox_only": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manager_state = gw.default_manager_state(root_root, root_team_dir)
+    manager_state["projects"]["local_map_analysis"] = {
+        "name": "local_map_analysis",
+        "display_name": "Local Map Analysis",
+        "project_alias": "O4",
+        "project_root": str(project_root),
+        "team_dir": str(team_dir),
+        "overview": "",
+        "todos": [],
+        "todo_seq": 0,
+        "todo_proposals": [],
+        "todo_proposal_seq": 0,
+        "tasks": {},
+        "task_aliases": {},
+        "task_alias_seq": 0,
+        "last_request_id": "",
+        "created_at": "2026-03-11T20:00:00+0900",
+        "updated_at": "2026-03-11T20:00:00+0900",
+    }
+    manager_state["active"] = "local_map_analysis"
+    manager_state_file = root_team_dir / "orch_manager_state.json"
+    manager_state_file.write_text(json.dumps(manager_state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    sent: list[dict] = []
+    monkeypatch.setattr(gw, "safe_tg_send_text", lambda **kwargs: sent.append(kwargs) or True)
+    monkeypatch.setattr(gw, "room_autopublish_event", lambda **_kwargs: None)
+
+    parser = gw.build_parser()
+    args = parser.parse_args(
+        [
+            "--project-root",
+            str(root_root),
+            "--team-dir",
+            str(root_team_dir),
+            "--manager-state-file",
+            str(manager_state_file),
+            "--allow-chat-ids",
+            "operator-test",
+            "--admin-chat-ids",
+            "operator-test",
+            "--no-task-planning",
+            "--no-exec-critic",
+            "--default-report-level",
+            "short",
+        ]
+    )
+    args = cli_mod.normalize_main_args(args, deps=gw.__dict__)
+
+    gw.handle_text_message(
+        args,
+        token="",
+        chat_id="operator-test",
+        text="/dispatch Draft a short operator-facing handoff report from the canonical backlog without modifying files.",
+        trace_id="trace-operator-sandbox-inbox",
+    )
+    sent.clear()
+
+    gw.handle_text_message(
+        args,
+        token="",
+        chat_id="operator-test",
+        text="/todo proposals",
+        trace_id="trace-operator-proposals-list",
+    )
+
+    assert sent
+    proposals_msgs = [row for row in sent if row.get("context") == "todo-proposals"]
+    assert proposals_msgs
+    body = proposals_msgs[-1]["text"]
+    assert "todo proposals: open=2" in body
+    assert "PROP-001" in body
+    assert "PROP-002" in body
+    assert "strict as-of time-generalization readout" in body
+    assert "machine-readable summary table" in body
 
 
 def test_gateway_run_aoe_orch_uses_local_backend_by_default(tmp_path: Path) -> None:
