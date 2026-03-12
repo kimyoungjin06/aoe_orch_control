@@ -585,6 +585,13 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
         "active_task_label": str(latest_task.get("label", "")).strip(),
         "active_task_tf_phase": str(latest_task.get("tf_phase", "")).strip(),
         "active_task_status": str(latest_task.get("status", "")).strip(),
+        "bootstrap_recommended": (
+            (not canonical_exists)
+            or (canonical_exists and not include_ok)
+            or (last_sync_mode == "never")
+            or bool(sync_quality.get("warn", False))
+            or bool(sync_stale)
+        ),
         "sync_quality": str(sync_quality.get("quality", "")).strip(),
         "sync_quality_warn": bool(sync_quality.get("warn", False)),
         "sync_candidate_classes": dict(sync_quality.get("candidate_classes") or {}),
@@ -631,6 +638,8 @@ def offdesk_review_reply_markup(flagged: List[Dict[str, Any]], *, clean: bool = 
 
         if int(row.get("blocked_count", 0) or 0) > 0 or int(row.get("open", 0) or 0) == 0:
             secondary.append({"text": f"/sync preview {alias} 24h"})
+        if bool(row.get("bootstrap_recommended", False)):
+            secondary.append({"text": f"/sync bootstrap {alias} 24h"})
         secondary.append({"text": f"/orch status {alias}"})
         secondary.append({"text": f"/todo {alias}"})
         seen: set[str] = set()
@@ -698,6 +707,8 @@ def offdesk_prepare_reply_markup(
             tertiary.append({"text": f"/task {active_task_label}"})
             tertiary.append({"text": f"/retry {active_task_label}"})
 
+        if bool(row.get("bootstrap_recommended", False)):
+            secondary.append({"text": f"/sync bootstrap {alias} 24h"})
         secondary.append({"text": f"/sync preview {alias} 24h"})
         secondary.append({"text": f"/orch status {alias}"})
         secondary.append({"text": f"/todo {alias}"})

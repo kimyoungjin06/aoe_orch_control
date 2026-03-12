@@ -176,6 +176,7 @@ worker runtime 권한 정책:
   - 편의 기능: 인자를 생략하면(`/sync`만 입력) **이전 `/sync ...`의 인자**를 재사용한다(채팅별).
   - shorthand: `since 1h` 대신 마지막에 `1h`처럼 써도 된다. 예: `/sync all 1h`
 - `/sync preview [replace] [all|O#|name] [since 3h]`: queue를 바꾸지 않고 source 파일, candidate source class/confidence/doc-type, `would_add/update/done/prune`를 보여준다. plain `/sync` fallback은 최근 md 문서 + salvage 섹션 + TODO 파일을 합쳐 bootstrap 한다.
+- `/sync bootstrap [all|O#|name] [since 24h]`: canonical `TODO.md`가 없거나 신뢰하기 어려울 때 recent docs + salvage를 우선으로 큐를 다시 시드(seed)한다. off-desk에서 backlog 복구용으로 쓰고, 필요하면 이후 `/sync preview` 또는 `/sync replace`로 canonical 경로를 다시 점검한다.
 - `/sync recent [all|O#|name] [N] [since 3h] [quiet|-q|--quiet]`: 프로젝트 루트에서 **최근 문서 N개(기본 3)** 를 스캔해 todo 후보를 추출 후 큐에 반영. `since`를 주면 해당 시간 내에 수정된 문서만 후보로 본다.
 - `/sync salvage [all|O#|name] [N] [since 3h] [quiet|-q|--quiet]`: 최근 문서를 더 넓게 훑어 `Next steps`, `남은 일`, `follow-up` 같은 섹션에서도 todo 후보를 복구한다. formal `AOE_TODO.md`나 TODO 파일을 못 만든 퇴근 후 bootstrap 용도. runnable 수준이면 main queue에 넣고, 너무 loose한 follow-up은 `/todo proposals` inbox로 보낸다.
 - `/sync files [all|O#|name] [N] [since 3h] [quiet|-q|--quiet]`: 프로젝트 루트에서 파일명에 `todo|tasks|할일` 힌트가 있는 문서들만 스캔해 todo를 추출 후 큐에 반영. (프로젝트마다 TODO 파일 위치/형식이 제각각일 때 “제로 설정”으로 쓰기 좋다)

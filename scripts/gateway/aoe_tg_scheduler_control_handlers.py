@@ -476,6 +476,8 @@ def _handle_offdesk_command(
             if active_task_label and active_task_tf_phase in {"needs_retry", "manual_intervention", "critic_review", "blocked"}:
                 actions.append(f"/task {active_task_label}")
                 actions.append(f"/retry {active_task_label}")
+            if bool(row.get("bootstrap_recommended", False)):
+                actions.append(f"/sync bootstrap {alias} 24h")
             if (
                 int(row.get("blocked_count", 0) or 0) > 0
                 or int(row.get("open", 0) or 0) == 0

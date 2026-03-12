@@ -2655,6 +2655,7 @@ def help_text(ui_lang: str = DEFAULT_UI_LANG) -> str:
         "- /queue followup  (projects with manual_followup backlog only)\n"
         "- /sync [O#|name|all] [since 3h|1h]  (import <project_root>/.aoe-team/AOE_TODO.md into queue; if empty, fallback to todo-ish files/recent docs; empty args repeats last /sync)\n"
         "- /sync preview [replace] [O#|name|all] [since 3h|1h]  (show source files, source classes/confidence, and would-add/update/done/prune counts without changing queue; plain /sync fallback now bootstraps from recent md docs + salvage + todo files)\n"
+        "- /sync bootstrap [O#|name|all] [since 24h]  (explicit bootstrap path: prefer recent docs + salvage when canonical backlog is missing, stale, or untrusted)\n"
         "- /sync recent [O#|name|all] [N] [since 3h]  (scan N recent todo-ish docs; default N=3)\n"
         "- /sync salvage [O#|name|all] [N] [since 3h]  (broader recent-doc salvage: recovers 'next steps/남은 일/follow-up' sections; loose follow-ups go to /todo proposals)\n"
         "- /sync files [O#|name|all] [N] [since 3h]  (scan todo-ish files by filename; default N=80)\n"
