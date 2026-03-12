@@ -127,7 +127,11 @@ def handle_run_rate_limit_and_confirm(
         )
         return True
 
-    if run_auto_source != "default":
+    effective_mode = str(run_force_mode or "dispatch").strip().lower() or "dispatch"
+    if effective_mode != "dispatch":
+        return False
+
+    if str(run_auto_source or "").strip().lower() == "confirmed":
         return False
 
     risk = detect_high_risk_prompt(prompt)

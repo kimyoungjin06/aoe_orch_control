@@ -4880,6 +4880,71 @@ def test_confirm_required_reply_markup_contains_ok_cancel_and_clear_pending() ->
     assert "/clear pending" in buttons
 
 
+def test_confirm_required_for_orch_action_dispatch_prompt() -> None:
+    state = _empty_state()
+    sent: list[tuple[str, dict | None]] = []
+
+    handled = run_handlers._handle_run_rate_limit_and_confirm(
+        cmd="run",
+        args=argparse.Namespace(
+            dry_run=False,
+            manager_state_file=ROOT / ".aoe-team" / "orch_manager_state.json",
+            chat_max_running=3,
+            chat_daily_cap=20,
+        ),
+        manager_state=state,
+        chat_id="939062873",
+        key="twinpaper",
+        entry={"project_alias": "O2"},
+        run_auto_source="orch-action:work",
+        run_force_mode="dispatch",
+        orch_target="O2",
+        prompt="rm -rf /tmp/demo",
+        summarize_chat_usage=lambda manager_state, chat_id: (0, 0),
+        detect_high_risk_prompt=lambda prompt: "destructive_delete",
+        set_confirm_action=lambda *args, **kwargs: gw.set_confirm_action(*args, **kwargs),
+        save_manager_state=lambda path, manager_state: None,
+        send=lambda body, **kwargs: sent.append((body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda **kwargs: None,
+    )
+
+    assert handled is True
+    assert sent
+    assert "고위험 자동실행 감지" in sent[-1][0]
+
+
+def test_confirmed_run_does_not_reprompt_high_risk_confirmation() -> None:
+    state = _empty_state()
+    sent: list[tuple[str, dict | None]] = []
+
+    handled = run_handlers._handle_run_rate_limit_and_confirm(
+        cmd="run",
+        args=argparse.Namespace(
+            dry_run=False,
+            manager_state_file=ROOT / ".aoe-team" / "orch_manager_state.json",
+            chat_max_running=3,
+            chat_daily_cap=20,
+        ),
+        manager_state=state,
+        chat_id="939062873",
+        key="twinpaper",
+        entry={"project_alias": "O2"},
+        run_auto_source="confirmed",
+        run_force_mode="dispatch",
+        orch_target="O2",
+        prompt="rm -rf /tmp/demo",
+        summarize_chat_usage=lambda manager_state, chat_id: (0, 0),
+        detect_high_risk_prompt=lambda prompt: "destructive_delete",
+        set_confirm_action=lambda *args, **kwargs: gw.set_confirm_action(*args, **kwargs),
+        save_manager_state=lambda path, manager_state: None,
+        send=lambda body, **kwargs: sent.append((body, kwargs.get("reply_markup"))) or True,
+        log_event=lambda **kwargs: None,
+    )
+
+    assert handled is False
+    assert not sent
+
+
 def test_rate_limit_running_reply_markup_uses_project_context_actions() -> None:
     state = _empty_state()
     sent: list[tuple[str, str, dict | None]] = []
@@ -7008,7 +7073,7 @@ def test_resolve_message_command_auto_routes_plain_text_from_direct_bias() -> No
 
     assert resolved.cmd == "run"
     assert resolved.run_force_mode == "dispatch"
-    assert resolved.run_auto_source == "default-intent"
+    assert resolved.run_auto_source.startswith("orch-action:")
 
 
 def test_resolve_message_command_forces_dispatch_for_repo_mutation_prompt() -> None:
@@ -7030,7 +7095,7 @@ def test_resolve_message_command_forces_dispatch_for_repo_mutation_prompt() -> N
 
     assert resolved.cmd == "run"
     assert resolved.run_force_mode == "dispatch"
-    assert resolved.run_auto_source == "default-intent"
+    assert resolved.run_auto_source.startswith("orch-action:")
 
 
 def test_parse_quick_message_supports_routine_aliases() -> None:

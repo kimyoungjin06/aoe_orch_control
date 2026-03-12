@@ -42,4 +42,69 @@ def test_repo_mutation_prompt_forces_dispatch_from_direct_default() -> None:
 
     assert resolved.cmd == "run"
     assert resolved.run_force_mode == "dispatch"
-    assert resolved.run_auto_source == "default-intent"
+    assert resolved.run_auto_source.startswith("orch-action:")
+
+
+def test_status_prompt_uses_action_api_monitor_instead_of_direct_default() -> None:
+    manager_state = gw.default_manager_state(ROOT, ROOT / ".aoe-team")
+    gw.set_default_mode(manager_state, "939062873", "direct")
+
+    resolved = resolver.resolve_message_command(
+        text="결과는 언제 나와? 지금 상태 알려줘",
+        slash_only=False,
+        manager_state=manager_state,
+        chat_id="939062873",
+        dry_run=True,
+        manager_state_file=ROOT / ".aoe-team" / "orch_manager_state.json",
+        get_pending_mode=gw.get_pending_mode,
+        get_default_mode=gw.get_default_mode,
+        clear_pending_mode=gw.clear_pending_mode,
+        save_manager_state=lambda path, state: None,
+    )
+
+    assert resolved.cmd == "orch-monitor"
+    assert resolved.run_force_mode is None
+    assert resolved.run_auto_source.startswith("orch-action:")
+
+
+def test_inspection_prompt_uses_action_api_dispatch_instead_of_direct_default() -> None:
+    manager_state = gw.default_manager_state(ROOT, ROOT / ".aoe-team")
+    gw.set_default_mode(manager_state, "939062873", "direct")
+
+    resolved = resolver.resolve_message_command(
+        text="데이터 추출이 완료되었는지 확인 부탁해",
+        slash_only=False,
+        manager_state=manager_state,
+        chat_id="939062873",
+        dry_run=True,
+        manager_state_file=ROOT / ".aoe-team" / "orch_manager_state.json",
+        get_pending_mode=gw.get_pending_mode,
+        get_default_mode=gw.get_default_mode,
+        clear_pending_mode=gw.clear_pending_mode,
+        save_manager_state=lambda path, state: None,
+    )
+
+    assert resolved.cmd == "run"
+    assert resolved.run_force_mode == "dispatch"
+    assert resolved.run_auto_source.startswith("orch-action:")
+
+
+def test_offdesk_plaintext_maps_to_control_command() -> None:
+    manager_state = gw.default_manager_state(ROOT, ROOT / ".aoe-team")
+    gw.set_default_mode(manager_state, "939062873", "direct")
+
+    resolved = resolver.resolve_message_command(
+        text="오프데스크 준비해",
+        slash_only=False,
+        manager_state=manager_state,
+        chat_id="939062873",
+        dry_run=True,
+        manager_state_file=ROOT / ".aoe-team" / "orch_manager_state.json",
+        get_pending_mode=gw.get_pending_mode,
+        get_default_mode=gw.get_default_mode,
+        clear_pending_mode=gw.clear_pending_mode,
+        save_manager_state=lambda path, state: None,
+    )
+
+    assert resolved.cmd == "offdesk"
+    assert resolved.rest == "prepare"

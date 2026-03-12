@@ -315,7 +315,7 @@ def _write_gateway_poll_state_with_failed_queue_ttl(tmp_path: Path) -> Path:
         ("/todo", "todo: active="),
         ("/drain 1", "drain finished"),
         ("/fanout 1", "fanout finished"),
-        ("안녕", "입력 형식: prefix 명령만 지원합니다"),
+        ("안녕", "[DRY-RUN] orch="),
         ("/dispatch 샘플 작업 실행", "[DRY-RUN] orch="),
     ],
 )
@@ -370,7 +370,7 @@ def test_default_mode_plain_routing(tmp_path: Path) -> None:
 
 
 @pytest.mark.smoke
-def test_default_mode_dispatch_question_routes_direct(tmp_path: Path) -> None:
+def test_default_mode_dispatch_question_routes_via_orch(tmp_path: Path) -> None:
     state_file = _write_state(
         tmp_path,
         chat_id="test",
@@ -380,7 +380,7 @@ def test_default_mode_dispatch_question_routes_direct(tmp_path: Path) -> None:
         simulate_text="orch 하나를 새로 실행하려면 어떻게 해야해?",
         extra_args=["--manager-state-file", str(state_file)],
     )
-    assert "[DRY-RUN] orch=default mode: direct" in out
+    assert "[DRY-RUN] orch=default mode: dispatch" in out
 
 
 @pytest.mark.smoke
@@ -421,7 +421,7 @@ def test_owner_bootstrap_mode_enables_plain_text_routing(tmp_path: Path) -> None
 
 
 @pytest.mark.smoke
-def test_owner_bootstrap_mode_does_not_apply_to_non_owner(tmp_path: Path) -> None:
+def test_owner_bootstrap_mode_plaintext_still_routes_via_orch_for_non_owner(tmp_path: Path) -> None:
     state_file = _write_state(
         tmp_path,
         chat_id="88888",
@@ -440,7 +440,7 @@ def test_owner_bootstrap_mode_does_not_apply_to_non_owner(tmp_path: Path) -> Non
             "dispatch",
         ],
     )
-    assert "입력 형식: prefix 명령만 지원합니다" in out
+    assert "[DRY-RUN] orch=default mode: dispatch" in out
 
 
 @pytest.mark.smoke

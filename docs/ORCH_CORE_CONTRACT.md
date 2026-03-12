@@ -24,6 +24,11 @@ The runtime event envelope remains shared with:
 
 - `scripts/gateway/aoe_tg_tf_event_schema.py`
 
+Mother-Orch control-plane actions are defined separately in:
+
+- `scripts/gateway/aoe_tg_orch_actions.py`
+- `docs/MOTHER_ORCH_ACTION_API.md`
+
 ## 2. Contract Objects
 
 ### 2.1 OrchTaskSpec
