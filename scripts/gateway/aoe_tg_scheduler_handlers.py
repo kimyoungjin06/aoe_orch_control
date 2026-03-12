@@ -305,11 +305,19 @@ def _preview_item_line(row: Dict[str, Any]) -> str:
     if len(summary) > 96:
         summary = summary[:93] + "..."
     source_class = str(row.get("sync_source_class", "")).strip()
+    doc_type = str(row.get("sync_doc_type", "")).strip()
     try:
         confidence = float(row.get("sync_confidence", 0.0) or 0.0)
     except Exception:
         confidence = 0.0
-    meta = f" {{{source_class} {confidence:.2f}}}" if source_class else ""
+    meta_bits: List[str] = []
+    if source_class:
+        meta_bits.append(source_class)
+    if doc_type:
+        meta_bits.append(f"dtype={doc_type}")
+    if source_class:
+        meta_bits.append(f"{confidence:.2f}")
+    meta = f" {{{' '.join(meta_bits)}}}" if meta_bits else ""
     src_file = str(row.get("source_file", "")).strip()
     src_section = str(row.get("source_section", "")).strip()
     src_reason = str(row.get("source_reason", "")).strip()
@@ -336,6 +344,19 @@ def _summarize_sync_candidate_classes(items: List[Dict[str, Any]]) -> str:
         if not isinstance(row, dict):
             continue
         key = str(row.get("sync_source_class", "")).strip() or "unknown"
+        counts[key] = counts.get(key, 0) + 1
+    if not counts:
+        return "-"
+    ordered = sorted(counts.items(), key=lambda kv: (-int(kv[1]), str(kv[0])))
+    return ", ".join(f"{name}={count}" for name, count in ordered[:6])
+
+
+def _summarize_sync_candidate_doc_types(items: List[Dict[str, Any]]) -> str:
+    counts: Dict[str, int] = {}
+    for row in items:
+        if not isinstance(row, dict):
+            continue
+        key = str(row.get("sync_doc_type", "")).strip() or "unknown"
         counts[key] = counts.get(key, 0) + 1
     if not counts:
         return "-"
@@ -763,6 +784,7 @@ def handle_scheduler_command(
             "files_scanned": 0,
         }
         total_candidate_classes: Dict[str, int] = {}
+        total_candidate_doc_types: Dict[str, int] = {}
         per_project_lines: List[str] = []
         preview_blocks: List[str] = []
         any_changed = False
@@ -857,7 +879,10 @@ def handle_scheduler_command(
                         except Exception:
                             include_warnings.append(f"include_read_failed:{inc.name}")
                             continue
-                        inc_info = {"source_class": "scenario", "sync_group": "scenario", "confidence": 0.98}
+                        inc_info = _classify_sync_source(inc, project_root, mode="scenario")
+                        inc_info["source_class"] = "scenario"
+                        inc_info["sync_group"] = "scenario"
+                        inc_info["confidence"] = max(0.98, float(inc_info.get("confidence", 0.0) or 0.0))
                         inc_items = _tag_sync_items(
                             _parse_scenario_lines(inc_text),
                             rel=_rel_display(inc, project_root),
@@ -1220,6 +1245,8 @@ def handle_scheduler_command(
                     continue
                 cls = str(row.get("sync_source_class", "")).strip() or "unknown"
                 total_candidate_classes[cls] = total_candidate_classes.get(cls, 0) + 1
+                dtype = str(row.get("sync_doc_type", "")).strip() or "unknown"
+                total_candidate_doc_types[dtype] = total_candidate_doc_types.get(dtype, 0) + 1
 
             changed = bool(
                 (counts.get("added") or 0)
@@ -1322,6 +1349,7 @@ def handle_scheduler_command(
                 if proposal_payloads:
                     block.append(f"  would_propose: {len(proposal_payloads)}")
                 block.append(f"  candidate_classes: {_summarize_sync_candidate_classes(items)}")
+                block.append(f"  candidate_doc_types: {_summarize_sync_candidate_doc_types(items)}")
                 skipped_done = int(counts.get("skipped_done_missing", 0) or 0)
                 if skipped_done:
                     block.append(f"  skipped_done_missing: {skipped_done}")
@@ -1428,6 +1456,9 @@ def handle_scheduler_command(
             if total_candidate_classes:
                 ordered = sorted(total_candidate_classes.items(), key=lambda kv: (-int(kv[1]), str(kv[0])))
                 lines.append("- candidate_classes: " + ", ".join(f"{k}={v}" for k, v in ordered[:6]))
+            if total_candidate_doc_types:
+                ordered = sorted(total_candidate_doc_types.items(), key=lambda kv: (-int(kv[1]), str(kv[0])))
+                lines.append("- candidate_doc_types: " + ", ".join(f"{k}={v}" for k, v in ordered[:6]))
             lines.append(f"- parsed: {total['parsed']}")
             lines.append(f"- would_add: {total['added']}")
             lines.append(f"- would_update: {total['updated']}")

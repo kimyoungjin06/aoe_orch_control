@@ -172,10 +172,10 @@ worker runtime 권한 정책:
 - `/sync [replace] [all|O#|name] [since 3h] [quiet|-q|--quiet]`: 각 프로젝트의 `<project_root>/.aoe-team/AOE_TODO.md`를 읽어서 todo 큐에 반영(추가/업데이트/완료). 시나리오 파일에서는 체크박스(`- [ ] ...`)뿐 아니라 `- ...`, `1. ...` 같은 일반 리스트도 허용하며(우선순위 없으면 `P2`), 보통 `## Tasks` 섹션 아래에 모아두는 것을 권장한다. `since`를 주면 해당 시간 내에 수정된 시나리오만 반영.
   - 예외: `AOE_TODO.md`가 비어 있거나 템플릿 상태면 자동으로 프로젝트의 todo-ish 파일(`TODO.md` 등)과 최근 문서를 순서대로 스캔해 폴백한다.
   - `replace`를 붙이면 이번 sync source에 더 이상 없는 `sync-managed open todo`를 `canceled(sync_prune_missing)` 처리한다. 안전을 위해 `recent` 모드나 `since`가 붙은 부분 스캔에서는 차단된다.
-  - 선택형 override: `<project>/.aoe-team/sync_policy.json`이 있으면 `exclude_globs`, `include_globs`, `class_confidence`, `group_overrides`, `min_confidence`로 source 분류/신뢰도를 조정할 수 있다. 샘플: `templates/aoe-team/sync_policy.sample.json`
+  - 선택형 override: `<project>/.aoe-team/sync_policy.json`이 있으면 `exclude_globs`, `include_globs`, `class_confidence`, `doc_type_confidence`, `group_overrides`, `min_confidence`로 source 분류/신뢰도를 조정할 수 있다. 샘플: `templates/aoe-team/sync_policy.sample.json`
   - 편의 기능: 인자를 생략하면(`/sync`만 입력) **이전 `/sync ...`의 인자**를 재사용한다(채팅별).
   - shorthand: `since 1h` 대신 마지막에 `1h`처럼 써도 된다. 예: `/sync all 1h`
-- `/sync preview [replace] [all|O#|name] [since 3h]`: queue를 바꾸지 않고 source 파일, candidate source class/confidence, `would_add/update/done/prune`를 보여준다. plain `/sync` fallback은 최근 md 문서 + salvage 섹션 + TODO 파일을 합쳐 bootstrap 한다.
+- `/sync preview [replace] [all|O#|name] [since 3h]`: queue를 바꾸지 않고 source 파일, candidate source class/confidence/doc-type, `would_add/update/done/prune`를 보여준다. plain `/sync` fallback은 최근 md 문서 + salvage 섹션 + TODO 파일을 합쳐 bootstrap 한다.
 - `/sync recent [all|O#|name] [N] [since 3h] [quiet|-q|--quiet]`: 프로젝트 루트에서 **최근 문서 N개(기본 3)** 를 스캔해 todo 후보를 추출 후 큐에 반영. `since`를 주면 해당 시간 내에 수정된 문서만 후보로 본다.
 - `/sync salvage [all|O#|name] [N] [since 3h] [quiet|-q|--quiet]`: 최근 문서를 더 넓게 훑어 `Next steps`, `남은 일`, `follow-up` 같은 섹션에서도 todo 후보를 복구한다. formal `AOE_TODO.md`나 TODO 파일을 못 만든 퇴근 후 bootstrap 용도. runnable 수준이면 main queue에 넣고, 너무 loose한 follow-up은 `/todo proposals` inbox로 보낸다.
 - `/sync files [all|O#|name] [N] [since 3h] [quiet|-q|--quiet]`: 프로젝트 루트에서 파일명에 `todo|tasks|할일` 힌트가 있는 문서들만 스캔해 todo를 추출 후 큐에 반영. (프로젝트마다 TODO 파일 위치/형식이 제각각일 때 “제로 설정”으로 쓰기 좋다)
