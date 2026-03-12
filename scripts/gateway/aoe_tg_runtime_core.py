@@ -66,6 +66,8 @@ def default_manager_state(project_root: Path, team_dir: Path, *, now_iso: Callab
                 "resumed_by": "",
                 "last_sync_at": "",
                 "last_sync_mode": "",
+                "last_sync_candidate_classes": {},
+                "last_sync_candidate_doc_types": {},
                 "created_at": timestamp,
                 "updated_at": timestamp,
             }
@@ -338,6 +340,8 @@ def load_manager_state(
         resumed_by = str(raw_entry.get("resumed_by", "")).strip()
         last_sync_at = str(raw_entry.get("last_sync_at", "")).strip()
         last_sync_mode = str(raw_entry.get("last_sync_mode", "")).strip()
+        last_sync_candidate_classes = raw_entry.get("last_sync_candidate_classes")
+        last_sync_candidate_doc_types = raw_entry.get("last_sync_candidate_doc_types")
 
         normalized[key] = {
             "name": key,
@@ -365,6 +369,12 @@ def load_manager_state(
             "resumed_by": resumed_by,
             "last_sync_at": last_sync_at[:40] if last_sync_at else "",
             "last_sync_mode": last_sync_mode[:40] if last_sync_mode else "",
+            "last_sync_candidate_classes": dict(last_sync_candidate_classes)
+            if isinstance(last_sync_candidate_classes, dict)
+            else {},
+            "last_sync_candidate_doc_types": dict(last_sync_candidate_doc_types)
+            if isinstance(last_sync_candidate_doc_types, dict)
+            else {},
             "created_at": str(raw_entry.get("created_at", "")).strip() or now_iso(),
             "updated_at": str(raw_entry.get("updated_at", "")).strip() or now_iso(),
         }

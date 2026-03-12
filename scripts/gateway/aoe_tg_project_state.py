@@ -276,6 +276,8 @@ def register_orch_project(
         "resumed_by": "",
         "last_sync_at": "",
         "last_sync_mode": "",
+        "last_sync_candidate_classes": {},
+        "last_sync_candidate_doc_types": {},
         "created_at": now_iso(),
         "updated_at": now_iso(),
     }
@@ -293,6 +295,16 @@ def register_orch_project(
         entry["resumed_by"] = str(existing.get("resumed_by", "")).strip()
         entry["last_sync_at"] = str(existing.get("last_sync_at", "")).strip()[:40]
         entry["last_sync_mode"] = str(existing.get("last_sync_mode", "")).strip()[:40]
+        entry["last_sync_candidate_classes"] = (
+            dict(existing.get("last_sync_candidate_classes"))
+            if isinstance(existing.get("last_sync_candidate_classes"), dict)
+            else {}
+        )
+        entry["last_sync_candidate_doc_types"] = (
+            dict(existing.get("last_sync_candidate_doc_types"))
+            if isinstance(existing.get("last_sync_candidate_doc_types"), dict)
+            else {}
+        )
         if not entry["overview"]:
             entry["overview"] = str(existing.get("overview", "")).strip()
         old_req = str(existing.get("last_request_id", "")).strip()

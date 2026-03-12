@@ -27,17 +27,51 @@ def _find_todo_by_id(todos: List[Dict[str, Any]], todo_id: str) -> Optional[Dict
     return None
 
 
-def stamp_sync_meta(entry: Dict[str, Any], *, at: str, mode: str) -> bool:
+def _sanitize_sync_counter_map(raw: Any, *, limit: int = 6) -> Dict[str, int]:
+    if not isinstance(raw, dict):
+        return {}
+    rows: List[tuple[str, int]] = []
+    for key, value in raw.items():
+        token = str(key or "").strip().lower()[:40]
+        if not token:
+            continue
+        try:
+            count = int(value or 0)
+        except Exception:
+            continue
+        if count <= 0:
+            continue
+        rows.append((token, count))
+    rows.sort(key=lambda kv: (-kv[1], kv[0]))
+    return {key: count for key, count in rows[: max(1, int(limit or 6))]}
+
+
+def stamp_sync_meta(
+    entry: Dict[str, Any],
+    *,
+    at: str,
+    mode: str,
+    candidate_classes: Optional[Dict[str, int]] = None,
+    candidate_doc_types: Optional[Dict[str, int]] = None,
+) -> bool:
     if not isinstance(entry, dict):
         return False
     at_token = str(at or "").strip()[:40]
     mode_token = str(mode or "").strip()[:40]
+    classes_token = _sanitize_sync_counter_map(candidate_classes)
+    doc_types_token = _sanitize_sync_counter_map(candidate_doc_types)
     changed = False
     if str(entry.get("last_sync_at", "")).strip() != at_token:
         entry["last_sync_at"] = at_token
         changed = True
     if str(entry.get("last_sync_mode", "")).strip() != mode_token:
         entry["last_sync_mode"] = mode_token
+        changed = True
+    if dict(entry.get("last_sync_candidate_classes") or {}) != classes_token:
+        entry["last_sync_candidate_classes"] = dict(classes_token)
+        changed = True
+    if dict(entry.get("last_sync_candidate_doc_types") or {}) != doc_types_token:
+        entry["last_sync_candidate_doc_types"] = dict(doc_types_token)
         changed = True
     if changed and at_token:
         entry["updated_at"] = at_token

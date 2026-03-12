@@ -471,7 +471,11 @@ def _handle_offdesk_command(
                 actions.append(f"/todo {alias} proposals")
             if int(row.get("followup_count", 0) or 0) > 0:
                 actions.append(f"/todo {alias} followup")
-            if int(row.get("blocked_count", 0) or 0) > 0 or int(row.get("open", 0) or 0) == 0:
+            if (
+                int(row.get("blocked_count", 0) or 0) > 0
+                or int(row.get("open", 0) or 0) == 0
+                or bool(row.get("sync_quality_warn", False))
+            ):
                 actions.append(f"/sync preview {alias} 24h")
             if bool(row.get("pending_flag", False)) or int(row.get("running", 0) or 0) > 0:
                 actions.append(f"/orch status {alias}")
