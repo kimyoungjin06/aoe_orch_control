@@ -445,6 +445,86 @@ def test_discover_salvage_doc_todos_respects_doc_type_confidence_override(tmp_pa
     assert "used:1 class=salvage_doc conf=0.91" in "\n".join(meta.get("preview") or [])
 
 
+def test_discover_salvage_doc_todos_skips_generic_note_docs_by_default_confidence(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    docs_dir = project_root / "docs"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+
+    (docs_dir / "status-note.md").write_text(
+        "# Status Note\n\n"
+        "## Next steps\n"
+        "- P1: generic note item that should stay out of default queue import\n",
+        encoding="utf-8",
+    )
+
+    items, meta, sources = mod._discover_salvage_doc_todos(
+        project_root=project_root,
+        docs_limit=3,
+        candidate_keep=50,
+        max_bytes=512 * 1024,
+        min_mtime=0.0,
+    )
+
+    assert items == []
+    assert sources == []
+    preview = "\n".join(meta.get("preview") or [])
+    assert "status-note.md -> skipped:low-confidence(salvage_doc 0.64)" in preview
+
+
+def test_discover_salvage_doc_todos_keeps_report_docs_with_actionable_sections(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    docs_dir = project_root / "docs"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+
+    (docs_dir / "weekly-report.md").write_text(
+        "# Weekly Report\n\n"
+        "## Next steps\n"
+        "- P1: publish the updated metrics table\n",
+        encoding="utf-8",
+    )
+
+    items, meta, sources = mod._discover_salvage_doc_todos(
+        project_root=project_root,
+        docs_limit=3,
+        candidate_keep=50,
+        max_bytes=512 * 1024,
+        min_mtime=0.0,
+    )
+
+    assert [row["summary"] for row in items] == ["publish the updated metrics table"]
+    assert items[0]["sync_doc_type"] == "report"
+    assert float(items[0]["sync_confidence"]) == 0.72
+    assert sources == ["docs/weekly-report.md"]
+    assert "used:1 class=salvage_doc conf=0.72" in "\n".join(meta.get("preview") or [])
+
+
+def test_discover_recent_doc_todos_promotes_explicit_todo_markers_in_note_docs(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    docs_dir = project_root / "docs"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+
+    (docs_dir / "meeting-notes.md").write_text(
+        "# Notes\n\n"
+        "## Todo\n"
+        "- P1: recover queue from recent docs\n",
+        encoding="utf-8",
+    )
+
+    items, meta, sources = mod._discover_recent_doc_todos(
+        project_root=project_root,
+        docs_limit=3,
+        candidate_keep=50,
+        max_bytes=512 * 1024,
+        min_mtime=0.0,
+    )
+
+    assert [row["summary"] for row in items] == ["recover queue from recent docs"]
+    assert items[0]["sync_doc_type"] == "note"
+    assert float(items[0]["sync_confidence"]) == 0.76
+    assert sources == ["docs/meeting-notes.md"]
+    assert "used:1 class=recent_doc conf=0.76" in "\n".join(meta.get("preview") or [])
+
+
 def test_preview_item_line_includes_provenance_fields() -> None:
     line = mod._preview_item_line(
         {
