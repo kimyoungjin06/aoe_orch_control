@@ -364,6 +364,17 @@ def _summarize_sync_candidate_doc_types(items: List[Dict[str, Any]]) -> str:
     return ", ".join(f"{name}={count}" for name, count in ordered[:6])
 
 
+def _sync_candidate_counter(items: List[Dict[str, Any]], field: str) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for row in items:
+        if not isinstance(row, dict):
+            continue
+        key = str(row.get(field, "")).strip() or "unknown"
+        counts[key] = counts.get(key, 0) + 1
+    ordered = sorted(counts.items(), key=lambda kv: (-int(kv[1]), str(kv[0])))
+    return {name: count for name, count in ordered[:6]}
+
+
 def _build_sync_diagnostics(
     *,
     mode: str,
@@ -969,7 +980,13 @@ def handle_scheduler_command(
                             inspect_lines=list(inspect_lines or []) + list(meta.get("preview") or []),
                         )
                         if not preview:
-                            sync_meta_changed = _stamp_sync_meta(entry, at=sync_mark_at, mode=f"fallback:{fallback_mode or 'none'}") or sync_meta_changed
+                            sync_meta_changed = _stamp_sync_meta(
+                                entry,
+                                at=sync_mark_at,
+                                mode=f"fallback:{fallback_mode or 'none'}",
+                                candidate_classes={},
+                                candidate_doc_types={},
+                            ) or sync_meta_changed
                         if preview:
                             block = [
                                 f"- {alias} {display} ({key})",
@@ -1025,7 +1042,13 @@ def handle_scheduler_command(
                             inspect_lines=list(inspect_lines or []) + list(meta.get("preview") or []),
                         )
                         if not preview:
-                            sync_meta_changed = _stamp_sync_meta(entry, at=sync_mark_at, mode="recent_docs") or sync_meta_changed
+                            sync_meta_changed = _stamp_sync_meta(
+                                entry,
+                                at=sync_mark_at,
+                                mode="recent_docs",
+                                candidate_classes={},
+                                candidate_doc_types={},
+                            ) or sync_meta_changed
                         if preview:
                             block = [
                                 f"- {alias} {display} ({key})",
@@ -1085,7 +1108,13 @@ def handle_scheduler_command(
                             inspect_lines=list(inspect_lines or []) + list(meta.get("preview") or []),
                         )
                         if not preview:
-                            sync_meta_changed = _stamp_sync_meta(entry, at=sync_mark_at, mode="todo_files") or sync_meta_changed
+                            sync_meta_changed = _stamp_sync_meta(
+                                entry,
+                                at=sync_mark_at,
+                                mode="todo_files",
+                                candidate_classes={},
+                                candidate_doc_types={},
+                            ) or sync_meta_changed
                         if preview:
                             block = [
                                 f"- {alias} {display} ({key})",
@@ -1158,7 +1187,13 @@ def handle_scheduler_command(
                     inspect_lines=list(inspect_lines or []) + list(proposal_meta.get("preview") or []),
                 )
                 if not preview:
-                    sync_meta_changed = _stamp_sync_meta(entry, at=sync_mark_at, mode="salvage_docs") or sync_meta_changed
+                    sync_meta_changed = _stamp_sync_meta(
+                        entry,
+                        at=sync_mark_at,
+                        mode="salvage_docs",
+                        candidate_classes={},
+                        candidate_doc_types={},
+                    ) or sync_meta_changed
                 if preview:
                     block = [
                         f"- {alias} {display} ({key})",
@@ -1200,7 +1235,13 @@ def handle_scheduler_command(
                     inspect_lines=list(inspect_lines or []) + list(proposal_meta.get("preview") or []),
                 )
                 if not preview:
-                    sync_meta_changed = _stamp_sync_meta(entry, at=sync_mark_at, mode="scenario-empty") or sync_meta_changed
+                    sync_meta_changed = _stamp_sync_meta(
+                        entry,
+                        at=sync_mark_at,
+                        mode="scenario-empty",
+                        candidate_classes={},
+                        candidate_doc_types={},
+                    ) or sync_meta_changed
                 if preview:
                     block = [
                         f"- {alias} {display} ({key})",
@@ -1256,8 +1297,16 @@ def handle_scheduler_command(
             )
             if changed and (not preview):
                 any_changed = True
+            project_candidate_classes = _sync_candidate_counter(items, "sync_source_class")
+            project_candidate_doc_types = _sync_candidate_counter(items, "sync_doc_type")
             if not preview:
-                sync_meta_changed = _stamp_sync_meta(entry, at=sync_mark_at, mode=source_mode or mode) or sync_meta_changed
+                sync_meta_changed = _stamp_sync_meta(
+                    entry,
+                    at=sync_mark_at,
+                    mode=source_mode or mode,
+                    candidate_classes=project_candidate_classes,
+                    candidate_doc_types=project_candidate_doc_types,
+                ) or sync_meta_changed
 
             proposal_result: Dict[str, Any] = {
                 "created_count": 0,

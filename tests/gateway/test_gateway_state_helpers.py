@@ -8292,6 +8292,67 @@ def test_offdesk_prepare_warns_when_syncback_drift_exists_without_other_issues(t
     assert "syncback pending (done=1 reopen=1 append=0 blocked_notes=0)" in text
 
 
+def test_offdesk_prepare_warns_when_last_sync_used_discovery_mode(tmp_path: Path) -> None:
+    state = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+    project_root = tmp_path / "LocalMap"
+    team_dir = project_root / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (project_root / "TODO.md").write_text("# Tasks\n- [ ] verify export\n", encoding="utf-8")
+    (team_dir / "AOE_TODO.md").write_text("@include ../TODO.md\n", encoding="utf-8")
+    (team_dir / "orchestrator.json").write_text("{}", encoding="utf-8")
+    state["projects"]["local_map"] = {
+        "name": "local_map",
+        "display_name": "LocalMap",
+        "project_alias": "O4",
+        "project_root": str(project_root),
+        "team_dir": str(team_dir),
+        "runtime_ready": True,
+        "todos": [{"id": "TODO-001", "summary": "verify export", "priority": "P1", "status": "open"}],
+        "todo_proposals": [],
+        "last_sync_at": "2026-03-10T20:00:00+0900",
+        "last_sync_mode": "scenario-empty->fallback:bootstrap",
+        "last_sync_candidate_classes": {"recent_doc": 2, "todo_file": 1},
+        "last_sync_candidate_doc_types": {"handoff": 2, "note": 1},
+    }
+
+    text = _call_management_status(tmp_path=tmp_path, manager_state=state, cmd="offdesk", rest="prepare O4")
+
+    assert "- O4 LocalMap [warn]" in text
+    assert "sync_source: discovery classes=recent_doc=2, todo_file=1 doc_types=handoff=2, note=1" in text
+    assert "last sync used non-canonical discovery mode (scenario-empty->fallback:bootstrap)" in text
+
+
+def test_offdesk_prepare_warns_when_last_sync_uses_non_backlog_doc_types(tmp_path: Path) -> None:
+    state = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+    project_root = tmp_path / "Research"
+    team_dir = project_root / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (project_root / "TODO.md").write_text("# Tasks\n- [ ] draft memo\n", encoding="utf-8")
+    (team_dir / "AOE_TODO.md").write_text("@include ../TODO.md\n", encoding="utf-8")
+    (team_dir / "orchestrator.json").write_text("{}", encoding="utf-8")
+    state["projects"]["research"] = {
+        "name": "research",
+        "display_name": "Research",
+        "project_alias": "O5",
+        "project_root": str(project_root),
+        "team_dir": str(team_dir),
+        "runtime_ready": True,
+        "todos": [{"id": "TODO-001", "summary": "draft memo", "priority": "P1", "status": "open"}],
+        "todo_proposals": [],
+        "last_sync_at": "2026-03-10T20:00:00+0900",
+        "last_sync_mode": "scenario",
+        "last_sync_candidate_classes": {"scenario": 2},
+        "last_sync_candidate_doc_types": {"report": 2},
+    }
+
+    text = _call_management_status(tmp_path=tmp_path, manager_state=state, cmd="offdesk", rest="review O5")
+
+    assert "offdesk review" in text
+    assert "- O5 Research [warn]" in text
+    assert "last sync built backlog from non-backlog documents" in text
+    assert "do: /todo O5 syncback preview, /sync preview O5 24h" in text
+
+
 def test_offdesk_review_surfaces_flagged_projects_and_next_actions(tmp_path: Path) -> None:
     state = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
 
@@ -8417,7 +8478,7 @@ def test_offdesk_review_reply_markup_includes_clean_actions(tmp_path: Path) -> N
             {"id": "TODO-001", "summary": "current task", "priority": "P1", "status": "open"},
         ],
         "todo_proposals": [],
-        "last_sync_at": "2026-03-10T20:00:00+0900",
+        "last_sync_at": "2026-03-12T20:00:00+0900",
         "last_sync_mode": "scenario",
     }
 
@@ -8505,7 +8566,7 @@ def test_offdesk_prepare_reply_markup_includes_clean_actions(tmp_path: Path) -> 
             {"id": "TODO-001", "summary": "current task", "priority": "P1", "status": "open"},
         ],
         "todo_proposals": [],
-        "last_sync_at": "2026-03-10T20:00:00+0900",
+        "last_sync_at": "2026-03-12T20:00:00+0900",
         "last_sync_mode": "scenario",
     }
 

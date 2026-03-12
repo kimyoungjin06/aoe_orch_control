@@ -67,6 +67,70 @@ def compact_reason(raw: Any, limit: int = 120) -> str:
     return text
 
 
+def _sync_counter_map(raw: Any) -> Dict[str, int]:
+    if not isinstance(raw, dict):
+        return {}
+    counts: Dict[str, int] = {}
+    for key, value in raw.items():
+        token = str(key or "").strip().lower()
+        if not token:
+            continue
+        try:
+            count = int(value or 0)
+        except Exception:
+            continue
+        if count <= 0:
+            continue
+        counts[token] = count
+    ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return {key: count for key, count in ordered[:6]}
+
+
+def _sync_counter_summary(raw: Any) -> str:
+    counts = _sync_counter_map(raw)
+    if not counts:
+        return "-"
+    return ", ".join(f"{key}={count}" for key, count in counts.items())
+
+
+def _sync_quality_snapshot(entry: Dict[str, Any]) -> Dict[str, Any]:
+    mode = str(entry.get("last_sync_mode", "")).strip() or "never"
+    classes = _sync_counter_map(entry.get("last_sync_candidate_classes"))
+    doc_types = _sync_counter_map(entry.get("last_sync_candidate_doc_types"))
+    has_backlog_docs = any(key in {"todo", "handoff"} for key in doc_types)
+    non_backlog_docs = [key for key in doc_types if key not in {"todo", "handoff"}]
+    quality = "unknown"
+    note = ""
+    warn = False
+
+    if mode == "never":
+        quality = "never"
+    elif mode == "scenario" and has_backlog_docs and not non_backlog_docs:
+        quality = "canonical"
+    elif ("fallback:" in mode) or mode in {"recent_docs", "salvage_docs", "todo_files"}:
+        quality = "discovery"
+        warn = True
+        note = f"last sync used non-canonical discovery mode ({mode})"
+    elif doc_types and not has_backlog_docs:
+        quality = "non_backlog_docs"
+        warn = True
+        note = "last sync built backlog from non-backlog documents"
+    elif has_backlog_docs and non_backlog_docs:
+        quality = "mixed"
+    elif has_backlog_docs:
+        quality = "backlog_docs"
+
+    return {
+        "quality": quality,
+        "warn": warn,
+        "note": note,
+        "candidate_classes": classes,
+        "candidate_doc_types": doc_types,
+        "classes_summary": _sync_counter_summary(classes),
+        "doc_types_summary": _sync_counter_summary(doc_types),
+    }
+
+
 def status_report_level(tokens: List[str], fallback: str) -> str:
     explicit = ""
     for tok in tokens[1:]:
@@ -271,6 +335,7 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
     last_sync_mode = str(entry.get("last_sync_mode", "")).strip() or "never"
     last_sync_at = str(entry.get("last_sync_at", "")).strip()
     last_sync_disp = compact_age_label(last_sync_at)
+    sync_quality = _sync_quality_snapshot(entry)
     last_sync_dt = parse_iso_datetime(last_sync_at)
     sync_stale = False
     if last_sync_dt is not None:
@@ -323,6 +388,11 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
     if syncback_error:
         status = "warn" if status == "ready" else status
         notes.append(f"syncback preview failed: {syncback_error}")
+    if bool(sync_quality.get("warn")):
+        status = "warn" if status == "ready" else status
+        note = str(sync_quality.get("note", "")).strip()
+        if note:
+            notes.append(note)
     if last_sync_mode == "never" or not last_sync_at:
         status = "warn" if status == "ready" else status
         notes.append("queue has not been synced yet")
@@ -338,6 +408,10 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
         f"  queue: open={counts['open']} running={counts['running']} blocked={counts['blocked']} followup={manual_followup_count} pending={'yes' if pending_flag else 'no'} proposals={open_proposals}",
         f"  syncback: done={syncback_counts['done']} reopen={syncback_counts['reopen']} append={syncback_counts['append']} blocked_notes={syncback_counts['blocked']}",
         f"  last_sync: {last_sync_mode} {last_sync_disp}".rstrip(),
+        "  sync_source: "
+        f"{sync_quality.get('quality', 'unknown')} "
+        f"classes={sync_quality.get('classes_summary', '-')} "
+        f"doc_types={sync_quality.get('doc_types_summary', '-')}".rstrip(),
     ]
     if blocked_head:
         head = f"  blocked_head: {blocked_head.get('id', '-')} x{blocked_head.get('count', 1)}"
@@ -365,6 +439,10 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
         "syncback_pending": syncback_pending,
         "syncback_counts": dict(syncback_counts),
         "pending_flag": pending_flag,
+        "sync_quality": str(sync_quality.get("quality", "")).strip(),
+        "sync_quality_warn": bool(sync_quality.get("warn", False)),
+        "sync_candidate_classes": dict(sync_quality.get("candidate_classes") or {}),
+        "sync_candidate_doc_types": dict(sync_quality.get("candidate_doc_types") or {}),
         "notes": list(notes),
     }
 
