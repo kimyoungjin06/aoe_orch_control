@@ -222,7 +222,12 @@ def _priority_action_snapshot(
     bootstrap_recommended: bool,
     blocked_count: int,
     open_count: int,
+    sync_quality: str,
     sync_quality_warn: bool,
+    sync_stale: bool,
+    canonical_exists: bool,
+    include_ok: bool,
+    last_sync_mode: str,
 ) -> Dict[str, str]:
     task_priority = task_priority_action_snapshot(
         label=active_task_label,
@@ -250,11 +255,57 @@ def _priority_action_snapshot(
             "reason": "open todo proposals pending triage",
         }
     if bootstrap_recommended:
+        if not canonical_exists:
+            return {
+                "action": f"/sync bootstrap {alias} 24h",
+                "reason": "bootstrap backlog because canonical TODO.md is missing",
+            }
+        if canonical_exists and not include_ok:
+            return {
+                "action": f"/sync bootstrap {alias} 24h",
+                "reason": "bootstrap backlog because AOE_TODO.md is not linked to canonical TODO.md",
+            }
+        if last_sync_mode == "never":
+            return {
+                "action": f"/sync bootstrap {alias} 24h",
+                "reason": "bootstrap backlog because the project has never been synced",
+            }
+        if sync_quality in {"non_backlog_docs", "unknown"}:
+            return {
+                "action": f"/sync bootstrap {alias} 24h",
+                "reason": f"rebuild backlog from canonical/recent docs; last sync source was {sync_quality}",
+            }
+        if sync_stale:
+            return {
+                "action": f"/sync bootstrap {alias} 24h",
+                "reason": "refresh stale backlog from canonical/recent project documents",
+            }
         return {
             "action": f"/sync bootstrap {alias} 24h",
             "reason": "bootstrap backlog from recent project documents",
         }
+    if sync_quality_warn:
+        if sync_quality == "discovery":
+            return {
+                "action": f"/sync preview {alias} 24h",
+                "reason": "inspect non-canonical discovery sources before execution",
+            }
+        if sync_quality == "mixed":
+            return {
+                "action": f"/sync preview {alias} 24h",
+                "reason": "inspect mixed canonical and discovery sync sources before execution",
+            }
     if blocked_count > 0 or open_count == 0 or sync_quality_warn:
+        if open_count == 0:
+            return {
+                "action": f"/sync preview {alias} 24h",
+                "reason": "review sync sources because there is no runnable backlog",
+            }
+        if blocked_count > 0:
+            return {
+                "action": f"/sync preview {alias} 24h",
+                "reason": "review sync sources before retrying blocked backlog",
+            }
         return {
             "action": f"/sync preview {alias} 24h",
             "reason": "review sync source quality before execution",
@@ -711,7 +762,12 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
         bootstrap_recommended=bootstrap_recommended,
         blocked_count=counts["blocked"],
         open_count=counts["open"],
+        sync_quality=str(sync_quality.get("quality", "")).strip(),
         sync_quality_warn=bool(sync_quality.get("warn", False)),
+        sync_stale=bool(sync_stale),
+        canonical_exists=bool(canonical_exists),
+        include_ok=bool(include_ok),
+        last_sync_mode=last_sync_mode,
     )
 
     lines = [

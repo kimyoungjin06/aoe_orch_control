@@ -8379,6 +8379,7 @@ def test_offdesk_prepare_warns_when_last_sync_used_discovery_mode(tmp_path: Path
     assert "- O4 LocalMap [warn]" in text
     assert "sync_source: discovery classes=recent_doc=2, todo_file=1 doc_types=handoff=2, note=1" in text
     assert "last sync used non-canonical discovery mode (scenario-empty->fallback:bootstrap)" in text
+    assert "first: /todo O4 syncback preview | canonical TODO drift pending syncback" in text
     body, markup = _call_management_status_with_markup(
         tmp_path=tmp_path,
         manager_state=state,
@@ -8417,6 +8418,7 @@ def test_offdesk_prepare_warns_when_last_sync_uses_non_backlog_doc_types(tmp_pat
     assert "offdesk review" in text
     assert "- O5 Research [warn]" in text
     assert "last sync built backlog from non-backlog documents" in text
+    assert "first: /todo O5 syncback preview | canonical TODO drift pending syncback" in text
     assert "do: /todo O5 syncback preview, /sync bootstrap O5 24h, /sync preview O5 24h" in text
 
 
@@ -8902,7 +8904,7 @@ def test_offdesk_review_sorts_flagged_projects_by_severity(tmp_path: Path) -> No
     idx_o3 = body.index("- O3 Nano [warn]")
     assert idx_o4 < idx_o3
     assert "attention: backlog:none, sync:never" in body
-    assert "first: /sync bootstrap O4 24h | bootstrap backlog from recent project documents" in body
+    assert "first: /sync bootstrap O4 24h | bootstrap backlog because the project has never been synced" in body
 
 
 def test_offdesk_prepare_reply_markup_includes_clean_actions(tmp_path: Path) -> None:
