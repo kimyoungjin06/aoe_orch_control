@@ -21,9 +21,12 @@ from aoe_tg_ops_view import (
     render_project_snapshot_lines,
 )
 from aoe_tg_package_paths import team_tmux_script
+from aoe_tg_priority_actions import (
+    offdesk_priority_action_snapshot,
+    task_lane_target_snapshot,
+)
 from aoe_tg_project_runtime import project_runtime_issue, project_runtime_label
 from aoe_tg_task_view import task_display_label
-from aoe_tg_task_state import task_lane_target_snapshot, task_priority_action_snapshot
 from aoe_tg_todo_policy import (
     normalize_proposal_kind,
     normalize_proposal_priority,
@@ -207,112 +210,6 @@ def _proposal_triage_snapshot(entry: Dict[str, Any]) -> Dict[str, Any]:
         "top_rows": top_rows,
         "top_summary": " || ".join(top_summary_parts) if top_summary_parts else "-",
         "high_priority": bool(priority_counts.get("P1", 0)),
-    }
-
-
-def _priority_action_snapshot(
-    *,
-    alias: str,
-    active_task_label: str,
-    active_task_tf_phase: str,
-    active_task_targets: Optional[Dict[str, List[str]]] = None,
-    syncback_pending: bool,
-    followup_count: int,
-    proposal_count: int,
-    bootstrap_recommended: bool,
-    blocked_count: int,
-    open_count: int,
-    sync_quality: str,
-    sync_quality_warn: bool,
-    sync_stale: bool,
-    canonical_exists: bool,
-    include_ok: bool,
-    last_sync_mode: str,
-) -> Dict[str, str]:
-    task_priority = task_priority_action_snapshot(
-        label=active_task_label,
-        tf_phase=active_task_tf_phase,
-        rerun_execution_lane_ids=list((active_task_targets or {}).get("rerun_execution_lane_ids") or []),
-        rerun_review_lane_ids=list((active_task_targets or {}).get("rerun_review_lane_ids") or []),
-        manual_followup_execution_lane_ids=list((active_task_targets or {}).get("manual_followup_execution_lane_ids") or []),
-        manual_followup_review_lane_ids=list((active_task_targets or {}).get("manual_followup_review_lane_ids") or []),
-    )
-    if str(task_priority.get("action", "")).strip():
-        return task_priority
-    if syncback_pending:
-        return {
-            "action": f"/todo {alias} syncback preview",
-            "reason": "canonical TODO drift pending syncback",
-        }
-    if followup_count > 0:
-        return {
-            "action": f"/todo {alias} followup",
-            "reason": "manual follow-up backlog pending review",
-        }
-    if proposal_count > 0:
-        return {
-            "action": f"/todo {alias} proposals",
-            "reason": "open todo proposals pending triage",
-        }
-    if bootstrap_recommended:
-        if not canonical_exists:
-            return {
-                "action": f"/sync bootstrap {alias} 24h",
-                "reason": "bootstrap backlog because canonical TODO.md is missing",
-            }
-        if canonical_exists and not include_ok:
-            return {
-                "action": f"/sync bootstrap {alias} 24h",
-                "reason": "bootstrap backlog because AOE_TODO.md is not linked to canonical TODO.md",
-            }
-        if last_sync_mode == "never":
-            return {
-                "action": f"/sync bootstrap {alias} 24h",
-                "reason": "bootstrap backlog because the project has never been synced",
-            }
-        if sync_quality in {"non_backlog_docs", "unknown"}:
-            return {
-                "action": f"/sync bootstrap {alias} 24h",
-                "reason": f"rebuild backlog from canonical/recent docs; last sync source was {sync_quality}",
-            }
-        if sync_stale:
-            return {
-                "action": f"/sync bootstrap {alias} 24h",
-                "reason": "refresh stale backlog from canonical/recent project documents",
-            }
-        return {
-            "action": f"/sync bootstrap {alias} 24h",
-            "reason": "bootstrap backlog from recent project documents",
-        }
-    if sync_quality_warn:
-        if sync_quality == "discovery":
-            return {
-                "action": f"/sync preview {alias} 24h",
-                "reason": "inspect non-canonical discovery sources before execution",
-            }
-        if sync_quality == "mixed":
-            return {
-                "action": f"/sync preview {alias} 24h",
-                "reason": "inspect mixed canonical and discovery sync sources before execution",
-            }
-    if blocked_count > 0 or open_count == 0 or sync_quality_warn:
-        if open_count == 0:
-            return {
-                "action": f"/sync preview {alias} 24h",
-                "reason": "review sync sources because there is no runnable backlog",
-            }
-        if blocked_count > 0:
-            return {
-                "action": f"/sync preview {alias} 24h",
-                "reason": "review sync sources before retrying blocked backlog",
-            }
-        return {
-            "action": f"/sync preview {alias} 24h",
-            "reason": "review sync source quality before execution",
-        }
-    return {
-        "action": f"/orch status {alias}",
-        "reason": "inspect current project runtime and queue state",
     }
 
 
@@ -751,7 +648,7 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
         or bool(sync_quality.get("warn", False))
         or bool(sync_stale)
     )
-    priority_action = _priority_action_snapshot(
+    priority_action = offdesk_priority_action_snapshot(
         alias=alias,
         active_task_label=str(latest_task.get("label", "")).strip(),
         active_task_tf_phase=task_tf_phase,

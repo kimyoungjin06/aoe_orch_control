@@ -48,6 +48,7 @@ import aoe_tg_orch_overview_handlers as overview
 import aoe_tg_orch_task_handlers as orch_task_handlers
 import aoe_tg_parse as tg_parse
 import aoe_tg_poll_loop as poll_loop
+import aoe_tg_priority_actions as priority_actions
 import aoe_tg_project_state as project_state
 import aoe_tg_request_state as request_state
 import aoe_tg_run_guards as run_guards
@@ -2445,6 +2446,58 @@ def test_task_monitor_includes_lane_rerun_and_followup_targets() -> None:
         "first: /retry T-001 | collect-data-write-memo | active task requires retry (needs_retry) "
         "target execution=L2; review=R1"
     ) in summary
+
+
+def test_priority_actions_module_matches_task_and_offdesk_policies() -> None:
+    lane_targets = priority_actions.task_lane_target_snapshot(
+        {
+            "exec_critic": {
+                "rerun_execution_lane_ids": ["L2"],
+                "rerun_review_lane_ids": ["R1"],
+                "manual_followup_execution_lane_ids": ["L3"],
+            }
+        }
+    )
+    assert lane_targets == {
+        "rerun_execution_lane_ids": ["L2"],
+        "rerun_review_lane_ids": ["R1"],
+        "manual_followup_execution_lane_ids": ["L3"],
+        "manual_followup_review_lane_ids": [],
+    }
+    task_priority = priority_actions.task_priority_action_snapshot(
+        label="T-001 | collect-data-write-memo",
+        tf_phase="needs_retry",
+        rerun_execution_lane_ids=["L2"],
+        rerun_review_lane_ids=["R1"],
+        manual_followup_execution_lane_ids=[],
+        manual_followup_review_lane_ids=[],
+    )
+    assert task_priority == {
+        "action": "/retry T-001 | collect-data-write-memo",
+        "reason": "active task requires retry (needs_retry) target execution=L2; review=R1",
+    }
+    offdesk_priority = priority_actions.offdesk_priority_action_snapshot(
+        alias="O4",
+        active_task_label="",
+        active_task_tf_phase="queued",
+        active_task_targets=None,
+        syncback_pending=False,
+        followup_count=0,
+        proposal_count=0,
+        bootstrap_recommended=True,
+        blocked_count=0,
+        open_count=0,
+        sync_quality="never",
+        sync_quality_warn=False,
+        sync_stale=False,
+        canonical_exists=False,
+        include_ok=False,
+        last_sync_mode="never",
+    )
+    assert offdesk_priority == {
+        "action": "/sync bootstrap O4 24h",
+        "reason": "bootstrap backlog because canonical TODO.md is missing",
+    }
 
 
 def test_task_state_sanitize_task_record_matches_gateway(monkeypatch) -> None:
