@@ -30,7 +30,7 @@ VERDICT_ACTIONS = ("none", "retry", "replan", "escalate", "abort")
 TEAM_EXECUTION_MODES = ("single", "parallel")
 TEAM_REVIEW_MODES = ("skip", "single", "parallel")
 COMPANION_ROLE_MAP = {
-    "Reviewer": "Claude-Reviewer",
+    "Codex-Reviewer": "Claude-Reviewer",
     "Codex-Writer": "Claude-Writer",
     "Codex-Analyst": "Claude-Analyst",
 }
@@ -440,7 +440,7 @@ def _review_roles(
                 inferred.append(role)
         if inferred:
             return _with_companions(inferred)
-        return _with_companions(["Reviewer"])
+        return _with_companions(["Codex-Reviewer"])
     return []
 
 
@@ -560,7 +560,7 @@ def normalize_phase2_team_spec(
         [row.get("role", "") for row in execution_groups] + [row.get("role", "") for row in review_groups],
         limit=16,
     )
-    critic_role = _trim_text(data.get("critic_role", ""), 64) or (review_groups[0]["role"] if review_groups else (team_roles[-1] if team_roles else "Reviewer"))
+    critic_role = _trim_text(data.get("critic_role", ""), 64) or (review_groups[0]["role"] if review_groups else (team_roles[-1] if team_roles else "Codex-Reviewer"))
     integration_role = _trim_text(data.get("integration_role", ""), 64) or (review_groups[0]["role"] if review_groups else (execution_groups[-1]["role"] if execution_groups else critic_role))
 
     return {
@@ -692,7 +692,7 @@ def normalize_tf_plan(
     critic_data = critic_in if isinstance(critic_in, dict) else {}
     critic_role = (
         _trim_text(critic_data.get("role", ""), 64)
-        or ("Reviewer" if "Reviewer" in execution_order else execution_order[-1])
+        or ("Codex-Reviewer" if "Codex-Reviewer" in execution_order else execution_order[-1])
     )
     status = _normalize_choice(data.get("status"), PLAN_STATUSES, "ready")
     blocking_issues = _normalize_text_list(
@@ -719,7 +719,7 @@ def normalize_tf_plan(
     return attach_phase2_team_spec(
         normalized,
         roles=list(spec.get("requested_roles") or []),
-        verifier_roles=["Reviewer"] if normalized["critic"]["required"] else [],
+        verifier_roles=["Codex-Reviewer"] if normalized["critic"]["required"] else [],
         require_verifier=bool(normalized["critic"]["required"]),
     )
 

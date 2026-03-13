@@ -14,7 +14,7 @@ from aoe_tg_task_view import dedupe_roles
 
 DEFAULT_WORKER_ROLE_POOL = [
     "DataEngineer",
-    "Reviewer",
+    "Codex-Reviewer",
     "Claude-Reviewer",
     "Codex-Dev",
     "Codex-Writer",
@@ -24,7 +24,7 @@ DEFAULT_WORKER_ROLE_POOL = [
 ]
 
 CLAUDE_COMPANION_ROLES = {
-    "Reviewer": "Claude-Reviewer",
+    "Codex-Reviewer": "Claude-Reviewer",
     "Codex-Writer": "Claude-Writer",
     "Codex-Analyst": "Claude-Analyst",
 }
@@ -36,7 +36,7 @@ ROLE_ORDER = {
     "Claude-Writer": 31,
     "Codex-Analyst": 40,
     "Claude-Analyst": 41,
-    "Reviewer": 50,
+    "Codex-Reviewer": 50,
     "Claude-Reviewer": 51,
 }
 
@@ -211,8 +211,8 @@ def _add_default_review_pair(
     if not has_worklike or has_review:
         return current
     available_set = {str(role).strip() for role in available_roles if str(role).strip()}
-    if "Reviewer" in available_set:
-        current.append("Reviewer")
+    if "Codex-Reviewer" in available_set:
+        current.append("Codex-Reviewer")
     if "Claude-Reviewer" in available_set:
         current.append("Claude-Reviewer")
     return _ordered_roles(current)
@@ -343,7 +343,7 @@ def choose_auto_dispatch_roles(
         if any(k in prompt_lower for k in data_keys):
             roles.append("DataEngineer")
         if any(k in prompt_lower for k in review_keys):
-            roles.append("Reviewer")
+            roles.append("Codex-Reviewer")
             if "Claude-Reviewer" in available_set:
                 roles.append("Claude-Reviewer")
         if any(k in prompt_lower for k in build_keys):
@@ -357,7 +357,7 @@ def choose_auto_dispatch_roles(
             if "Claude-Analyst" in available_set:
                 roles.append("Claude-Analyst")
         if not roles and any(k in prompt_lower for k in both_keys):
-            roles = ["DataEngineer", "Reviewer"]
+            roles = ["DataEngineer", "Codex-Reviewer"]
             if "Claude-Reviewer" in available_set:
                 roles.append("Claude-Reviewer")
         roles = _add_companion_roles(

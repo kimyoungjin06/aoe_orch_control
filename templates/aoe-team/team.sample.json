@@ -6,7 +6,7 @@
   "roles": [
     "Orchestrator",
     "DataEngineer",
-    "Reviewer",
+    "Codex-Reviewer",
     "Claude-Reviewer",
     "Codex-Dev",
     "Codex-Writer",
