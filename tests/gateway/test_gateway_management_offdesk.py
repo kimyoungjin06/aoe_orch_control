@@ -1505,6 +1505,52 @@ def test_offdesk_review_reply_markup_includes_active_task_retry_actions(tmp_path
     assert "/todo O6" in buttons
 
 
+def test_offdesk_review_prefers_task_link_for_active_planning_task(tmp_path: Path) -> None:
+    state = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+    project_root = tmp_path / "PlanningProject"
+    team_dir = project_root / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (project_root / "TODO.md").write_text("# Tasks\n- [ ] investigate issue\n", encoding="utf-8")
+    (team_dir / "AOE_TODO.md").write_text("@include ../TODO.md\n", encoding="utf-8")
+    (team_dir / "orchestrator.json").write_text("{}", encoding="utf-8")
+    state["projects"]["planning_proj"] = {
+        "name": "planning_proj",
+        "display_name": "PlanningProject",
+        "project_alias": "O8",
+        "project_root": str(project_root),
+        "team_dir": str(team_dir),
+        "runtime_ready": True,
+        "todos": [{"id": "TODO-001", "summary": "investigate issue", "priority": "P1", "status": "open"}],
+        "todo_proposals": [{"id": "PROP-001", "summary": "proposal pending review", "status": "open"}],
+        "tasks": {
+            "req-planning": {
+                "request_id": "req-planning",
+                "short_id": "T-201",
+                "prompt": "Investigate issue and prepare plan",
+                "status": "running",
+                "tf_phase": "planning",
+                "stages": {"planning": "running"},
+                "updated_at": "2026-03-13T18:40:00+0900",
+                "created_at": "2026-03-13T18:35:00+0900",
+            }
+        },
+    }
+
+    body, markup = _call_management_status_with_markup(
+        tmp_path=tmp_path,
+        manager_state=state,
+        cmd="offdesk",
+        rest="review O8",
+    )
+
+    assert "active task in progress (planning)" in body
+    assert "first: /task T-201 | active task is still planning" in body
+    buttons = _button_texts(markup)
+    assert "/task T-201" in buttons
+    assert "/todo O8 proposals" in buttons
+    assert "/orch status O8" in buttons
+
+
 def test_offdesk_review_reply_markup_includes_flagged_project_drilldowns(tmp_path: Path) -> None:
     state = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
 

@@ -1798,6 +1798,18 @@ def test_priority_actions_module_matches_task_and_offdesk_policies() -> None:
         "action": "/retry T-001 | collect-data-write-memo lane L2,R1",
         "reason": "active task requires retry (needs_retry) target execution=L2; review=R1",
     }
+    planning_priority = priority_actions.task_priority_action_snapshot(
+        label="T-002 | gather-latest-docs",
+        tf_phase="planning",
+        rerun_execution_lane_ids=[],
+        rerun_review_lane_ids=[],
+        manual_followup_execution_lane_ids=[],
+        manual_followup_review_lane_ids=[],
+    )
+    assert planning_priority == {
+        "action": "/task T-002 | gather-latest-docs",
+        "reason": "active task is still planning",
+    }
     offdesk_priority = priority_actions.offdesk_priority_action_snapshot(
         alias="O4",
         active_task_label="",

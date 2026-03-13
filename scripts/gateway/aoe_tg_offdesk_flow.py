@@ -602,6 +602,30 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
         notes.append(f"manual follow-up backlog present ({manual_followup_count})")
         attention.append(f"followup:{manual_followup_count}")
         severity_score += 55
+    task_tf_phase = str(latest_task.get("tf_phase", "")).strip()
+    task_status = str(latest_task.get("status", "")).strip()
+    if task_tf_phase in {"needs_retry", "manual_intervention", "blocked", "critic_review"}:
+        status = "warn" if status == "ready" else status
+        notes.append(f"active task needs attention ({task_tf_phase})")
+        attention.append(f"task:{task_tf_phase}")
+        severity_score += 60
+    elif task_status in {"running", "pending"}:
+        status = "warn" if status == "ready" else status
+        notes.append(f"active task in progress ({task_tf_phase or task_status})")
+        attention.append(f"task:{task_tf_phase or task_status}")
+        severity_score += 15
+    if bool(latest_task.get("role_mismatch", False)):
+        status = "warn" if status == "ready" else status
+        dropped = list(latest_task.get("dropped_roles") or [])
+        added = list(latest_task.get("added_roles") or [])
+        notes.append(
+            "active task role mismatch (dropped={dropped} added={added})".format(
+                dropped=",".join(dropped) if dropped else "-",
+                added=",".join(added) if added else "-",
+            )
+        )
+        attention.append("task:role_mismatch")
+        severity_score += 35
     if open_proposals > 0:
         status = "warn" if status == "ready" else status
         notes.append(f"open todo proposals pending review ({open_proposals})")
@@ -631,30 +655,6 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
         if note:
             notes.append(note)
         attention.append(f"sync:{sync_quality.get('quality', 'unknown')}")
-        severity_score += 35
-    task_tf_phase = str(latest_task.get("tf_phase", "")).strip()
-    task_status = str(latest_task.get("status", "")).strip()
-    if task_tf_phase in {"needs_retry", "manual_intervention", "blocked", "critic_review"}:
-        status = "warn" if status == "ready" else status
-        notes.append(f"active task needs attention ({task_tf_phase})")
-        attention.append(f"task:{task_tf_phase}")
-        severity_score += 60
-    elif task_status in {"running", "pending"}:
-        status = "warn" if status == "ready" else status
-        notes.append(f"active task in progress ({task_tf_phase or task_status})")
-        attention.append(f"task:{task_tf_phase or task_status}")
-        severity_score += 15
-    if bool(latest_task.get("role_mismatch", False)):
-        status = "warn" if status == "ready" else status
-        dropped = list(latest_task.get("dropped_roles") or [])
-        added = list(latest_task.get("added_roles") or [])
-        notes.append(
-            "active task role mismatch (dropped={dropped} added={added})".format(
-                dropped=",".join(dropped) if dropped else "-",
-                added=",".join(added) if added else "-",
-            )
-        )
-        attention.append("task:role_mismatch")
         severity_score += 35
     if last_sync_mode == "never" or not last_sync_at:
         status = "warn" if status == "ready" else status
