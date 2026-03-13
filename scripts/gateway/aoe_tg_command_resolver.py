@@ -62,6 +62,7 @@ _ABBREV_COMMANDS = [
     "cancel",
     "retry",
     "replan",
+    "followup",
     "request",
     "run",
     "clear",
@@ -116,8 +117,10 @@ class ResolvedCommand:
     orch_cancel_request_id: Optional[str] = None
     orch_retry_request_id: Optional[str] = None
     orch_replan_request_id: Optional[str] = None
+    orch_followup_request_id: Optional[str] = None
     orch_retry_lane_ids: Optional[list[str]] = None
     orch_replan_lane_ids: Optional[list[str]] = None
+    orch_followup_lane_ids: Optional[list[str]] = None
     orch_monitor_limit: Optional[int] = None
     orch_kpi_hours: Optional[int] = None
 
@@ -341,6 +344,15 @@ def resolve_message_command(
                 )
                 out.orch_replan_request_id = parsed["request_id"]
                 out.orch_replan_lane_ids = parsed["lane_ids"]
+        elif out.cmd in {"followup", "follow-up"}:
+            out.cmd = "orch-followup"
+            if slash_rest:
+                parsed = parse_request_lane_args(
+                    slash_rest,
+                    usage="usage: /followup <request_or_alias> [lane <L#|R#,...>]",
+                )
+                out.orch_followup_request_id = parsed["request_id"]
+                out.orch_followup_lane_ids = parsed["lane_ids"]
         elif out.cmd in {"monitor", "tasks", "board"}:
             out.cmd = "orch-monitor"
             if slash_rest:
@@ -417,6 +429,10 @@ def resolve_message_command(
                 out.orch_target = quick.get("orch")
                 out.orch_replan_request_id = quick.get("request_id")
                 out.orch_replan_lane_ids = quick.get("lane_ids")
+            elif out.cmd == "orch-followup":
+                out.orch_target = quick.get("orch")
+                out.orch_followup_request_id = quick.get("request_id")
+                out.orch_followup_lane_ids = quick.get("lane_ids")
             elif out.cmd == "orch-monitor":
                 out.orch_target = quick.get("orch")
                 out.orch_monitor_limit = quick.get("limit")
@@ -485,6 +501,10 @@ def resolve_message_command(
                 out.orch_target = cli.get("orch")
                 out.orch_replan_request_id = cli.get("request_id")
                 out.orch_replan_lane_ids = cli.get("lane_ids")
+            elif out.cmd == "orch-followup":
+                out.orch_target = cli.get("orch")
+                out.orch_followup_request_id = cli.get("request_id")
+                out.orch_followup_lane_ids = cli.get("lane_ids")
             elif out.cmd == "orch-monitor":
                 out.orch_target = cli.get("orch")
                 out.orch_monitor_limit = cli.get("limit")
@@ -588,6 +608,7 @@ def resolve_message_command(
                 "orch-cancel",
                 "orch-retry",
                 "orch-replan",
+                "orch-followup",
                 "cancel-pending",
                 "replay",
             }
@@ -607,6 +628,9 @@ def resolve_message_command(
                 elif ncmd == "orch-replan":
                     out.orch_replan_request_id = natural.get("request_id")
                     out.orch_replan_lane_ids = natural.get("lane_ids")
+                elif ncmd == "orch-followup":
+                    out.orch_followup_request_id = natural.get("request_id")
+                    out.orch_followup_lane_ids = natural.get("lane_ids")
                 elif ncmd == "orch-monitor":
                     out.orch_monitor_limit = natural.get("limit")
                 elif ncmd == "orch-kpi":

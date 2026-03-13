@@ -7301,6 +7301,9 @@ def test_orch_task_reply_markup_exposes_lane_retry_and_followup_actions(tmp_path
         "/replan T-123",
         "/replan T-123 lane L2",
         "/replan T-123 lane R2",
+        "/followup T-123",
+        "/followup T-123 lane L2",
+        "/followup T-123 lane R2",
         "/todo O2 followup",
         "/orch monitor O2",
         "/orch status O2",
@@ -7329,6 +7332,27 @@ def test_resolve_message_command_parses_retry_lane_selector() -> None:
     assert resolved.cmd == "orch-retry"
     assert resolved.orch_retry_request_id == "T-123"
     assert resolved.orch_retry_lane_ids == ["L2", "R1"]
+
+
+def test_resolve_message_command_parses_followup_lane_selector() -> None:
+    manager_state = gw.default_manager_state(ROOT, ROOT / ".aoe-team")
+
+    resolved = resolver.resolve_message_command(
+        text="/followup T-123 lane L2,R1",
+        slash_only=False,
+        manager_state=manager_state,
+        chat_id="939062873",
+        dry_run=True,
+        manager_state_file=ROOT / ".aoe-team" / "orch_manager_state.json",
+        get_pending_mode=gw.get_pending_mode,
+        get_default_mode=gw.get_default_mode,
+        clear_pending_mode=gw.clear_pending_mode,
+        save_manager_state=lambda path, state: None,
+    )
+
+    assert resolved.cmd == "orch-followup"
+    assert resolved.orch_followup_request_id == "T-123"
+    assert resolved.orch_followup_lane_ids == ["L2", "R1"]
 
 
 def test_resolve_retry_replan_transition_rejects_invalid_lane_selector() -> None:
@@ -7433,6 +7457,188 @@ def test_resolve_retry_replan_transition_preserves_selected_lane_targets() -> No
     assert result["terminal"] is False
     assert result["run_selected_execution_lane_ids"] == ["L2"]
     assert result["run_selected_review_lane_ids"] == ["R2"]
+
+
+def test_orch_followup_rejects_invalid_lane_selector() -> None:
+    manager_state = _empty_state()
+    manager_state["projects"]["twinpaper"] = {
+        "name": "twinpaper",
+        "display_name": "TwinPaper",
+        "project_alias": "O2",
+        "project_root": str(ROOT),
+        "team_dir": str(ROOT / ".aoe-team"),
+        "tasks": {
+            "REQ-123": {
+                "request_id": "REQ-123",
+                "status": "failed",
+                "prompt": "followup target",
+                "context": {"task_short_id": "T-123"},
+                "exec_critic": {
+                    "verdict": "intervention",
+                    "action": "manual_followup",
+                    "reason": "Need operator review",
+                    "manual_followup_execution_lane_ids": ["L2"],
+                    "manual_followup_review_lane_ids": ["R2"],
+                },
+            }
+        },
+    }
+    sent: list[tuple[str, str]] = []
+    handled = orch_task_handlers.handle_orch_task_command(
+        cmd="orch-followup",
+        args=argparse.Namespace(
+            require_verifier=False,
+            verifier_roles="",
+            manager_state_file=ROOT / ".aoe-team" / "orch_manager_state.json",
+            dry_run=True,
+        ),
+        manager_state=manager_state,
+        chat_id="939062873",
+        orch_target="twinpaper",
+        orch_add_name=None,
+        orch_add_path=None,
+        orch_add_overview=None,
+        orch_add_init=True,
+        orch_add_spawn=True,
+        orch_add_set_active=True,
+        rest="",
+        orch_check_request_id=None,
+        orch_task_request_id=None,
+        orch_pick_request_id=None,
+        orch_cancel_request_id=None,
+        orch_followup_request_id="REQ-123",
+        orch_followup_lane_ids=["L1"],
+        send=lambda text, **kwargs: sent.append((text, kwargs.get("context", ""))) or True,
+        log_event=lambda **kwargs: None,
+        get_context=lambda orch: (str(orch or "twinpaper"), manager_state["projects"]["twinpaper"], argparse.Namespace(team_dir=str(ROOT / ".aoe-team"))),
+        latest_task_request_refs=lambda *args, **kwargs: [],
+        set_chat_recent_task_refs=lambda *args, **kwargs: None,
+        save_manager_state=lambda *args, **kwargs: None,
+        resolve_project_root=lambda raw: Path(raw).expanduser().resolve(),
+        is_path_within=lambda path, root: True,
+        register_orch_project=lambda *args, **kwargs: ("", {}),
+        run_aoe_init=lambda *args, **kwargs: "",
+        run_aoe_spawn=lambda *args, **kwargs: "",
+        now_iso=lambda: "2026-03-13T12:00:00+0900",
+        run_aoe_status=lambda *args, **kwargs: "",
+        resolve_chat_task_ref=lambda *_args, **_kwargs: "REQ-123",
+        resolve_task_request_id=lambda entry, ref: ref if ref in entry.get("tasks", {}) else "",
+        run_request_query=lambda *args, **kwargs: {},
+        sync_task_lifecycle=lambda *args, **kwargs: None,
+        resolve_verifier_candidates=lambda text: [],
+        touch_chat_recent_task_ref=lambda *args, **kwargs: None,
+        set_chat_selected_task_ref=lambda *args, **kwargs: None,
+        get_chat_selected_task_ref=lambda *args, **kwargs: "",
+        get_task_record=lambda entry, req_id: entry.get("tasks", {}).get(req_id),
+        summarize_request_state=lambda *args, **kwargs: "",
+        summarize_three_stage_request=lambda *args, **kwargs: "",
+        summarize_task_lifecycle=lambda *args, **kwargs: "",
+        task_display_label=lambda task, fallback_request_id="": str((task or {}).get("context", {}).get("task_short_id") or fallback_request_id),
+        cancel_request_assignments=lambda *args, **kwargs: {},
+        lifecycle_set_stage=lambda *args, **kwargs: None,
+        summarize_cancel_result=lambda *args, **kwargs: "",
+    )
+
+    assert handled is True
+    assert sent
+    assert sent[-1][1] == "orch-followup lane invalid"
+    assert "requested follow-up lanes are not allowed" in sent[-1][0]
+
+
+def test_orch_followup_summarizes_allowed_lane_targets() -> None:
+    manager_state = _empty_state()
+    manager_state["projects"]["twinpaper"] = {
+        "name": "twinpaper",
+        "display_name": "TwinPaper",
+        "project_alias": "O2",
+        "project_root": str(ROOT),
+        "team_dir": str(ROOT / ".aoe-team"),
+        "last_request_id": "REQ-123",
+        "tasks": {
+            "REQ-123": {
+                "request_id": "REQ-123",
+                "status": "failed",
+                "prompt": "followup target",
+                "context": {"task_short_id": "T-123"},
+                "exec_critic": {
+                    "verdict": "intervention",
+                    "action": "manual_followup",
+                    "reason": "Need operator review",
+                    "manual_followup_execution_lane_ids": ["L2"],
+                    "manual_followup_review_lane_ids": ["R2"],
+                    "rerun_execution_lane_ids": ["L2"],
+                },
+            }
+        },
+    }
+    sent: list[tuple[str, str, object]] = []
+    handled = orch_task_handlers.handle_orch_task_command(
+        cmd="orch-followup",
+        args=argparse.Namespace(
+            require_verifier=False,
+            verifier_roles="",
+            manager_state_file=ROOT / ".aoe-team" / "orch_manager_state.json",
+            dry_run=True,
+        ),
+        manager_state=manager_state,
+        chat_id="939062873",
+        orch_target="twinpaper",
+        orch_add_name=None,
+        orch_add_path=None,
+        orch_add_overview=None,
+        orch_add_init=True,
+        orch_add_spawn=True,
+        orch_add_set_active=True,
+        rest="",
+        orch_check_request_id=None,
+        orch_task_request_id=None,
+        orch_pick_request_id=None,
+        orch_cancel_request_id=None,
+        orch_followup_request_id="REQ-123",
+        orch_followup_lane_ids=["L2", "R2"],
+        send=lambda text, **kwargs: sent.append((text, kwargs.get("context", ""), kwargs.get("reply_markup"))) or True,
+        log_event=lambda **kwargs: None,
+        get_context=lambda orch: (str(orch or "twinpaper"), manager_state["projects"]["twinpaper"], argparse.Namespace(team_dir=str(ROOT / ".aoe-team"))),
+        latest_task_request_refs=lambda *args, **kwargs: [],
+        set_chat_recent_task_refs=lambda *args, **kwargs: None,
+        save_manager_state=lambda *args, **kwargs: None,
+        resolve_project_root=lambda raw: Path(raw).expanduser().resolve(),
+        is_path_within=lambda path, root: True,
+        register_orch_project=lambda *args, **kwargs: ("", {}),
+        run_aoe_init=lambda *args, **kwargs: "",
+        run_aoe_spawn=lambda *args, **kwargs: "",
+        now_iso=lambda: "2026-03-13T12:00:00+0900",
+        run_aoe_status=lambda *args, **kwargs: "",
+        resolve_chat_task_ref=lambda *_args, **_kwargs: "REQ-123",
+        resolve_task_request_id=lambda entry, ref: ref if ref in entry.get("tasks", {}) else "",
+        run_request_query=lambda *args, **kwargs: {},
+        sync_task_lifecycle=lambda *args, **kwargs: None,
+        resolve_verifier_candidates=lambda text: [],
+        touch_chat_recent_task_ref=lambda *args, **kwargs: None,
+        set_chat_selected_task_ref=lambda *args, **kwargs: None,
+        get_chat_selected_task_ref=lambda *args, **kwargs: "",
+        get_task_record=lambda entry, req_id: entry.get("tasks", {}).get(req_id),
+        summarize_request_state=lambda *args, **kwargs: "",
+        summarize_three_stage_request=lambda *args, **kwargs: "",
+        summarize_task_lifecycle=lambda *args, **kwargs: "",
+        task_display_label=lambda task, fallback_request_id="": str((task or {}).get("context", {}).get("task_short_id") or fallback_request_id),
+        cancel_request_assignments=lambda *args, **kwargs: {},
+        lifecycle_set_stage=lambda *args, **kwargs: None,
+        summarize_cancel_result=lambda *args, **kwargs: "",
+    )
+
+    assert handled is True
+    assert sent
+    text, context, reply_markup = sent[-1]
+    assert context == "orch-followup"
+    assert "manual follow-up" in text
+    assert "execution lanes: L2" in text
+    assert "review lanes: R2" in text
+    assert "Need operator review" in text
+    buttons = [btn["text"] for row in (reply_markup or {}).get("keyboard", []) for btn in row]
+    assert "/followup T-123" in buttons
+    assert "/followup T-123 lane L2" in buttons
+    assert "/followup T-123 lane R2" in buttons
 
 
 def test_resolve_message_command_auto_routes_plain_text_from_direct_bias() -> None:

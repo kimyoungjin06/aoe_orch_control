@@ -185,6 +185,27 @@ def _lane_action_buttons(command: str, ref: str, lane_ids: List[str], *, limit: 
     return buttons
 
 
+def _normalize_lane_ids(lane_ids: Optional[List[str]]) -> tuple[List[str], List[str]]:
+    execution: List[str] = []
+    review: List[str] = []
+    seen_exec: set[str] = set()
+    seen_review: set[str] = set()
+    for item in lane_ids or []:
+        token = str(item or "").strip()[:32]
+        if not token:
+            continue
+        upper = token.upper()
+        if upper.startswith("L"):
+            if upper not in seen_exec:
+                seen_exec.add(upper)
+                execution.append(token)
+        elif upper.startswith("R"):
+            if upper not in seen_review:
+                seen_review.add(upper)
+                review.append(token)
+    return execution, review
+
+
 def _orch_task_reply_markup(key: str, entry: Dict[str, Any], request_id: str, task: Dict[str, Any]) -> Dict[str, Any]:
     alias = _project_alias(entry, key)
     ref = _task_ref_for_actions(task, request_id)
@@ -212,7 +233,11 @@ def _orch_task_reply_markup(key: str, entry: Dict[str, Any], request_id: str, ta
             if replan_lane_buttons:
                 keyboard.append(replan_lane_buttons)
     if manual_exec or manual_review or verdict in {"fail", "intervention"}:
-        keyboard.append([{"text": f"/todo {alias} followup"}, {"text": f"/orch monitor {alias}"}])
+        keyboard.append([{"text": f"/followup {ref}"}, {"text": f"/todo {alias} followup"}])
+        followup_lane_buttons = _lane_action_buttons("followup", ref, manual_exec + manual_review)
+        if followup_lane_buttons:
+            keyboard.append(followup_lane_buttons)
+        keyboard.append([{"text": f"/orch monitor {alias}"}])
     keyboard.append([{"text": f"/orch status {alias}"}, {"text": "/queue"}, {"text": "/map"}])
     return {
         "keyboard": keyboard,
@@ -266,6 +291,8 @@ def handle_orch_task_command(
     orch_task_request_id: Optional[str],
     orch_pick_request_id: Optional[str],
     orch_cancel_request_id: Optional[str],
+    orch_followup_request_id: Optional[str] = None,
+    orch_followup_lane_ids: Optional[List[str]] = None,
     send: Callable[..., bool],
     log_event: Callable[..., None],
     get_context: Callable[[Optional[str]], tuple[str, Dict[str, Any], Any]],
@@ -653,6 +680,128 @@ def handle_orch_task_command(
         send(
             summarize_task_lifecycle(key, task),
             context="orch-task",
+            reply_markup=_orch_task_reply_markup(key, entry, req_id, task),
+        )
+        return True
+
+    if cmd == "orch-followup":
+        key, entry, p_args = get_context(orch_target)
+        req_ref = (
+            orch_followup_request_id
+            or get_chat_selected_task_ref(manager_state, chat_id, key)
+            or str(entry.get("last_request_id", "")).strip()
+            or ""
+        ).strip()
+        if not req_ref:
+            send(
+                f"usage: /followup <request_or_alias> [lane <L#|R#,...>] | aoe followup <request_or_alias> [lane <L#|R#,...>]\norch={key}",
+                context="orch-followup usage",
+            )
+            return True
+
+        req_ref = resolve_chat_task_ref(manager_state, chat_id, key, req_ref)
+        req_id = resolve_task_request_id(entry, req_ref)
+        if not req_id:
+            send(f"task not found: {req_ref} (orch={key})", context="orch-followup missing")
+            return True
+
+        task = get_task_record(entry, req_id)
+        if task is None:
+            try:
+                data = run_request_query(p_args, req_id)
+                task = sync_task_lifecycle(
+                    entry=entry,
+                    request_data=data,
+                    prompt="",
+                    mode="dispatch",
+                    selected_roles=None,
+                    verifier_roles=None,
+                    require_verifier=bool(args.require_verifier),
+                    verifier_candidates=resolve_verifier_candidates(args.verifier_roles),
+                )
+                entry["last_request_id"] = str(data.get("request_id", req_id)).strip() or req_id
+                entry["updated_at"] = now_iso()
+            except Exception:
+                task = None
+
+        if task is None:
+            send(f"no lifecycle record: request_or_alias={req_ref or req_id} (orch={key})", context="orch-followup missing task")
+            return True
+
+        exec_critic = task.get("exec_critic") if isinstance(task.get("exec_critic"), dict) else {}
+        allowed_execution_lane_ids = [
+            str(item).strip()[:32]
+            for item in (exec_critic.get("manual_followup_execution_lane_ids") or [])
+            if str(item).strip()
+        ]
+        allowed_review_lane_ids = [
+            str(item).strip()[:32]
+            for item in (exec_critic.get("manual_followup_review_lane_ids") or [])
+            if str(item).strip()
+        ]
+        if not allowed_execution_lane_ids and not allowed_review_lane_ids:
+            send(
+                f"manual follow-up lanes are not available for this task.\nrequest_id={req_id}\nallowed: none",
+                context="orch-followup unavailable",
+            )
+            return True
+
+        requested_execution_lane_ids, requested_review_lane_ids = _normalize_lane_ids(orch_followup_lane_ids)
+        if requested_execution_lane_ids or requested_review_lane_ids:
+            allowed_execution_lane_set = set(allowed_execution_lane_ids)
+            allowed_review_lane_set = set(allowed_review_lane_ids)
+            selected_execution_lane_ids = [
+                lane for lane in requested_execution_lane_ids if lane in allowed_execution_lane_set
+            ]
+            selected_review_lane_ids = [
+                lane for lane in requested_review_lane_ids if lane in allowed_review_lane_set
+            ]
+            if not selected_execution_lane_ids and not selected_review_lane_ids:
+                send(
+                    (
+                        "requested follow-up lanes are not allowed for this task.\nrequest_id={req_id}\n"
+                        "allowed execution: {execs}\nallowed review: {reviews}"
+                    ).format(
+                        req_id=req_id,
+                        execs=", ".join(allowed_execution_lane_ids) or "-",
+                        reviews=", ".join(allowed_review_lane_ids) or "-",
+                    ),
+                    context="orch-followup lane invalid",
+                )
+                return True
+        else:
+            selected_execution_lane_ids = list(allowed_execution_lane_ids)
+            selected_review_lane_ids = list(allowed_review_lane_ids)
+
+        touch_chat_recent_task_ref(manager_state, chat_id, key, req_id)
+        set_chat_selected_task_ref(manager_state, chat_id, key, req_id)
+        if not args.dry_run:
+            save_manager_state(args.manager_state_file, manager_state)
+
+        label = task_display_label(task or {}, fallback_request_id=req_id)
+        reason = str(exec_critic.get("reason", "")).strip() or str(exec_critic.get("note", "")).strip() or "-"
+        lines = [
+            f"orch: {key}",
+            "manual follow-up",
+            f"task: {label}",
+            f"request_id: {req_id}",
+            f"execution lanes: {', '.join(selected_execution_lane_ids) or '-'}",
+            f"review lanes: {', '.join(selected_review_lane_ids) or '-'}",
+            f"reason: {reason}",
+            "",
+            "next:",
+            f"- /task {label}",
+            f"- /todo {_project_alias(entry, key)} followup",
+            f"- /orch monitor {_project_alias(entry, key)}",
+        ]
+        if exec_critic.get("rerun_execution_lane_ids") or exec_critic.get("rerun_review_lane_ids"):
+            lines.append(f"- /retry {label}")
+            if str(exec_critic.get("action", "")).strip().lower() == "replan":
+                lines.append(f"- /replan {label}")
+
+        send(
+            "\n".join(lines),
+            context="orch-followup",
             reply_markup=_orch_task_reply_markup(key, entry, req_id, task),
         )
         return True

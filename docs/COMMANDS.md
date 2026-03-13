@@ -182,6 +182,7 @@ worker runtime 권한 정책:
 - `/sync files [all|O#|name] [N] [since 3h] [quiet|-q|--quiet]`: 프로젝트 루트에서 파일명에 `todo|tasks|할일` 힌트가 있는 문서들만 스캔해 todo를 추출 후 큐에 반영. (프로젝트마다 TODO 파일 위치/형식이 제각각일 때 “제로 설정”으로 쓰기 좋다)
 - `/queue`: (global) 전체 프로젝트의 todo 큐 요약
 - `/queue followup`: `manual_followup` backlog가 있는 프로젝트만 요약
+- `/followup <request_or_alias> [lane <L#|R#,...>]`: 특정 task의 manual follow-up target lane을 확인하고 다음 operator action을 안내한다.
 - `/next [force]`: (global) 다음 실행 가능한 todo를 선택해 dispatch 실행
 - `/fanout [N] [force]`: (global) **프로젝트별로 1개씩** `/todo next`를 실행(순차 wave). 기본은 all(상한 50).
 - `/drain [N] [force]`: `/next` 반복 실행(블로킹)
