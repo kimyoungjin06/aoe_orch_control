@@ -11,7 +11,7 @@
 ## 2. Objectives
 - Telegram 자연어 인터페이스로 프로젝트별 Orch를 원격 제어한다.
 - Orch는 계획, 배정, 수합, 완료 판단만 수행한다.
-- DataEngineer/Reviewer 등 역할 세션은 실행과 검증을 분리 수행한다.
+- DataEngineer/Codex-Reviewer 등 역할 세션은 실행과 검증을 분리 수행한다.
 - 태스크 완료 시 서브세션은 종료하고 산출물/증거만 Orch에 귀속한다.
 
 ## 3. Non-Goals

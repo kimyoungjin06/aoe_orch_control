@@ -102,10 +102,10 @@ def test_chat_aliases_module_matches_gateway_exports(tmp_path: Path) -> None:
 
 def test_orch_roles_module_matches_gateway_exports(tmp_path: Path) -> None:
     team_dir = tmp_path / ".aoe-team"
-    (team_dir / "agents" / "Reviewer").mkdir(parents=True, exist_ok=True)
+    (team_dir / "agents" / "Codex-Reviewer").mkdir(parents=True, exist_ok=True)
     (team_dir / "agents" / "Codex-Dev").mkdir(parents=True, exist_ok=True)
-    (team_dir / "agents" / "Reviewer" / "AGENTS.md").write_text(
-        "# AGENTS.md - Reviewer\n\n## Mission\nFind risks, regressions, and missing tests before merge.\n",
+    (team_dir / "agents" / "Codex-Reviewer" / "AGENTS.md").write_text(
+        "# AGENTS.md - Codex-Reviewer\n\n## Mission\nFind risks, regressions, and missing tests before merge.\n",
         encoding="utf-8",
     )
     (team_dir / "agents" / "Codex-Dev" / "AGENTS.md").write_text(
@@ -116,28 +116,29 @@ def test_orch_roles_module_matches_gateway_exports(tmp_path: Path) -> None:
         json.dumps(
             {
                 "coordinator": {"role": "Orchestrator"},
-                "agents": [{"role": "Reviewer"}, {"role": "Codex-Dev"}],
+                "agents": [{"role": "Codex-Reviewer"}, {"role": "Codex-Dev"}],
             }
         ),
         encoding="utf-8",
     )
 
-    assert gw.parse_roles_csv("Reviewer, Codex-Dev,Reviewer") == orch_roles.parse_roles_csv("Reviewer, Codex-Dev,Reviewer")
+    assert gw.parse_roles_csv("Codex-Reviewer, Codex-Dev,Codex-Reviewer") == orch_roles.parse_roles_csv("Codex-Reviewer, Codex-Dev,Codex-Reviewer")
+    assert orch_roles.parse_roles_csv("Reviewer,Codex-Dev") == ["Codex-Reviewer", "Codex-Dev"]
     assert gw.load_orchestrator_roles(team_dir) == orch_roles.load_orchestrator_roles(team_dir)
     assert gw.load_orchestrator_role_profiles(team_dir) == orch_roles.load_orchestrator_role_profiles(team_dir)
     assert gw.resolve_verifier_candidates("") == orch_roles.resolve_verifier_candidates("", default_verifier_roles=gw.DEFAULT_VERIFIER_ROLES)
-    assert gw.ensure_verifier_roles(["Codex-Dev"], ["Reviewer", "Codex-Dev"], ["Reviewer"]) == orch_roles.ensure_verifier_roles(
+    assert gw.ensure_verifier_roles(["Codex-Dev"], ["Codex-Reviewer", "Codex-Dev"], ["Codex-Reviewer"]) == orch_roles.ensure_verifier_roles(
         ["Codex-Dev"],
-        ["Reviewer", "Codex-Dev"],
-        ["Reviewer"],
+        ["Codex-Reviewer", "Codex-Dev"],
+        ["Codex-Reviewer"],
     )
     assert gw.choose_auto_dispatch_roles(
         "로그인 버그를 수정하고 회귀 리스크도 같이 검토해줘.",
-        available_roles=["Codex-Dev", "Reviewer"],
+        available_roles=["Codex-Dev", "Codex-Reviewer"],
         team_dir=team_dir,
     ) == orch_roles.choose_auto_dispatch_roles(
         "로그인 버그를 수정하고 회귀 리스크도 같이 검토해줘.",
-        available_roles=["Codex-Dev", "Reviewer"],
+        available_roles=["Codex-Dev", "Codex-Reviewer"],
         team_dir=team_dir,
     )
     assert gw.available_worker_roles([]) == orch_roles.available_worker_roles([])
@@ -160,7 +161,7 @@ def test_orch_roles_canonicalize_legacy_local_roles(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    assert orch_roles.parse_roles_csv("Local-Writer,Reviewer") == ["Codex-Writer", "Reviewer"]
+    assert orch_roles.parse_roles_csv("Local-Writer,Codex-Reviewer") == ["Codex-Writer", "Codex-Reviewer"]
     assert orch_roles.load_orchestrator_roles(team_dir) == ["Orchestrator", "Codex-Writer"]
     profiles = orch_roles.load_orchestrator_role_profiles(team_dir)
     assert profiles[1]["role"] == "Codex-Writer"
@@ -203,9 +204,9 @@ def test_choose_auto_dispatch_roles_normalizes_legacy_local_names_and_adds_revie
         "# AGENTS.md - Local-Writer\n\n## Mission\nWrite concise project documents.\n",
         encoding="utf-8",
     )
-    (team_dir / "agents" / "Reviewer").mkdir(parents=True, exist_ok=True)
-    (team_dir / "agents" / "Reviewer" / "AGENTS.md").write_text(
-        "# AGENTS.md - Reviewer\n\n## Mission\nReview outputs for risks.\n",
+    (team_dir / "agents" / "Codex-Reviewer").mkdir(parents=True, exist_ok=True)
+    (team_dir / "agents" / "Codex-Reviewer" / "AGENTS.md").write_text(
+        "# AGENTS.md - Codex-Reviewer\n\n## Mission\nReview outputs for risks.\n",
         encoding="utf-8",
     )
     (team_dir / "agents" / "Claude-Reviewer").mkdir(parents=True, exist_ok=True)
@@ -219,7 +220,7 @@ def test_choose_auto_dispatch_roles_normalizes_legacy_local_names_and_adds_revie
                 "coordinator": {"role": "Orchestrator"},
                 "agents": [
                     {"role": "Local-Writer"},
-                    {"role": "Reviewer"},
+                    {"role": "Codex-Reviewer"},
                     {"role": "Claude-Reviewer"},
                 ],
             }
@@ -234,7 +235,7 @@ def test_choose_auto_dispatch_roles_normalizes_legacy_local_names_and_adds_revie
 
     assert "Codex-Writer" in roles
     assert "Local-Writer" not in roles
-    assert "Reviewer" in roles
+    assert "Codex-Reviewer" in roles
     assert "Claude-Reviewer" in roles
 
 

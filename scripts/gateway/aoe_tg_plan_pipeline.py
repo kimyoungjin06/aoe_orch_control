@@ -123,7 +123,7 @@ def resolve_dispatch_mode_and_roles(
     elif run_force_mode == "dispatch":
         dispatch_mode = True
         if not dispatch_roles:
-            dispatch_roles = ",".join(auto_roles) if auto_roles else "Reviewer"
+            dispatch_roles = ",".join(auto_roles) if auto_roles else "Codex-Reviewer"
     elif dispatch_roles:
         dispatch_mode = True
     elif auto_dispatch_enabled and auto_roles:
@@ -131,7 +131,7 @@ def resolve_dispatch_mode_and_roles(
         dispatch_roles = ",".join(auto_roles)
     elif str(prompt or "").strip():
         dispatch_mode = True
-        dispatch_roles = ",".join(auto_roles) if auto_roles else "Reviewer"
+        dispatch_roles = ",".join(auto_roles) if auto_roles else "Codex-Reviewer"
 
     return DispatchModeResult(
         dispatch_mode=dispatch_mode,

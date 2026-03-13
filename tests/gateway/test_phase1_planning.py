@@ -55,7 +55,7 @@ def test_phase1_ensemble_runs_three_rounds_and_uses_both_providers() -> None:
     result = ensemble_mod.run_phase1_ensemble_planning(
         args=args,
         user_prompt="Prepare a stable execution plan",
-        available_roles=["Codex-Writer", "Reviewer"],
+        available_roles=["Codex-Writer", "Codex-Reviewer"],
         normalize_task_plan_payload=gw.normalize_task_plan_payload,
         parse_json_object_from_text=gw.parse_json_object_from_text,
         run_provider_execs={"codex": _runner("codex"), "claude": _runner("claude")},
@@ -100,7 +100,7 @@ def test_phase1_ensemble_launches_round1_planners_in_parallel() -> None:
     ensemble_mod.run_phase1_ensemble_planning(
         args=args,
         user_prompt="Prepare a stable execution plan",
-        available_roles=["Codex-Writer", "Reviewer"],
+        available_roles=["Codex-Writer", "Codex-Reviewer"],
         normalize_task_plan_payload=gw.normalize_task_plan_payload,
         parse_json_object_from_text=gw.parse_json_object_from_text,
         run_provider_execs={"codex": _runner("codex"), "claude": _runner("claude")},
@@ -120,12 +120,12 @@ def test_resolve_dispatch_mode_defaults_to_tf_dispatch_when_not_forced_direct() 
         auto_dispatch_enabled=False,
         prompt="로그인 버그를 수정하고 회귀 리스크를 검토해줘",
         choose_auto_dispatch_roles=lambda *args, **kwargs: [],
-        available_roles=["Codex-Dev", "Reviewer"],
+        available_roles=["Codex-Dev", "Codex-Reviewer"],
         team_dir=None,
     )
 
     assert result.dispatch_mode is True
-    assert result.dispatch_roles == "Reviewer"
+    assert result.dispatch_roles == "Codex-Reviewer"
 
 
 def test_compute_dispatch_plan_uses_phase1_plan_roles_for_phase2_execution() -> None:
@@ -150,8 +150,8 @@ def test_compute_dispatch_plan_uses_phase1_plan_roles_for_phase2_execution() -> 
         dispatch_mode=True,
         run_control_mode="normal",
         run_source_task=None,
-        selected_roles=["Reviewer"],
-        available_roles=["Codex-Dev", "Codex-Writer", "Reviewer"],
+        selected_roles=["Codex-Reviewer"],
+        available_roles=["Codex-Dev", "Codex-Writer", "Codex-Reviewer"],
         available_worker_roles=lambda roles: roles,
         normalize_task_plan_payload=lambda parsed, **_kwargs: parsed,
         build_task_execution_plan=lambda *_args, **_kwargs: {},
@@ -197,7 +197,7 @@ def test_normalize_task_plan_payload_derives_phase2_team_spec() -> None:
             ],
         },
         user_prompt="계획 수립 후 병렬 실행팀을 꾸려라",
-        workers=["Codex-Dev", "Codex-Writer", "Reviewer"],
+        workers=["Codex-Dev", "Codex-Writer", "Codex-Reviewer"],
         max_subtasks=4,
     )
 
@@ -222,13 +222,13 @@ def test_build_planned_dispatch_prompt_includes_phase2_team_lanes() -> None:
             ],
         },
         user_prompt="계획 수립 후 병렬 실행팀을 꾸려라",
-        workers=["Codex-Dev", "Codex-Writer", "Reviewer"],
+        workers=["Codex-Dev", "Codex-Writer", "Codex-Reviewer"],
         max_subtasks=4,
     )
     plan = gw.attach_phase2_team_spec(
         plan,
-        roles=["Codex-Dev", "Codex-Writer", "Reviewer"],
-        verifier_roles=["Reviewer"],
+        roles=["Codex-Dev", "Codex-Writer", "Codex-Reviewer"],
+        verifier_roles=["Codex-Reviewer"],
         require_verifier=True,
     )
 
@@ -241,7 +241,7 @@ def test_build_planned_dispatch_prompt_includes_phase2_team_lanes() -> None:
     assert "Phase2 execution lanes: parallel" in prompt
     assert "lane E1 [Codex-Dev] -> S1" in prompt
     assert "Phase2 critic lanes: single" in prompt
-    assert "review R1 [Reviewer/verifier]" in prompt
+    assert "review R1 [Codex-Reviewer/verifier]" in prompt
 
 
 def test_normalize_task_plan_payload_with_companion_workers_derives_parallel_claude_lanes() -> None:
@@ -254,13 +254,13 @@ def test_normalize_task_plan_payload_with_companion_workers_derives_parallel_cla
             ],
         },
         user_prompt="계획 수립 후 병렬 실행팀을 꾸려라",
-        workers=["Codex-Writer", "Claude-Writer", "Codex-Analyst", "Claude-Analyst", "Reviewer", "Claude-Reviewer"],
+        workers=["Codex-Writer", "Claude-Writer", "Codex-Analyst", "Claude-Analyst", "Codex-Reviewer", "Claude-Reviewer"],
         max_subtasks=4,
     )
     plan = gw.attach_phase2_team_spec(
         plan,
-        roles=["Codex-Writer", "Claude-Writer", "Codex-Analyst", "Claude-Analyst", "Reviewer", "Claude-Reviewer"],
-        verifier_roles=["Reviewer"],
+        roles=["Codex-Writer", "Claude-Writer", "Codex-Analyst", "Claude-Analyst", "Codex-Reviewer", "Claude-Reviewer"],
+        verifier_roles=["Codex-Reviewer"],
         require_verifier=True,
     )
 
@@ -272,11 +272,11 @@ def test_normalize_task_plan_payload_with_companion_workers_derives_parallel_cla
         "Codex-Analyst",
         "Claude-Analyst",
     ]
-    assert [row["role"] for row in spec["review_groups"]] == ["Reviewer", "Claude-Reviewer"]
+    assert [row["role"] for row in spec["review_groups"]] == ["Codex-Reviewer", "Claude-Reviewer"]
     assert [row["role"] for row in execution_plan["execution_lanes"]] == [
         "Codex-Writer",
         "Claude-Writer",
         "Codex-Analyst",
         "Claude-Analyst",
     ]
-    assert [row["role"] for row in execution_plan["review_lanes"]] == ["Reviewer", "Claude-Reviewer"]
+    assert [row["role"] for row in execution_plan["review_lanes"]] == ["Codex-Reviewer", "Claude-Reviewer"]

@@ -334,7 +334,7 @@ def summarize_task_lifecycle(project_name: str, task: Dict[str, Any]) -> str:
                 if not isinstance(row, dict):
                     continue
                 gid = str(row.get("group_id", "")).strip() or "R"
-                role = str(row.get("role", "")).strip() or "Reviewer"
+                role = str(row.get("role", "")).strip() or "Codex-Reviewer"
                 kind = str(row.get("kind", "")).strip() or "verifier"
                 lines.append(f"- review {gid} [{role}/{kind}]")
 
@@ -399,7 +399,7 @@ def summarize_task_lifecycle(project_name: str, task: Dict[str, Any]) -> str:
             if not isinstance(row, dict):
                 continue
             gid = str(row.get("lane_id", "")).strip() or "R"
-            role = str(row.get("role", "")).strip() or "Reviewer"
+            role = str(row.get("role", "")).strip() or "Codex-Reviewer"
             kind = str(row.get("kind", "")).strip() or "verifier"
             depends = [str(item).strip() for item in (row.get("depends_on") or []) if str(item).strip()]
             mode = "parallel" if bool(row.get("parallel", True)) else "serial"

@@ -373,7 +373,7 @@ def stage_review_prompt(base_prompt: str, execution_state: Dict[str, Any], revie
         if not isinstance(row, dict):
             continue
         lane_id = str(row.get("lane_id", "")).strip() or "R"
-        role = str(row.get("role", "")).strip() or "Reviewer"
+        role = str(row.get("role", "")).strip() or "Codex-Reviewer"
         kind = str(row.get("kind", "")).strip() or "verifier"
         depends_on = [str(x).strip() for x in (row.get("depends_on") or []) if str(x).strip()]
         suffix = f" after {', '.join(depends_on)}" if depends_on else ""
