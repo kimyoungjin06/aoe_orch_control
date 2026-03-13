@@ -194,6 +194,30 @@ def _add_companion_roles(
     return _ordered_roles(expanded)
 
 
+def _add_default_review_pair(
+    roles: List[str],
+    *,
+    available_roles: List[str],
+    prompt_lower: str,
+) -> List[str]:
+    if any(token in prompt_lower for token in ("only ", " solo ", " single ", "단독", "혼자", "하나만", "짧게", "한 문장", "존재 여부", "3개만")):
+        return dedupe_roles(canonicalize_roles(roles))
+    current = dedupe_roles(canonicalize_roles(roles))
+    has_review = any(any(key in str(role).lower() for key in ("review", "critic", "verif")) for role in current)
+    has_worklike = any(
+        str(role) in {"Codex-Dev", "Codex-Writer", "Claude-Writer", "Codex-Analyst", "Claude-Analyst"}
+        for role in current
+    )
+    if not has_worklike or has_review:
+        return current
+    available_set = {str(role).strip() for role in available_roles if str(role).strip()}
+    if "Reviewer" in available_set:
+        current.append("Reviewer")
+    if "Claude-Reviewer" in available_set:
+        current.append("Claude-Reviewer")
+    return _ordered_roles(current)
+
+
 def _role_score_from_text(prompt_lower: str, role: str, mission: str) -> int:
     name_key = str(role or "").strip().lower()
     mission_lower = str(mission or "").strip().lower()
@@ -285,17 +309,18 @@ def choose_auto_dispatch_roles(
     explicit = dedupe_roles(explicit)
     if explicit:
         chosen = _ordered_roles(explicit)
-        if wants_multi:
-            return _add_companion_roles(
-                chosen,
-                available_roles=[str(profile.get("role", "")).strip() for profile in profiles],
-                prompt_lower=prompt_lower,
-            )
-        return _add_companion_roles(
+        chosen = _add_companion_roles(
             chosen,
             available_roles=[str(profile.get("role", "")).strip() for profile in profiles],
             prompt_lower=prompt_lower,
         )
+        if wants_multi or any(flag for flag in (has_build_signal, has_doc_signal, has_analysis_signal)):
+            chosen = _add_default_review_pair(
+                chosen,
+                available_roles=[str(profile.get("role", "")).strip() for profile in profiles],
+                prompt_lower=prompt_lower,
+            )
+        return chosen
 
     scored: List[Tuple[int, str]] = []
     for profile in profiles:
@@ -335,11 +360,18 @@ def choose_auto_dispatch_roles(
             roles = ["DataEngineer", "Reviewer"]
             if "Claude-Reviewer" in available_set:
                 roles.append("Claude-Reviewer")
-        return _add_companion_roles(
+        roles = _add_companion_roles(
             [r for r in roles if r],
             available_roles=[str(profile.get("role", "")).strip() for profile in profiles],
             prompt_lower=prompt_lower,
         )
+        if wants_multi or any(k in prompt_lower for k in build_keys + doc_keys + analysis_keys):
+            roles = _add_default_review_pair(
+                roles,
+                available_roles=[str(profile.get("role", "")).strip() for profile in profiles],
+                prompt_lower=prompt_lower,
+            )
+        return roles
 
     scored.sort(key=lambda item: (-item[0], item[1].lower().startswith("claude-"), item[1].lower()))
     top_score = scored[0][0]
@@ -348,11 +380,18 @@ def choose_auto_dispatch_roles(
         for score, role in scored[1:3]:
             if score >= max(3, top_score - 2):
                 selected.append(role)
-    return _add_companion_roles(
+    selected = _add_companion_roles(
         selected,
         available_roles=[str(profile.get("role", "")).strip() for profile in profiles],
         prompt_lower=prompt_lower,
     )
+    if wants_multi or any(flag for flag in (has_build_signal, has_doc_signal, has_analysis_signal)):
+        selected = _add_default_review_pair(
+            selected,
+            available_roles=[str(profile.get("role", "")).strip() for profile in profiles],
+            prompt_lower=prompt_lower,
+        )
+    return selected
 
 
 def available_worker_roles(

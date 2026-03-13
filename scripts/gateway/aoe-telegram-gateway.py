@@ -1124,7 +1124,7 @@ def dedupe_roles(roles: Iterable[str]) -> List[str]:
     out: List[str] = []
     seen: Set[str] = set()
     for item in roles:
-        token = str(item or "").strip()
+        token = canonicalize_role_name(item)
         if not token:
             continue
         key = token.lower()

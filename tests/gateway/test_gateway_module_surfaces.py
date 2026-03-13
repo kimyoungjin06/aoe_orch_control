@@ -196,6 +196,48 @@ def test_runtime_seed_migrates_legacy_local_roles_to_codex_names(tmp_path: Path)
     assert any("Codex-Writer" in row for row in logs)
 
 
+def test_choose_auto_dispatch_roles_normalizes_legacy_local_names_and_adds_review_pair(tmp_path: Path) -> None:
+    team_dir = tmp_path / ".aoe-team"
+    (team_dir / "agents" / "Local-Writer").mkdir(parents=True, exist_ok=True)
+    (team_dir / "agents" / "Local-Writer" / "AGENTS.md").write_text(
+        "# AGENTS.md - Local-Writer\n\n## Mission\nWrite concise project documents.\n",
+        encoding="utf-8",
+    )
+    (team_dir / "agents" / "Reviewer").mkdir(parents=True, exist_ok=True)
+    (team_dir / "agents" / "Reviewer" / "AGENTS.md").write_text(
+        "# AGENTS.md - Reviewer\n\n## Mission\nReview outputs for risks.\n",
+        encoding="utf-8",
+    )
+    (team_dir / "agents" / "Claude-Reviewer").mkdir(parents=True, exist_ok=True)
+    (team_dir / "agents" / "Claude-Reviewer" / "AGENTS.md").write_text(
+        "# AGENTS.md - Claude-Reviewer\n\n## Mission\nCross-check reviewer output.\n",
+        encoding="utf-8",
+    )
+    (team_dir / "orchestrator.json").write_text(
+        json.dumps(
+            {
+                "coordinator": {"role": "Orchestrator"},
+                "agents": [
+                    {"role": "Local-Writer"},
+                    {"role": "Reviewer"},
+                    {"role": "Claude-Reviewer"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    roles = orch_roles.choose_auto_dispatch_roles(
+        "문서 정리해서 보고서 작성해줘",
+        team_dir=team_dir,
+    )
+
+    assert "Codex-Writer" in roles
+    assert "Local-Writer" not in roles
+    assert "Reviewer" in roles
+    assert "Claude-Reviewer" in roles
+
+
 def test_gateway_state_module_matches_gateway_poll_and_replay_helpers(tmp_path: Path) -> None:
     state_payload = {
         "offset": 12,

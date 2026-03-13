@@ -7,6 +7,7 @@ import re
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from aoe_tg_orch_contract import derive_tf_phase, derive_tf_phase_reason, normalize_tf_phase
+from aoe_tg_role_aliases import canonicalize_role_name
 
 
 DEFAULT_PROJECT_ALIAS_MAX = 999
@@ -50,7 +51,7 @@ def dedupe_roles(roles: Iterable[str]) -> List[str]:
     out: List[str] = []
     seen = set()
     for item in roles:
-        token = str(item or "").strip()
+        token = canonicalize_role_name(item)
         if not token:
             continue
         key = token.lower()
