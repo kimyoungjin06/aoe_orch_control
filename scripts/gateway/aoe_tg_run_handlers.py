@@ -726,8 +726,11 @@ def _provision_planning_task(
         task["phase1_mode"] = str(phase1_mode).strip()
     if int(phase1_rounds or 0) > 0:
         task["phase1_rounds"] = int(phase1_rounds)
+        task["phase1_current_total_rounds"] = int(phase1_rounds)
     if phase1_providers:
         task["phase1_providers"] = [str(item).strip() for item in phase1_providers if str(item).strip()]
+    task["phase1_current_phase"] = "planner"
+    task["phase1_current_detail"] = "phase1 planning queued"
     task["phase1_candidate_roles"] = [str(item).strip() for item in (selected_roles or []) if str(item).strip()]
     task["updated_at"] = now_iso()
     entry["last_request_id"] = request_id
@@ -1130,6 +1133,8 @@ def _emit_planning_progress(
     send: Callable[..., bool],
     log_event: Callable[..., None],
     emit_chat: bool,
+    request_id: str = "",
+    task: Optional[Dict[str, Any]] = None,
     detail: str = "",
     attempt: int = 0,
     total: int = 0,
@@ -1140,6 +1145,8 @@ def _emit_planning_progress(
         send=send,
         log_event=log_event,
         emit_chat=emit_chat,
+        request_id=request_id,
+        task=task,
         detail=detail,
         attempt=attempt,
         total=total,
@@ -1702,6 +1709,8 @@ def handle_run_or_unknown_command(
                 send=send,
                 log_event=log_event,
                 emit_chat=emit_planning_chat,
+                request_id=provisional_req_id,
+                task=provisional_task if isinstance(provisional_task, dict) else None,
                 detail=detail,
                 attempt=attempt,
                 total=total,

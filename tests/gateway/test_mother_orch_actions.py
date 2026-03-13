@@ -130,6 +130,18 @@ def test_infer_action_call_maps_inspection_prompt_to_dispatch_task_readonly() ->
     assert row["args"]["objective"] == "데이터 추출이 완료되었는지 확인 부탁해"
 
 
+def test_infer_action_call_maps_reporting_prompt_to_dispatch_task_even_with_active_task() -> None:
+    row = mod.infer_mother_orch_action_call(
+        "최근 결과 문서를 바탕으로 오늘 밤 필요한 보고/정리 작업 3개를 작성 관점에서 정리해줘.",
+        default_project_key="O4",
+        has_active_task=True,
+    )
+
+    assert row["action"] == "dispatch_task"
+    assert row["project_key"] == "O4"
+    assert row["readonly"] is False
+
+
 def test_action_call_to_resolved_command_maps_monitor_and_offdesk() -> None:
     monitor = mod.action_call_to_resolved_command(
         mod.normalize_mother_orch_action_call({"action": "monitor_project", "project_key": "O3"})

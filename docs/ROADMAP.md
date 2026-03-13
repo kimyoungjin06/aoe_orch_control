@@ -62,3 +62,8 @@
 - [x] failed queue TTL + purge 정책 자동화
 - [x] Critic fail 상태를 기준으로 재실행 3회 + 에스컬레이션 훅 구현(`--exec-critic`, `--exec-critic-retry-max`)
 - [x] Telegram 보고 레벨(짧게/보통/상세) 스위치 추가(`/report`)
+
+## 6. Current Orch Bug Bundle
+- [x] planning 시작 직후 provisional task에 `phase1_*` 메타와 candidate roles를 즉시 반영
+- [x] `planning_planner` / `planning_critic` 이벤트에 `project_key`, `request_id`, `task_short_id`를 항상 싣기
+- [x] writer/reporting 성격 평문을 `orch-monitor`가 아니라 Mother-Orch `dispatch_task`로 우선 분류

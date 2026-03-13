@@ -313,6 +313,16 @@ def infer_mother_orch_action_call(
     sync_bootstrap_markers = ("sync bootstrap", "bootstrap sync", "동기화 bootstrap", "부트스트랩 동기화")
     preview_markers = ("preview", "미리보기", "보기만", "점검")
     status_markers = ("상태", "진행", "결과", "언제", "모니터", "monitor", "progress", "result", "status")
+    reporting_markers = (
+        "보고",
+        "보고서",
+        "리포트",
+        "문서",
+        "작성 관점",
+        "handoff",
+        "writeup",
+        "draft",
+    )
     inspect_markers = (
         "확인",
         "정리",
@@ -380,12 +390,6 @@ def infer_mother_orch_action_call(
             {"action": action, "project_key": default_project_key, "window": "24h"}
         )
 
-    if has_active_task and _contains_any(low, status_markers):
-        return normalize_mother_orch_action_call({"action": "monitor_project", "project_key": default_project_key})
-
-    if _contains_any(low, status_markers) and not _contains_any(low, work_markers):
-        return normalize_mother_orch_action_call({"action": "monitor_project", "project_key": default_project_key})
-
     if _contains_any(low, work_markers):
         return normalize_mother_orch_action_call(
             {
@@ -396,7 +400,7 @@ def infer_mother_orch_action_call(
             }
         )
 
-    if _contains_any(low, inspect_markers):
+    if _contains_any(low, inspect_markers) or _contains_any(low, reporting_markers):
         return normalize_mother_orch_action_call(
             {
                 "action": "dispatch_task",
@@ -405,6 +409,12 @@ def infer_mother_orch_action_call(
                 "readonly": True,
             }
         )
+
+    if has_active_task and _contains_any(low, status_markers):
+        return normalize_mother_orch_action_call({"action": "monitor_project", "project_key": default_project_key})
+
+    if _contains_any(low, status_markers) and not _contains_any(low, work_markers):
+        return normalize_mother_orch_action_call({"action": "monitor_project", "project_key": default_project_key})
 
     return normalize_mother_orch_action_call(
         {
