@@ -7,6 +7,7 @@ import re
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from aoe_tg_orch_contract import derive_tf_phase, derive_tf_phase_reason, normalize_tf_phase
+from aoe_tg_role_aliases import canonicalize_role_name
 
 
 DEFAULT_PROJECT_ALIAS_MAX = 999
@@ -50,7 +51,7 @@ def dedupe_roles(roles: Iterable[str]) -> List[str]:
     out: List[str] = []
     seen = set()
     for item in roles:
-        token = str(item or "").strip()
+        token = canonicalize_role_name(item)
         if not token:
             continue
         key = token.lower()
@@ -194,6 +195,45 @@ def summarize_task_lifecycle(project_name: str, task: Dict[str, Any]) -> str:
     tf_phase_reason = str(task.get("tf_phase_reason", "")).strip() or derive_tf_phase_reason(task)
     if tf_phase_reason:
         lines.append(f"tf_phase_reason: {tf_phase_reason}")
+    phase1_mode = str(task.get("phase1_mode", "")).strip()
+    phase1_rounds = max(0, int(task.get("phase1_rounds", 0) or 0))
+    phase1_providers = dedupe_roles(task.get("phase1_providers") or [])
+    phase1_candidate_roles = dedupe_roles(task.get("phase1_candidate_roles") or [])
+    phase1_current_phase = str(task.get("phase1_current_phase", "")).strip()
+    phase1_current_round = max(0, int(task.get("phase1_current_round", 0) or 0))
+    phase1_current_total = max(0, int(task.get("phase1_current_total_rounds", 0) or 0))
+    phase1_current_provider = str(task.get("phase1_current_provider", "")).strip()
+    phase1_current_planner = str(task.get("phase1_current_planner", "")).strip()
+    phase1_current_critic = str(task.get("phase1_current_critic", "")).strip()
+    if phase1_mode or phase1_rounds or phase1_providers:
+        lines.append(
+            "phase1: {mode} rounds={rounds} providers={providers}".format(
+                mode=phase1_mode or "single",
+                rounds=phase1_rounds or 1,
+                providers=", ".join(phase1_providers) if phase1_providers else "-",
+            )
+        )
+    if phase1_current_phase or phase1_current_round or phase1_current_provider or phase1_current_planner or phase1_current_critic:
+        actor_parts: List[str] = []
+        if phase1_current_provider:
+            actor_parts.append(f"provider={phase1_current_provider}")
+        if phase1_current_planner:
+            actor_parts.append(f"planner={phase1_current_planner}")
+        if phase1_current_critic:
+            actor_parts.append(f"critic={phase1_current_critic}")
+        lines.append(
+            "phase1_progress: {phase} {round_info}{actors}".format(
+                phase=phase1_current_phase or "planning",
+                round_info=(
+                    f"{phase1_current_round}/{phase1_current_total} "
+                    if phase1_current_round and phase1_current_total
+                    else ""
+                ),
+                actors=(" ".join(actor_parts) if actor_parts else "-"),
+            ).rstrip()
+        )
+    if phase1_candidate_roles:
+        lines.append("phase1_candidate_roles: " + ", ".join(phase1_candidate_roles))
 
     context = build_task_context(request_id=request_id, task=task)
     if context:
