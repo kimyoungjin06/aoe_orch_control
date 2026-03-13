@@ -552,6 +552,8 @@ def handle_non_run_command_pipeline(
         orch_target=resolved.orch_target,
         orch_retry_request_id=resolved.orch_retry_request_id,
         orch_replan_request_id=resolved.orch_replan_request_id,
+        orch_retry_lane_ids=resolved.orch_retry_lane_ids,
+        orch_replan_lane_ids=resolved.orch_replan_lane_ids,
         send=deps.send,
         get_context=deps.get_context,
         get_chat_selected_task_ref=deps.get_chat_selected_task_ref,

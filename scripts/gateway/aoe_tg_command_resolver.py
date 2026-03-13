@@ -13,6 +13,7 @@ from aoe_tg_parse import (
     normalize_report_token,
     parse_cli_message,
     parse_command,
+    parse_request_lane_args,
     parse_quick_message,
 )
 from aoe_tg_orch_actions import action_call_to_resolved_command, infer_mother_orch_action_call
@@ -115,6 +116,8 @@ class ResolvedCommand:
     orch_cancel_request_id: Optional[str] = None
     orch_retry_request_id: Optional[str] = None
     orch_replan_request_id: Optional[str] = None
+    orch_retry_lane_ids: Optional[list[str]] = None
+    orch_replan_lane_ids: Optional[list[str]] = None
     orch_monitor_limit: Optional[int] = None
     orch_kpi_hours: Optional[int] = None
 
@@ -322,10 +325,22 @@ def resolve_message_command(
             )
         elif out.cmd in {"retry"}:
             out.cmd = "orch-retry"
-            out.orch_retry_request_id = slash_rest or None
+            if slash_rest:
+                parsed = parse_request_lane_args(
+                    slash_rest,
+                    usage="usage: /retry <request_or_alias> [lane <L#|R#,...>]",
+                )
+                out.orch_retry_request_id = parsed["request_id"]
+                out.orch_retry_lane_ids = parsed["lane_ids"]
         elif out.cmd in {"replan"}:
             out.cmd = "orch-replan"
-            out.orch_replan_request_id = slash_rest or None
+            if slash_rest:
+                parsed = parse_request_lane_args(
+                    slash_rest,
+                    usage="usage: /replan <request_or_alias> [lane <L#|R#,...>]",
+                )
+                out.orch_replan_request_id = parsed["request_id"]
+                out.orch_replan_lane_ids = parsed["lane_ids"]
         elif out.cmd in {"monitor", "tasks", "board"}:
             out.cmd = "orch-monitor"
             if slash_rest:
@@ -397,9 +412,11 @@ def resolve_message_command(
             elif out.cmd == "orch-retry":
                 out.orch_target = quick.get("orch")
                 out.orch_retry_request_id = quick.get("request_id")
+                out.orch_retry_lane_ids = quick.get("lane_ids")
             elif out.cmd == "orch-replan":
                 out.orch_target = quick.get("orch")
                 out.orch_replan_request_id = quick.get("request_id")
+                out.orch_replan_lane_ids = quick.get("lane_ids")
             elif out.cmd == "orch-monitor":
                 out.orch_target = quick.get("orch")
                 out.orch_monitor_limit = quick.get("limit")
@@ -463,9 +480,11 @@ def resolve_message_command(
             elif out.cmd == "orch-retry":
                 out.orch_target = cli.get("orch")
                 out.orch_retry_request_id = cli.get("request_id")
+                out.orch_retry_lane_ids = cli.get("lane_ids")
             elif out.cmd == "orch-replan":
                 out.orch_target = cli.get("orch")
                 out.orch_replan_request_id = cli.get("request_id")
+                out.orch_replan_lane_ids = cli.get("lane_ids")
             elif out.cmd == "orch-monitor":
                 out.orch_target = cli.get("orch")
                 out.orch_monitor_limit = cli.get("limit")
@@ -535,6 +554,8 @@ def resolve_message_command(
             out.orch_task_request_id = mapped.get("orch_task_request_id") or out.orch_task_request_id
             out.orch_retry_request_id = mapped.get("orch_retry_request_id") or out.orch_retry_request_id
             out.orch_replan_request_id = mapped.get("orch_replan_request_id") or out.orch_replan_request_id
+            out.orch_retry_lane_ids = mapped.get("orch_retry_lane_ids") or out.orch_retry_lane_ids
+            out.orch_replan_lane_ids = mapped.get("orch_replan_lane_ids") or out.orch_replan_lane_ids
             if not out.cmd:
                 default_mode = get_default_mode(manager_state, chat_id)
                 if default_mode in {"dispatch", "direct"}:
@@ -582,8 +603,10 @@ def resolve_message_command(
                     out.orch_cancel_request_id = natural.get("request_id")
                 elif ncmd == "orch-retry":
                     out.orch_retry_request_id = natural.get("request_id")
+                    out.orch_retry_lane_ids = natural.get("lane_ids")
                 elif ncmd == "orch-replan":
                     out.orch_replan_request_id = natural.get("request_id")
+                    out.orch_replan_lane_ids = natural.get("lane_ids")
                 elif ncmd == "orch-monitor":
                     out.orch_monitor_limit = natural.get("limit")
                 elif ncmd == "orch-kpi":

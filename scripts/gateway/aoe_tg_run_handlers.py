@@ -125,7 +125,11 @@ def _should_filter_retry_phase2_plan(
     run_control_mode: str,
     run_source_task: Optional[Dict[str, Any]],
     retry_critic: Optional[Dict[str, Any]] = None,
+    selected_execution_lane_ids: Optional[List[str]] = None,
+    selected_review_lane_ids: Optional[List[str]] = None,
 ) -> bool:
+    if selected_execution_lane_ids or selected_review_lane_ids:
+        return bool(run_control_mode in {"retry", "replan"} and isinstance(run_source_task, dict))
     if run_control_mode != "retry" or not isinstance(run_source_task, dict):
         return bool(
             run_control_mode == "retry"
@@ -147,11 +151,15 @@ def _filter_phase2_retry_scope(
     run_control_mode: str,
     run_source_task: Optional[Dict[str, Any]],
     retry_critic: Optional[Dict[str, Any]] = None,
+    selected_execution_lane_ids: Optional[List[str]] = None,
+    selected_review_lane_ids: Optional[List[str]] = None,
 ) -> tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
     if not _should_filter_retry_phase2_plan(
         run_control_mode=run_control_mode,
         run_source_task=run_source_task,
         retry_critic=retry_critic,
+        selected_execution_lane_ids=selected_execution_lane_ids,
+        selected_review_lane_ids=selected_review_lane_ids,
     ):
         return plan_data, {}
     if not isinstance(plan_data, dict):
@@ -170,14 +178,17 @@ def _filter_phase2_retry_scope(
     if not execution_rows:
         return plan_data, {}
 
+    has_operator_lane_selector = bool(selected_execution_lane_ids or selected_review_lane_ids)
+    target_exec_source = selected_execution_lane_ids if has_operator_lane_selector else (critic.get("rerun_execution_lane_ids") or [])
+    target_review_source = selected_review_lane_ids if has_operator_lane_selector else (critic.get("rerun_review_lane_ids") or [])
     target_exec_ids = {
         str(item).strip()[:32]
-        for item in (critic.get("rerun_execution_lane_ids") or [])
+        for item in (target_exec_source or [])
         if str(item).strip()
     }
     target_review_ids = {
         str(item).strip()[:32]
-        for item in (critic.get("rerun_review_lane_ids") or [])
+        for item in (target_review_source or [])
         if str(item).strip()
     }
 
@@ -429,6 +440,8 @@ class RunContext:
     run_control_mode: str
     run_source_request_id: str
     run_source_task: Optional[Dict[str, Any]]
+    run_selected_execution_lane_ids: Optional[List[str]] = None
+    run_selected_review_lane_ids: Optional[List[str]] = None
 
 
 @dataclass
@@ -512,6 +525,8 @@ def build_run_context(
     run_control_mode: str,
     run_source_request_id: str,
     run_source_task: Optional[Dict[str, Any]],
+    run_selected_execution_lane_ids: Optional[List[str]] = None,
+    run_selected_review_lane_ids: Optional[List[str]] = None,
 ) -> RunContext:
     return RunContext(
         cmd=cmd,
@@ -531,6 +546,8 @@ def build_run_context(
         run_control_mode=run_control_mode,
         run_source_request_id=run_source_request_id,
         run_source_task=run_source_task,
+        run_selected_execution_lane_ids=run_selected_execution_lane_ids,
+        run_selected_review_lane_ids=run_selected_review_lane_ids,
     )
 
 
@@ -1314,6 +1331,8 @@ def handle_run_or_unknown_command(
     run_control_mode = ctx.run_control_mode
     run_source_request_id = ctx.run_source_request_id
     run_source_task = ctx.run_source_task
+    run_selected_execution_lane_ids = list(ctx.run_selected_execution_lane_ids or [])
+    run_selected_review_lane_ids = list(ctx.run_selected_review_lane_ids or [])
     send = deps.core.send
     log_event = deps.core.log_event
     help_text = deps.core.help_text
@@ -1702,6 +1721,8 @@ def handle_run_or_unknown_command(
                 run_control_mode=run_control_mode,
                 run_source_task=run_source_task,
                 retry_critic=last_exec_critic,
+                selected_execution_lane_ids=run_selected_execution_lane_ids,
+                selected_review_lane_ids=run_selected_review_lane_ids,
             )
             if rerun_scope:
                 selected_roles = list(rerun_scope.get("planned_roles") or selected_roles)

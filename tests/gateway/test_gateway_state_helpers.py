@@ -51,6 +51,7 @@ import aoe_tg_poll_loop as poll_loop
 import aoe_tg_priority_actions as priority_actions
 import aoe_tg_project_state as project_state
 import aoe_tg_request_state as request_state
+import aoe_tg_retry_handlers as retry_handlers
 import aoe_tg_run_guards as run_guards
 import aoe_tg_plan_pipeline as plan_pipeline
 import aoe_tg_project_runtime as runtime_helpers
@@ -6221,6 +6222,69 @@ def test_filter_phase2_retry_scope_limits_plan_to_target_lanes() -> None:
     assert scope["planned_roles"] == ["Local-Writer", "Reviewer"]
 
 
+def test_filter_phase2_retry_scope_honors_operator_selected_lane_subset() -> None:
+    plan_data = {
+        "summary": "ready",
+        "subtasks": [
+            {"id": "S1", "owner_role": "Local-Dev", "title": "Implement", "goal": "do impl"},
+            {"id": "S2", "owner_role": "Local-Writer", "title": "Document", "goal": "write handoff"},
+        ],
+        "meta": {
+            "phase2_team_spec": {
+                "execution_mode": "parallel",
+                "execution_groups": [
+                    {"group_id": "L1", "role": "Local-Dev", "subtask_ids": ["S1"], "parallel": True},
+                    {"group_id": "L2", "role": "Local-Writer", "subtask_ids": ["S2"], "parallel": True},
+                ],
+                "review_mode": "parallel",
+                "review_groups": [
+                    {"group_id": "R1", "role": "Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": True},
+                    {"group_id": "R2", "role": "Reviewer", "kind": "verifier", "depends_on": ["L2"], "parallel": True},
+                ],
+                "team_roles": ["Local-Dev", "Local-Writer", "Reviewer"],
+                "critic_role": "Reviewer",
+                "integration_role": "Reviewer",
+            },
+            "phase2_execution_plan": {
+                "execution_mode": "parallel",
+                "execution_lanes": [
+                    {"lane_id": "L1", "role": "Local-Dev", "subtask_ids": ["S1"], "parallel": True},
+                    {"lane_id": "L2", "role": "Local-Writer", "subtask_ids": ["S2"], "parallel": True},
+                ],
+                "review_mode": "parallel",
+                "review_lanes": [
+                    {"lane_id": "R1", "role": "Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": True},
+                    {"lane_id": "R2", "role": "Reviewer", "kind": "verifier", "depends_on": ["L2"], "parallel": True},
+                ],
+                "parallel_workers": True,
+                "parallel_reviews": True,
+                "readonly": True,
+            },
+        },
+    }
+
+    filtered, scope = run_handlers._filter_phase2_retry_scope(
+        plan_data=plan_data,
+        run_control_mode="retry",
+        run_source_task={
+            "exec_critic": {
+                "verdict": "retry",
+                "action": "retry",
+                "rerun_execution_lane_ids": ["L1", "L2"],
+                "rerun_review_lane_ids": ["R1", "R2"],
+            }
+        },
+        selected_execution_lane_ids=["L1"],
+    )
+
+    assert filtered is not None
+    exec_plan = filtered["meta"]["phase2_execution_plan"]
+    assert [row["lane_id"] for row in exec_plan["execution_lanes"]] == ["L1"]
+    assert [row["lane_id"] for row in exec_plan["review_lanes"]] == ["R1"]
+    assert scope["rerun_execution_lane_ids"] == ["L1"]
+    assert scope["rerun_review_lane_ids"] == ["R1"]
+
+
 def test_handle_run_or_unknown_command_retry_filters_phase2_dispatch_to_target_lanes(tmp_path: Path) -> None:
     project_root = tmp_path / "TwinPaper"
     team_dir = project_root / ".aoe-team"
@@ -7232,7 +7296,11 @@ def test_orch_task_reply_markup_exposes_lane_retry_and_followup_actions(tmp_path
         "/check T-123",
         "/task T-123",
         "/retry T-123",
+        "/retry T-123 lane L2",
+        "/retry T-123 lane R2",
         "/replan T-123",
+        "/replan T-123 lane L2",
+        "/replan T-123 lane R2",
         "/todo O2 followup",
         "/orch monitor O2",
         "/orch status O2",
@@ -7240,6 +7308,131 @@ def test_orch_task_reply_markup_exposes_lane_retry_and_followup_actions(tmp_path
         "/map",
     ]:
         assert expected in buttons
+
+
+def test_resolve_message_command_parses_retry_lane_selector() -> None:
+    manager_state = gw.default_manager_state(ROOT, ROOT / ".aoe-team")
+
+    resolved = resolver.resolve_message_command(
+        text="/retry T-123 lane L2,R1",
+        slash_only=False,
+        manager_state=manager_state,
+        chat_id="939062873",
+        dry_run=True,
+        manager_state_file=ROOT / ".aoe-team" / "orch_manager_state.json",
+        get_pending_mode=gw.get_pending_mode,
+        get_default_mode=gw.get_default_mode,
+        clear_pending_mode=gw.clear_pending_mode,
+        save_manager_state=lambda path, state: None,
+    )
+
+    assert resolved.cmd == "orch-retry"
+    assert resolved.orch_retry_request_id == "T-123"
+    assert resolved.orch_retry_lane_ids == ["L2", "R1"]
+
+
+def test_resolve_retry_replan_transition_rejects_invalid_lane_selector() -> None:
+    manager_state = _empty_state()
+    manager_state["projects"]["twinpaper"] = {
+        "name": "twinpaper",
+        "display_name": "TwinPaper",
+        "project_alias": "O2",
+        "project_root": str(ROOT),
+        "team_dir": str(ROOT / ".aoe-team"),
+        "tasks": {
+            "REQ-123": {
+                "request_id": "REQ-123",
+                "prompt": "retry target",
+                "roles": ["Local-Dev", "Reviewer"],
+                "exec_critic": {
+                    "verdict": "retry",
+                    "action": "retry",
+                    "rerun_execution_lane_ids": ["L2"],
+                    "rerun_review_lane_ids": ["R2"],
+                },
+            }
+        },
+    }
+    sent: list[tuple[str, str]] = []
+    result = retry_handlers.resolve_retry_replan_transition(
+        cmd="orch-retry",
+        args=argparse.Namespace(require_verifier=False, verifier_roles=""),
+        manager_state=manager_state,
+        chat_id="939062873",
+        orch_target="twinpaper",
+        orch_retry_request_id="REQ-123",
+        orch_replan_request_id=None,
+        orch_retry_lane_ids=["L1"],
+        orch_replan_lane_ids=None,
+        send=lambda text, **kwargs: sent.append((text, kwargs.get("context", ""))) or True,
+        get_context=lambda orch: (str(orch or "twinpaper"), manager_state["projects"]["twinpaper"], argparse.Namespace(team_dir=str(ROOT / ".aoe-team"))),
+        get_chat_selected_task_ref=lambda *_args, **_kwargs: "",
+        resolve_chat_task_ref=lambda *_args, **_kwargs: "REQ-123",
+        resolve_task_request_id=lambda entry, ref: ref if ref in entry.get("tasks", {}) else "",
+        get_task_record=lambda entry, req_id: entry.get("tasks", {}).get(req_id),
+        run_request_query=lambda *_args, **_kwargs: {},
+        sync_task_lifecycle=lambda **_kwargs: None,
+        resolve_verifier_candidates=lambda _raw: [],
+        dedupe_roles=lambda rows: [str(item).strip() for item in rows if str(item).strip()],
+        touch_chat_recent_task_ref=lambda *_args, **_kwargs: None,
+        set_chat_selected_task_ref=lambda *_args, **_kwargs: None,
+    )
+
+    assert result == {"terminal": True}
+    assert sent
+    assert "requested lanes are not allowed" in sent[-1][0]
+
+
+def test_resolve_retry_replan_transition_preserves_selected_lane_targets() -> None:
+    manager_state = _empty_state()
+    manager_state["projects"]["twinpaper"] = {
+        "name": "twinpaper",
+        "display_name": "TwinPaper",
+        "project_alias": "O2",
+        "project_root": str(ROOT),
+        "team_dir": str(ROOT / ".aoe-team"),
+        "tasks": {
+            "REQ-123": {
+                "request_id": "REQ-123",
+                "prompt": "retry target",
+                "roles": ["Local-Dev", "Reviewer"],
+                "exec_critic": {
+                    "verdict": "retry",
+                    "action": "retry",
+                    "rerun_execution_lane_ids": ["L1", "L2"],
+                    "rerun_review_lane_ids": ["R1", "R2"],
+                },
+            }
+        },
+    }
+    result = retry_handlers.resolve_retry_replan_transition(
+        cmd="orch-retry",
+        args=argparse.Namespace(require_verifier=False, verifier_roles=""),
+        manager_state=manager_state,
+        chat_id="939062873",
+        orch_target="twinpaper",
+        orch_retry_request_id="REQ-123",
+        orch_replan_request_id=None,
+        orch_retry_lane_ids=["L2", "R2"],
+        orch_replan_lane_ids=None,
+        send=lambda *_args, **_kwargs: True,
+        get_context=lambda orch: (str(orch or "twinpaper"), manager_state["projects"]["twinpaper"], argparse.Namespace(team_dir=str(ROOT / ".aoe-team"))),
+        get_chat_selected_task_ref=lambda *_args, **_kwargs: "",
+        resolve_chat_task_ref=lambda *_args, **_kwargs: "REQ-123",
+        resolve_task_request_id=lambda entry, ref: ref if ref in entry.get("tasks", {}) else "",
+        get_task_record=lambda entry, req_id: entry.get("tasks", {}).get(req_id),
+        run_request_query=lambda *_args, **_kwargs: {},
+        sync_task_lifecycle=lambda **_kwargs: None,
+        resolve_verifier_candidates=lambda _raw: [],
+        dedupe_roles=lambda rows: [str(item).strip() for item in rows if str(item).strip()],
+        touch_chat_recent_task_ref=lambda *_args, **_kwargs: None,
+        set_chat_selected_task_ref=lambda *_args, **_kwargs: None,
+    )
+
+    assert isinstance(result, dict)
+    assert result["terminal"] is False
+    assert result["run_selected_execution_lane_ids"] == ["L2"]
+    assert result["run_selected_review_lane_ids"] == ["R2"]
 
 
 def test_resolve_message_command_auto_routes_plain_text_from_direct_bias() -> None:

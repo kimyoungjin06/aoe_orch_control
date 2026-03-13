@@ -1058,7 +1058,10 @@ def summarize_task_monitor(
             continue
         lines.append(f"- {idx}. {task_display_label(task, str(req_id or '').strip())} -> {req_id}")
     lines.append("")
-    lines.append("quick actions: /check <번호|label> /task <번호|label> /retry <번호|label> /replan <번호|label> /cancel <번호|label>")
+    lines.append(
+        "quick actions: /check <번호|label> /task <번호|label> "
+        "/retry <번호|label> [lane <L#|R#>] /replan <번호|label> [lane <L#|R#>] /cancel <번호|label>"
+    )
     return "\n".join(lines)
 
 

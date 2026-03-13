@@ -168,6 +168,23 @@ def _task_ref_for_actions(task: Dict[str, Any], request_id: str) -> str:
     return str(request_id or "").strip()
 
 
+def _lane_action_buttons(command: str, ref: str, lane_ids: List[str], *, limit: int = 3) -> List[Dict[str, str]]:
+    buttons: List[Dict[str, str]] = []
+    seen: set[str] = set()
+    for lane_id in lane_ids:
+        token = str(lane_id or "").strip()[:32]
+        if not token:
+            continue
+        key = token.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        buttons.append({"text": f"/{command} {ref} lane {token}"})
+        if len(buttons) >= max(1, int(limit)):
+            break
+    return buttons
+
+
 def _orch_task_reply_markup(key: str, entry: Dict[str, Any], request_id: str, task: Dict[str, Any]) -> Dict[str, Any]:
     alias = _project_alias(entry, key)
     ref = _task_ref_for_actions(task, request_id)
@@ -187,6 +204,13 @@ def _orch_task_reply_markup(key: str, entry: Dict[str, Any], request_id: str, ta
         if action == "replan":
             row.append({"text": f"/replan {ref}"})
         keyboard.append(row)
+        retry_lane_buttons = _lane_action_buttons("retry", ref, rerun_exec + rerun_review)
+        if retry_lane_buttons:
+            keyboard.append(retry_lane_buttons)
+        if action == "replan":
+            replan_lane_buttons = _lane_action_buttons("replan", ref, rerun_exec + rerun_review)
+            if replan_lane_buttons:
+                keyboard.append(replan_lane_buttons)
     if manual_exec or manual_review or verdict in {"fail", "intervention"}:
         keyboard.append([{"text": f"/todo {alias} followup"}, {"text": f"/orch monitor {alias}"}])
     keyboard.append([{"text": f"/orch status {alias}"}, {"text": "/queue"}, {"text": "/map"}])
