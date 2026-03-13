@@ -1968,6 +1968,27 @@ def test_choose_auto_dispatch_roles_adds_claude_companion_for_multi_review_reque
     assert roles == ["Reviewer", "Claude-Reviewer"]
 
 
+def test_choose_auto_dispatch_roles_adds_claude_companion_for_explicit_review_role(tmp_path: Path) -> None:
+    team_dir = tmp_path / ".aoe-team"
+    for role, mission in (
+        ("Reviewer", "Find risks, regressions, and missing tests before merge."),
+        ("Claude-Reviewer", "Find risks, regressions, and missing tests before merge."),
+    ):
+        (team_dir / "agents" / role).mkdir(parents=True, exist_ok=True)
+        (team_dir / "agents" / role / "AGENTS.md").write_text(
+            f"# AGENTS.md - {role}\n\n## Mission\n{mission}\n",
+            encoding="utf-8",
+        )
+
+    roles = gw.choose_auto_dispatch_roles(
+        "Reviewer가 현재 변경사항을 검토하고 리스크를 짚어줘.",
+        available_roles=["Reviewer", "Claude-Reviewer"],
+        team_dir=team_dir,
+    )
+
+    assert roles == ["Reviewer", "Claude-Reviewer"]
+
+
 def test_choose_auto_dispatch_roles_builds_multi_role_tf_from_prompt_mix(tmp_path: Path) -> None:
     team_dir = tmp_path / ".aoe-team"
     (team_dir / "agents" / "Codex-Dev").mkdir(parents=True, exist_ok=True)
@@ -1992,8 +2013,7 @@ def test_choose_auto_dispatch_roles_builds_multi_role_tf_from_prompt_mix(tmp_pat
         team_dir=team_dir,
     )
 
-    assert set(roles) == {"Codex-Dev", "Reviewer"}
-    assert len(roles) == 2
+    assert roles == ["Codex-Dev", "Reviewer"]
 
 
 def test_choose_auto_dispatch_roles_picks_local_analyst_for_analysis_prompt(tmp_path: Path) -> None:
@@ -2067,6 +2087,28 @@ def test_choose_auto_dispatch_roles_adds_claude_writer_and_analyst_companions_wh
 
     assert writer_roles == ["Codex-Writer", "Claude-Writer"]
     assert analyst_roles == ["Codex-Analyst", "Claude-Analyst"]
+
+
+def test_choose_auto_dispatch_roles_orders_build_before_review_companions(tmp_path: Path) -> None:
+    team_dir = tmp_path / ".aoe-team"
+    for role, mission in (
+        ("Codex-Dev", "Implement code changes and fix application bugs."),
+        ("Reviewer", "Find risks, regressions, and missing tests before merge."),
+        ("Claude-Reviewer", "Find risks, regressions, and missing tests before merge."),
+    ):
+        (team_dir / "agents" / role).mkdir(parents=True, exist_ok=True)
+        (team_dir / "agents" / role / "AGENTS.md").write_text(
+            f"# AGENTS.md - {role}\n\n## Mission\n{mission}\n",
+            encoding="utf-8",
+        )
+
+    roles = gw.choose_auto_dispatch_roles(
+        "로그인 버그를 수정하고 회귀 리스크도 같이 검토해줘.",
+        available_roles=["Codex-Dev", "Reviewer", "Claude-Reviewer"],
+        team_dir=team_dir,
+    )
+
+    assert roles == ["Codex-Dev", "Reviewer", "Claude-Reviewer"]
 
 
 def test_available_worker_roles_uses_expanded_default_pool() -> None:
@@ -3045,4 +3087,3 @@ def test_runtime_core_matches_gateway_default_project_registration(tmp_path: Pat
     assert saves == [team_dir / "orch_manager_state.json"]
     assert entry["last_sync_at"] == "2026-03-06T12:00:00+0900"
     assert entry["last_sync_mode"] == "scenario"
-

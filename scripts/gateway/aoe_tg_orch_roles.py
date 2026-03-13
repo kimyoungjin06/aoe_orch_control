@@ -29,6 +29,17 @@ CLAUDE_COMPANION_ROLES = {
     "Codex-Analyst": "Claude-Analyst",
 }
 
+ROLE_ORDER = {
+    "DataEngineer": 10,
+    "Codex-Dev": 20,
+    "Codex-Writer": 30,
+    "Claude-Writer": 31,
+    "Codex-Analyst": 40,
+    "Claude-Analyst": 41,
+    "Reviewer": 50,
+    "Claude-Reviewer": 51,
+}
+
 
 def parse_roles_csv(raw: Optional[str]) -> List[str]:
     if not raw:
@@ -153,6 +164,36 @@ def _role_name_aliases(role: str) -> List[str]:
     return [alias for alias in aliases if alias]
 
 
+def _ordered_roles(rows: List[str]) -> List[str]:
+    return dedupe_roles(
+        sorted(
+            rows,
+            key=lambda role: (
+                ROLE_ORDER.get(str(role).strip(), 999),
+                str(role).lower().startswith("claude-"),
+                str(role).lower(),
+            ),
+        )
+    )
+
+
+def _add_companion_roles(
+    roles: List[str],
+    *,
+    available_roles: List[str],
+    prompt_lower: str,
+) -> List[str]:
+    if any(token in prompt_lower for token in (" only ", " solo ", " single ", "단독", "혼자", "하나만")):
+        return dedupe_roles(roles)
+    available_set = {str(role).strip() for role in available_roles if str(role).strip()}
+    expanded = list(roles)
+    for role in list(roles):
+        companion = CLAUDE_COMPANION_ROLES.get(role)
+        if companion and companion in available_set and companion not in expanded:
+            expanded.append(companion)
+    return _ordered_roles(expanded)
+
+
 def _role_score_from_text(prompt_lower: str, role: str, mission: str) -> int:
     name_key = str(role or "").strip().lower()
     mission_lower = str(mission or "").strip().lower()
@@ -243,14 +284,18 @@ def choose_auto_dispatch_roles(
                 break
     explicit = dedupe_roles(explicit)
     if explicit:
-        chosen = dedupe_roles(explicit)
+        chosen = _ordered_roles(explicit)
         if wants_multi:
-            available_set = {str(profile.get("role", "")).strip() for profile in profiles if str(profile.get("role", "")).strip()}
-            for role in list(chosen):
-                companion = CLAUDE_COMPANION_ROLES.get(role)
-                if companion and companion in available_set:
-                    chosen.append(companion)
-        return dedupe_roles(chosen)
+            return _add_companion_roles(
+                chosen,
+                available_roles=[str(profile.get("role", "")).strip() for profile in profiles],
+                prompt_lower=prompt_lower,
+            )
+        return _add_companion_roles(
+            chosen,
+            available_roles=[str(profile.get("role", "")).strip() for profile in profiles],
+            prompt_lower=prompt_lower,
+        )
 
     scored: List[Tuple[int, str]] = []
     for profile in profiles:
@@ -290,7 +335,11 @@ def choose_auto_dispatch_roles(
             roles = ["DataEngineer", "Reviewer"]
             if "Claude-Reviewer" in available_set:
                 roles.append("Claude-Reviewer")
-        return dedupe_roles([r for r in roles if r])
+        return _add_companion_roles(
+            [r for r in roles if r],
+            available_roles=[str(profile.get("role", "")).strip() for profile in profiles],
+            prompt_lower=prompt_lower,
+        )
 
     scored.sort(key=lambda item: (-item[0], item[1].lower().startswith("claude-"), item[1].lower()))
     top_score = scored[0][0]
@@ -299,12 +348,11 @@ def choose_auto_dispatch_roles(
         for score, role in scored[1:3]:
             if score >= max(3, top_score - 2):
                 selected.append(role)
-    available_set = {str(profile.get("role", "")).strip() for profile in profiles if str(profile.get("role", "")).strip()}
-    for role in list(selected):
-        companion = CLAUDE_COMPANION_ROLES.get(role)
-        if companion and companion in available_set and companion not in selected:
-            selected.append(companion)
-    return dedupe_roles(selected)
+    return _add_companion_roles(
+        selected,
+        available_roles=[str(profile.get("role", "")).strip() for profile in profiles],
+        prompt_lower=prompt_lower,
+    )
 
 
 def available_worker_roles(
