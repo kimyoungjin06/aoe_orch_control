@@ -1300,6 +1300,85 @@ def test_task_state_snapshot_and_sync_match_gateway() -> None:
     assert task_b["stages"] == task_a["stages"]
 
 
+def test_task_state_sync_records_role_mismatch_and_task_summary_surfaces_it() -> None:
+    request_data = {
+        "request_id": "REQ-ROLE-1",
+        "requested_roles": ["Local-Writer", "Reviewer"],
+        "executed_roles": ["Local-Analyst", "Reviewer"],
+        "role_states": [
+            {"role": "Local-Analyst", "status": "done"},
+            {"role": "Reviewer", "status": "done"},
+        ],
+        "counts": {"assignments": 2, "replies": 2},
+        "complete": True,
+    }
+    entry = {"name": "demo_proj", "project_alias": "O9", "project_root": "/tmp/demo", "team_dir": "/tmp/demo/.aoe-team", "tasks": {}, "task_alias_index": {}, "task_seq": 0}
+
+    task = task_state.sync_task_lifecycle(
+        entry,
+        request_data,
+        prompt="Write the handoff note",
+        mode="dispatch",
+        selected_roles=["Local-Writer", "Reviewer"],
+        verifier_roles=["Reviewer"],
+        require_verifier=True,
+        verifier_candidates=["Reviewer"],
+        dedupe_roles=gw.dedupe_roles,
+        ensure_task_record=gw.ensure_task_record,
+        lifecycle_set_stage=gw.lifecycle_set_stage,
+        normalize_task_status=gw.normalize_task_status,
+        sync_task_exec_context=lambda entry, task: task.get("context", {}) if isinstance(task, dict) else {},
+    )
+
+    assert task is not None
+    assert task["result"]["role_mismatch"] is True
+    assert task["result"]["dropped_roles"] == ["Local-Writer"]
+    assert task["result"]["added_roles"] == ["Local-Analyst"]
+
+    summary = gw.summarize_task_lifecycle("Demo", task)
+    assert "requested_roles: Local-Writer, Reviewer" in summary
+    assert "executed_roles: Local-Analyst, Reviewer" in summary
+    assert "role_mismatch: dropped=Local-Writer added=Local-Analyst" in summary
+
+
+def test_task_monitor_surfaces_role_mismatch_targets() -> None:
+    entry = {
+        "tasks": {
+            "REQ-ROLE-2": {
+                "request_id": "REQ-ROLE-2",
+                "prompt": "Write summary",
+                "status": "running",
+                "stage": "execution",
+                "roles": ["Local-Writer", "Reviewer"],
+                "result": {
+                    "requested_roles": ["Local-Writer", "Reviewer"],
+                    "executed_roles": ["Local-Analyst", "Reviewer"],
+                    "dropped_roles": ["Local-Writer"],
+                    "added_roles": ["Local-Analyst"],
+                    "role_mismatch": True,
+                },
+                "updated_at": "2026-03-13T10:00:00+0900",
+                "created_at": "2026-03-13T09:00:00+0900",
+            }
+        },
+        "task_alias_index": {},
+        "task_seq": 0,
+    }
+
+    task_state.backfill_task_aliases(entry)
+    summary = task_state.summarize_task_monitor(
+        "Demo",
+        entry,
+        limit=5,
+        normalize_task_status=gw.normalize_task_status,
+        dedupe_roles=gw.dedupe_roles,
+        task_display_label=gw.task_display_label,
+        lifecycle_stages=gw.LIFECYCLE_STAGES,
+    )
+
+    assert "roles drop:Local-Writer add:Local-Analyst" in summary
+
+
 def test_task_state_sync_derives_lane_states_and_review_waits_on_dependencies() -> None:
     request_data = {
         "request_id": "REQ-302",
@@ -2966,5 +3045,4 @@ def test_runtime_core_matches_gateway_default_project_registration(tmp_path: Pat
     assert saves == [team_dir / "orch_manager_state.json"]
     assert entry["last_sync_at"] == "2026-03-06T12:00:00+0900"
     assert entry["last_sync_mode"] == "scenario"
-
 

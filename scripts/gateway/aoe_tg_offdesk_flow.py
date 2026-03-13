@@ -294,6 +294,11 @@ def _latest_task_snapshot(entry: Dict[str, Any]) -> Dict[str, Any]:
     rerun_review = list(lane_targets.get("rerun_review_lane_ids") or [])
     manual_exec = list(lane_targets.get("manual_followup_execution_lane_ids") or [])
     manual_review = list(lane_targets.get("manual_followup_review_lane_ids") or [])
+    result = best_task.get("result") if isinstance(best_task.get("result"), dict) else {}
+    requested_roles = [str(x).strip() for x in (result.get("requested_roles") or []) if str(x).strip()]
+    executed_roles = [str(x).strip() for x in (result.get("executed_roles") or []) if str(x).strip()]
+    dropped_roles = [str(x).strip() for x in (result.get("dropped_roles") or []) if str(x).strip()]
+    added_roles = [str(x).strip() for x in (result.get("added_roles") or []) if str(x).strip()]
     return {
         "request_id": best_req,
         "label": label,
@@ -309,6 +314,11 @@ def _latest_task_snapshot(entry: Dict[str, Any]) -> Dict[str, Any]:
         "manual_followup_execution_lane_ids": manual_exec,
         "manual_followup_review_lane_ids": manual_review,
         "lane_targets": lane_targets,
+        "requested_roles": requested_roles,
+        "executed_roles": executed_roles,
+        "dropped_roles": dropped_roles,
+        "added_roles": added_roles,
+        "role_mismatch": bool(result.get("role_mismatch", False)),
     }
 
 
@@ -620,6 +630,18 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
         notes.append(f"active task in progress ({task_tf_phase or task_status})")
         attention.append(f"task:{task_tf_phase or task_status}")
         severity_score += 15
+    if bool(latest_task.get("role_mismatch", False)):
+        status = "warn" if status == "ready" else status
+        dropped = list(latest_task.get("dropped_roles") or [])
+        added = list(latest_task.get("added_roles") or [])
+        notes.append(
+            "active task role mismatch (dropped={dropped} added={added})".format(
+                dropped=",".join(dropped) if dropped else "-",
+                added=",".join(added) if added else "-",
+            )
+        )
+        attention.append("task:role_mismatch")
+        severity_score += 35
     if last_sync_mode == "never" or not last_sync_at:
         status = "warn" if status == "ready" else status
         notes.append("queue has not been synced yet")
@@ -699,6 +721,20 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
         lines.append(
             f"  active_task: {latest_task.get('label', '-')} | {latest_task.get('status', '-')}/{latest_task.get('tf_phase', '-')}"
         )
+        if latest_task.get("requested_roles") or latest_task.get("executed_roles"):
+            lines.append(
+                "  active_task_roles: requested={requested} | executed={executed}".format(
+                    requested=", ".join(latest_task.get("requested_roles") or []) or "-",
+                    executed=", ".join(latest_task.get("executed_roles") or []) or "-",
+                )
+            )
+        if bool(latest_task.get("role_mismatch", False)):
+            lines.append(
+                "  active_task_role_mismatch: dropped={dropped} added={added}".format(
+                    dropped=",".join(latest_task.get("dropped_roles") or []) or "-",
+                    added=",".join(latest_task.get("added_roles") or []) or "-",
+                )
+            )
         lines.append("  active_task_lanes: " + " | ".join(lane_parts))
         rerun_exec = list(latest_task.get("rerun_execution_lane_ids") or [])
         rerun_review = list(latest_task.get("rerun_review_lane_ids") or [])

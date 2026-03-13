@@ -1316,6 +1316,53 @@ def test_offdesk_prepare_reports_active_task_lane_summary_and_targets(tmp_path: 
     assert "active_task_rerun: execution=L2 review=R1" in text
 
 
+def test_offdesk_prepare_warns_on_active_task_role_mismatch(tmp_path: Path) -> None:
+    state = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+    project_root = tmp_path / "MismatchProject"
+    team_dir = project_root / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (project_root / "TODO.md").write_text("# Tasks\n- [ ] write handoff\n", encoding="utf-8")
+    (team_dir / "AOE_TODO.md").write_text("@include ../TODO.md\n", encoding="utf-8")
+    (team_dir / "orchestrator.json").write_text("{}", encoding="utf-8")
+    state["projects"]["mismatch"] = {
+        "name": "mismatch",
+        "display_name": "MismatchProject",
+        "project_alias": "O7",
+        "project_root": str(project_root),
+        "team_dir": str(team_dir),
+        "runtime_ready": True,
+        "todos": [{"id": "TODO-001", "summary": "write handoff", "status": "open"}],
+        "todo_proposals": [],
+        "last_sync_at": "2026-03-13T09:00:00+0900",
+        "last_sync_mode": "scenario",
+        "last_sync_candidate_classes": {"scenario": 1},
+        "last_sync_candidate_doc_types": {"todo": 1},
+        "tasks": {
+            "REQ-777": {
+                "request_id": "REQ-777",
+                "short_id": "T-777",
+                "status": "running",
+                "updated_at": "2026-03-13T10:00:00+0900",
+                "created_at": "2026-03-13T09:55:00+0900",
+                "result": {
+                    "requested_roles": ["Local-Writer", "Reviewer"],
+                    "executed_roles": ["Local-Analyst", "Reviewer"],
+                    "dropped_roles": ["Local-Writer"],
+                    "added_roles": ["Local-Analyst"],
+                    "role_mismatch": True,
+                },
+            }
+        },
+    }
+
+    text = _call_management_status(tmp_path=tmp_path, manager_state=state, cmd="offdesk", rest="prepare O7")
+
+    assert "- O7 MismatchProject [warn]" in text
+    assert "task:role_mismatch" in text
+    assert "active_task_roles: requested=Local-Writer, Reviewer | executed=Local-Analyst, Reviewer" in text
+    assert "active_task_role_mismatch: dropped=Local-Writer added=Local-Analyst" in text
+
+
 def test_offdesk_review_surfaces_flagged_projects_and_next_actions(tmp_path: Path) -> None:
     state = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
 
