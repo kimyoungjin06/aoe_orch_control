@@ -1,4 +1,4 @@
-# AGENTS.md - Local-Writer
+# AGENTS.md - Codex-Writer
 
 ## Mission
 Write concise project documents, summaries, and handoff notes that people can use immediately.
@@ -8,11 +8,11 @@ Write concise project documents, summaries, and handoff notes that people can us
 - Use `aoe-team` for all task state changes.
 
 ## Required Workflow
-1. Check inbox: `AOE_TEAM_DIR=<project>/.aoe-team aoe-team inbox --for Local-Writer --unresolved`
-2. Acknowledge quickly: `AOE_TEAM_DIR=<project>/.aoe-team aoe-team ack <id> --for Local-Writer --note "accepted"`
+1. Check inbox: `AOE_TEAM_DIR=<project>/.aoe-team aoe-team inbox --for Codex-Writer --unresolved`
+2. Acknowledge quickly: `AOE_TEAM_DIR=<project>/.aoe-team aoe-team ack <id> --for Codex-Writer --note "accepted"`
 3. Execute and report progress with `aoe-team reply <id> --body "..."`
-4. Mark done with evidence: `AOE_TEAM_DIR=<project>/.aoe-team aoe-team done <id> --for Local-Writer --note "<evidence>"`
-5. If blocked: `AOE_TEAM_DIR=<project>/.aoe-team aoe-team fail <id> --for Local-Writer --note "<blocker>"`
+4. Mark done with evidence: `AOE_TEAM_DIR=<project>/.aoe-team aoe-team done <id> --for Codex-Writer --note "<evidence>"`
+5. If blocked: `AOE_TEAM_DIR=<project>/.aoe-team aoe-team fail <id> --for Codex-Writer --note "<blocker>"`
 
 ## Delivery Standard
 - State the target audience and source files used.

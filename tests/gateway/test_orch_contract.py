@@ -26,7 +26,7 @@ def test_normalize_orch_task_spec_fills_defaults_and_lineage() -> None:
         {
             "title": "Rebuild nightly queue",
             "objective": "Recover actionable backlog from recent work and prepare offdesk execution",
-            "roles": ["Local-Analyst", "Reviewer"],
+            "roles": ["Codex-Analyst", "Reviewer"],
             "acceptance": ["Queue is rebuilt from recent docs", "Operator can review drift before offdesk"],
             "retry_budget": {"max_retries": 4, "critic_owned": False},
             "source_ref": {"todo_id": "TODO-101"},
@@ -44,7 +44,7 @@ def test_normalize_orch_task_spec_fills_defaults_and_lineage() -> None:
     assert row["priority"] == "P2"
     assert row["readonly"] is True
     assert row["approval_mode"] == "policy"
-    assert row["requested_roles"] == ["Local-Analyst", "Reviewer"]
+    assert row["requested_roles"] == ["Codex-Analyst", "Reviewer"]
     assert row["source_ref"]["todo_id"] == "TODO-101"
     assert row["retry_budget"] == {"max_retries": 4, "critic_owned": False}
 
@@ -54,7 +54,7 @@ def test_normalize_tf_plan_uses_requested_roles_and_block_reasons() -> None:
         {
             "title": "Summarize benchmark drift",
             "objective": "Produce a compact benchmark drift note",
-            "requested_roles": ["Local-Writer", "Reviewer"],
+            "requested_roles": ["Codex-Writer", "Reviewer"],
         },
         task_id="TASK-201",
         project_key="O3",
@@ -69,12 +69,12 @@ def test_normalize_tf_plan_uses_requested_roles_and_block_reasons() -> None:
     )
 
     assert plan["status"] == "blocked"
-    assert plan["assignments"][0]["role"] == "Local-Writer"
-    assert plan["execution_order"] == ["Local-Writer"]
-    assert plan["critic"]["role"] == "Local-Writer"
+    assert plan["assignments"][0]["role"] == "Codex-Writer"
+    assert plan["execution_order"] == ["Codex-Writer"]
+    assert plan["critic"]["role"] == "Codex-Writer"
     assert plan["blocking_issues"] == ["planner did not provide an executable route"]
     assert plan["meta"]["phase2_team_spec"]["execution_mode"] == "single"
-    assert plan["meta"]["phase2_team_spec"]["execution_groups"][0]["role"] == "Local-Writer"
+    assert plan["meta"]["phase2_team_spec"]["execution_groups"][0]["role"] == "Codex-Writer"
 
 
 def test_normalize_phase2_team_spec_builds_parallel_execution_and_review_groups() -> None:
@@ -83,17 +83,17 @@ def test_normalize_phase2_team_spec_builds_parallel_execution_and_review_groups(
         plan={
             "summary": "parallel build",
             "subtasks": [
-                {"id": "S1", "title": "Implement", "goal": "build feature", "owner_role": "Local-Dev"},
-                {"id": "S2", "title": "Document", "goal": "write handoff", "owner_role": "Local-Writer"},
+                {"id": "S1", "title": "Implement", "goal": "build feature", "owner_role": "Codex-Dev"},
+                {"id": "S2", "title": "Document", "goal": "write handoff", "owner_role": "Codex-Writer"},
             ],
         },
-        roles=["Local-Dev", "Local-Writer", "Reviewer"],
+        roles=["Codex-Dev", "Codex-Writer", "Reviewer"],
         verifier_roles=["Reviewer", "QA"],
         require_verifier=True,
     )
 
     assert spec["execution_mode"] == "parallel"
-    assert [row["role"] for row in spec["execution_groups"]] == ["Local-Dev", "Local-Writer"]
+    assert [row["role"] for row in spec["execution_groups"]] == ["Codex-Dev", "Codex-Writer"]
     assert spec["review_mode"] == "parallel"
     assert [row["role"] for row in spec["review_groups"]] == ["Reviewer", "QA"]
     assert spec["critic_role"] == "Reviewer"
@@ -106,14 +106,14 @@ def test_normalize_phase2_team_spec_expands_claude_companion_execution_and_revie
         plan={
             "summary": "parallel doc and analysis",
             "subtasks": [
-                {"id": "S1", "title": "Document", "goal": "write handoff", "owner_role": "Local-Writer"},
-                {"id": "S2", "title": "Analyze", "goal": "compare options", "owner_role": "Local-Analyst"},
+                {"id": "S1", "title": "Document", "goal": "write handoff", "owner_role": "Codex-Writer"},
+                {"id": "S2", "title": "Analyze", "goal": "compare options", "owner_role": "Codex-Analyst"},
             ],
         },
         roles=[
-            "Local-Writer",
+            "Codex-Writer",
             "Claude-Writer",
-            "Local-Analyst",
+            "Codex-Analyst",
             "Claude-Analyst",
             "Reviewer",
             "Claude-Reviewer",
@@ -123,9 +123,9 @@ def test_normalize_phase2_team_spec_expands_claude_companion_execution_and_revie
     )
 
     assert [row["role"] for row in spec["execution_groups"]] == [
-        "Local-Writer",
+        "Codex-Writer",
         "Claude-Writer",
-        "Local-Analyst",
+        "Codex-Analyst",
         "Claude-Analyst",
     ]
     assert [row["role"] for row in spec["review_groups"]] == ["Reviewer", "Claude-Reviewer"]
@@ -177,7 +177,7 @@ def test_normalize_orch_followup_proposals_extends_base_schema() -> None:
         source_request_id="REQ-401",
         source_todo_id="TODO-401",
         source_tf_id="TF-401",
-        owner_role="Local-Writer",
+        owner_role="Codex-Writer",
     )
 
     assert rows == [
@@ -190,7 +190,7 @@ def test_normalize_orch_followup_proposals_extends_base_schema() -> None:
             "source_todo_id": "TODO-401",
             "confidence": 0.82,
             "source_tf_id": "TF-401",
-            "owner_role": "Local-Writer",
+            "owner_role": "Codex-Writer",
             "acceptance": [
                 "Proposal can be accepted into backlog without re-reading the full TF transcript: Add a handoff note for the reviewer",
             ],

@@ -11,9 +11,9 @@
 - `Orchestrator`
 - `DataEngineer`
 - `Reviewer`
-- `Local-Dev`
-- `Local-Writer`
-- `Local-Analyst`
+- `Codex-Dev`
+- `Codex-Writer`
+- `Codex-Analyst`
 
 ## Communication Protocol
 - Use `aoe-team send` for every assignment.

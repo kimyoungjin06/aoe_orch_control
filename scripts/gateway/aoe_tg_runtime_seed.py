@@ -15,15 +15,17 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List
 
+from aoe_tg_role_aliases import canonicalize_role_name, resolve_role_asset, resolve_role_file
+
 
 DEFAULT_REPAIR_AGENTS = [
     "DataEngineer:codex",
     "Reviewer:codex",
     "Claude-Reviewer:claude",
-    "Local-Dev:codex",
-    "Local-Writer:codex",
+    "Codex-Dev:codex",
+    "Codex-Writer:codex",
     "Claude-Writer:claude",
-    "Local-Analyst:codex",
+    "Codex-Analyst:codex",
     "Claude-Analyst:claude",
 ]
 
@@ -81,12 +83,12 @@ def preview_orchestrator_spec(
 
 
 def _team_manifest_from_spec(spec: Dict[str, Any], *, project_root: Path, overview: str) -> Dict[str, Any]:
-    coordinator = str((spec.get("coordinator") or {}).get("role", "Orchestrator")).strip() or "Orchestrator"
+    coordinator = canonicalize_role_name((spec.get("coordinator") or {}).get("role", "Orchestrator")) or "Orchestrator"
     roles: List[str] = [coordinator]
     for row in spec.get("agents") or []:
         if not isinstance(row, dict):
             continue
-        role = str(row.get("role", "")).strip()
+        role = canonicalize_role_name(row.get("role", ""))
         if role and role not in roles:
             roles.append(role)
     return {
@@ -132,6 +134,20 @@ def seed_runtime_from_spec(
     (team_dir / "logs").mkdir(parents=True, exist_ok=True)
 
     spec = dict(spec)
+    coordinator = spec.get("coordinator")
+    if isinstance(coordinator, dict):
+        coordinator = dict(coordinator)
+        coordinator["role"] = canonicalize_role_name(coordinator.get("role", "Orchestrator")) or "Orchestrator"
+        spec["coordinator"] = coordinator
+    normalized_agents: List[Dict[str, Any]] = []
+    for row in spec.get("agents") or []:
+        if not isinstance(row, dict):
+            continue
+        item = dict(row)
+        item["role"] = canonicalize_role_name(item.get("role", "")) or str(item.get("role", "")).strip()
+        normalized_agents.append(item)
+    if normalized_agents:
+        spec["agents"] = normalized_agents
     spec["project_root"] = str(project_root)
     spec["team_dir"] = str(team_dir)
     spec["overview"] = overview
@@ -141,18 +157,20 @@ def seed_runtime_from_spec(
     for name in ["AOE_TODO.md", "telegram.env.sample", "sync_policy.sample.json"]:
         logs.append(_copy_file_if_needed(template_root / name, team_dir / name, force=force))
 
-    coordinator = str((spec.get("coordinator") or {}).get("role", "Orchestrator")).strip() or "Orchestrator"
+    coordinator = canonicalize_role_name((spec.get("coordinator") or {}).get("role", "Orchestrator")) or "Orchestrator"
     roles = [coordinator]
     for row in spec.get("agents") or []:
         if not isinstance(row, dict):
             continue
-        role = str(row.get("role", "")).strip()
+        role = canonicalize_role_name(row.get("role", ""))
         if role and role not in roles:
             roles.append(role)
 
     for role in roles:
-        logs.append(_copy_file_if_needed(template_root / "agents" / role / "AGENTS.md", team_dir / "agents" / role / "AGENTS.md", force=force))
-        logs.append(_copy_file_if_needed(template_root / "workers" / f"{role}.json", team_dir / "workers" / f"{role}.json", force=force))
+        agent_tpl = resolve_role_asset(template_root / "agents", role, "AGENTS.md")
+        worker_tpl = resolve_role_file(template_root / "workers", role, ".json")
+        logs.append(_copy_file_if_needed(agent_tpl, team_dir / "agents" / (canonicalize_role_name(role) or role) / "AGENTS.md", force=force))
+        logs.append(_copy_file_if_needed(worker_tpl, team_dir / "workers" / f"{canonicalize_role_name(role) or role}.json", force=force))
 
     return [row for row in logs if row]
 
