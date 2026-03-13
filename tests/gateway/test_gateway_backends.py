@@ -939,6 +939,104 @@ def test_local_run_aoe_orch_fanouts_parallel_execution_and_review_lanes(monkeypa
     assert len(result["tf_workers"]["review"]["lanes"]) == 2
 
 
+def test_local_run_aoe_orch_preserves_same_role_parallel_lane_role_states(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    team_dir = project_root / ".aoe-team"
+    team_dir.mkdir(parents=True)
+    monkeypatch.setenv("AOE_TF_EXEC_MODE", "inplace")
+    request_ids = iter(["REQ-REVIEW-BASE"])
+    monkeypatch.setattr(tf_exec, "create_request_id", lambda: next(request_ids))
+
+    class Proc:
+        def __init__(self, returncode=0, stdout="", stderr=""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def fake_run_command(cmd, env=None, timeout_sec=0):
+        if cmd[:3] == ["git", "-C", str(project_root)]:
+            return Proc(returncode=1, stdout="", stderr="not git")
+        if cmd[:2] == ["tmux", "has-session"]:
+            return Proc(returncode=1, stdout="", stderr="")
+        if cmd[:2] == ["tmux", "new-session"]:
+            return Proc(returncode=0, stdout="", stderr="")
+        if cmd[:2] == ["tmux", "kill-session"]:
+            return Proc(returncode=0, stdout="", stderr="")
+        if cmd[:2] == ["aoe-orch", "run"] and "--dry-run" in cmd:
+            roles = cmd[cmd.index("--roles") + 1] if "--roles" in cmd else ""
+            payload = {"request_id": cmd[cmd.index("--request-id") + 1], "dispatch_plan": [{"role": token.strip()} for token in roles.split(",") if token.strip()]}
+            return Proc(returncode=0, stdout=json.dumps(payload), stderr="")
+        if cmd[:2] == ["aoe-orch", "run"]:
+            roles = cmd[cmd.index("--roles") + 1] if "--roles" in cmd else ""
+            req_id = cmd[cmd.index("--request-id") + 1]
+            payload = {
+                "request_id": req_id,
+                "complete": True,
+                "counts": {"assignments": 1, "replies": 1},
+                "roles": [{"role": roles, "status": "done", "message_id": f"MSG-{req_id}"}],
+                "done_roles": [roles],
+                "failed_roles": [],
+                "pending_roles": [],
+                "replies": [{"role": roles, "body": f"{roles} done"}],
+                "reply_messages": [{"id": f"REP-{req_id}", "from": roles, "status": "sent"}],
+            }
+            return Proc(returncode=0, stdout=json.dumps(payload), stderr="")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    args = argparse.Namespace(
+        project_root=project_root,
+        team_dir=team_dir,
+        aoe_orch_bin="aoe-orch",
+        orch_poll_sec=2.0,
+        orch_timeout_sec=180,
+        orch_command_timeout_sec=180,
+        no_wait=False,
+        roles="",
+        priority="P2",
+    )
+
+    result = tf_exec.run_aoe_orch(
+        args,
+        "Analyze in parallel and review in parallel",
+        "chat-1",
+        default_tf_exec_mode=gw.DEFAULT_TF_EXEC_MODE,
+        default_tf_work_root_name=gw.DEFAULT_TF_WORK_ROOT_NAME,
+        default_tf_exec_map_file=gw.DEFAULT_TF_EXEC_MAP_FILE,
+        default_tf_worker_startup_grace_sec=gw.DEFAULT_TF_WORKER_STARTUP_GRACE_SEC,
+        now_iso=gw.now_iso,
+        run_command=fake_run_command,
+        roles_override="Codex-Analyst,Reviewer",
+        metadata={
+            "request_id": "REQ-TOP",
+            "gateway_request_id": "REQ-TOP",
+            "phase2_execution_plan": {
+                "execution_mode": "parallel",
+                "execution_lanes": [
+                    {"lane_id": "L1", "role": "Codex-Analyst", "subtask_ids": ["S1"], "parallel": True},
+                    {"lane_id": "L2", "role": "Codex-Analyst", "subtask_ids": ["S2"], "parallel": True},
+                ],
+                "review_mode": "parallel",
+                "review_lanes": [
+                    {"lane_id": "R1", "role": "Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": True},
+                    {"lane_id": "R2", "role": "Reviewer", "kind": "verifier", "depends_on": ["L2"], "parallel": True},
+                ],
+                "parallel_workers": True,
+                "parallel_reviews": True,
+                "readonly": True,
+            },
+        },
+    )
+
+    role_rows = result["role_states"]
+    assert len(role_rows) == 4
+    assert sorted((row.get("role"), row.get("lane_id"), row.get("phase2_stage")) for row in role_rows) == [
+        ("Codex-Analyst", "L1", "execution"),
+        ("Codex-Analyst", "L2", "execution"),
+        ("Reviewer", "R1", "review"),
+        ("Reviewer", "R2", "review"),
+    ]
+
+
 def test_send_dispatch_result_finalizes_linked_request_ids() -> None:
     sent: list[dict] = []
     finalized: list[str] = []

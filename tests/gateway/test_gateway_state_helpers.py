@@ -1568,6 +1568,45 @@ def test_task_state_sync_prefers_gateway_request_id_and_keeps_parallel_phase2_re
     assert "phase2_requests: execution=REQ-L1, REQ-L2 review=REQ-R1, REQ-R2" in summary
 
 
+def test_derive_lane_states_prefers_lane_specific_status_for_same_role_rows() -> None:
+    task = {
+        "plan": {
+            "meta": {
+                "phase2_execution_plan": {
+                    "execution_lanes": [
+                        {"lane_id": "L1", "role": "Codex-Analyst"},
+                        {"lane_id": "L2", "role": "Codex-Analyst"},
+                    ],
+                    "review_lanes": [
+                        {"lane_id": "R1", "role": "Reviewer", "depends_on": ["L1"]},
+                        {"lane_id": "R2", "role": "Reviewer", "depends_on": ["L2"]},
+                    ],
+                }
+            }
+        }
+    }
+    snapshot = {
+        "rows": [
+            {"role": "Codex-Analyst", "status": "done", "lane_id": "L1", "phase2_stage": "execution"},
+            {"role": "Codex-Analyst", "status": "running", "lane_id": "L2", "phase2_stage": "execution"},
+            {"role": "Reviewer", "status": "pending", "lane_id": "R1", "phase2_stage": "review"},
+            {"role": "Reviewer", "status": "pending", "lane_id": "R2", "phase2_stage": "review"},
+        ],
+        "complete": False,
+        "pending_roles": ["Codex-Analyst", "Reviewer"],
+        "done_roles": [],
+        "failed_roles": [],
+    }
+
+    lane_states = task_state.derive_lane_states(task, snapshot)
+    assert lane_states["execution"] == [
+        {"lane_id": "L1", "role": "Codex-Analyst", "status": "done", "parallel": True},
+        {"lane_id": "L2", "role": "Codex-Analyst", "status": "running", "parallel": True},
+    ]
+    assert lane_states["review"][0]["status"] == "pending"
+    assert lane_states["review"][1]["status"] == "waiting_on_dependencies"
+
+
 def test_task_monitor_includes_lane_state_summary() -> None:
     entry = {
         "tasks": {

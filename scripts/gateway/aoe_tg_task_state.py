@@ -245,20 +245,36 @@ def derive_lane_states(
         return {}
 
     role_status: Dict[str, str] = {}
+    lane_role_status: Dict[Tuple[str, str], str] = {}
     for row in snapshot.get("rows") or []:
         if not isinstance(row, dict):
             continue
         role = str(row.get("role", "")).strip()
         if not role:
             continue
-        role_status[role] = _merge_role_status(role_status.get(role, "pending"), row.get("status"))
+        status = str(row.get("status", "pending")).strip().lower() or "pending"
+        role_status[role] = _merge_role_status(role_status.get(role, "pending"), status)
+        lane_id = str(row.get("lane_id", "")).strip()
+        if lane_id:
+            lane_role_status[(lane_id, role)] = _merge_role_status(
+                lane_role_status.get((lane_id, role), "pending"),
+                status,
+            )
 
     complete = bool(snapshot.get("complete", False))
     pending_roles = {str(x).strip() for x in (snapshot.get("pending_roles") or []) if str(x).strip()}
     done_roles = {str(x).strip() for x in (snapshot.get("done_roles") or []) if str(x).strip()}
     failed_roles = {str(x).strip() for x in (snapshot.get("failed_roles") or []) if str(x).strip()}
 
-    def execution_status_for(role: str) -> Tuple[str, str]:
+    def execution_status_for(role: str, lane_id: str = "") -> Tuple[str, str]:
+        if lane_id:
+            current_lane = lane_role_status.get((lane_id, role), "pending")
+            if current_lane == "failed":
+                return "failed", "lane role failed"
+            if current_lane == "done":
+                return "done", ""
+            if current_lane == "running":
+                return "running", ""
         current = role_status.get(role, "pending")
         if role in failed_roles or current == "failed":
             return "failed", "lane role failed"
@@ -279,7 +295,7 @@ def derive_lane_states(
         if not lane_id:
             continue
         role = str(row.get("role", "")).strip() or "Worker"
-        status, reason = execution_status_for(role)
+        status, reason = execution_status_for(role, lane_id)
         item: Dict[str, Any] = {
             "lane_id": lane_id,
             "role": role,
@@ -315,7 +331,7 @@ def derive_lane_states(
             )
             status = "waiting_on_dependencies"
         else:
-            status, reason = execution_status_for(role)
+            status, reason = execution_status_for(role, lane_id)
         item = {
             "lane_id": lane_id,
             "role": role,
@@ -1136,7 +1152,14 @@ def normalize_role_rows(data: Dict[str, Any], *, dedupe_roles: Callable[[Iterabl
             if not role:
                 continue
             status = str(item.get("status", "pending")).strip().lower() or "pending"
-            rows.append({"role": role, "status": status})
+            row = {"role": role, "status": status}
+            lane_id = str(item.get("lane_id", "")).strip()
+            if lane_id:
+                row["lane_id"] = lane_id
+            phase2_stage = str(item.get("phase2_stage", "")).strip().lower()
+            if phase2_stage:
+                row["phase2_stage"] = phase2_stage
+            rows.append(row)
 
     if rows:
         return rows
@@ -1150,7 +1173,14 @@ def normalize_role_rows(data: Dict[str, Any], *, dedupe_roles: Callable[[Iterabl
             if not role:
                 continue
             status = str(item.get("status", "pending")).strip().lower() or "pending"
-            rows.append({"role": role, "status": status})
+            row = {"role": role, "status": status}
+            lane_id = str(item.get("lane_id", "")).strip()
+            if lane_id:
+                row["lane_id"] = lane_id
+            phase2_stage = str(item.get("phase2_stage", "")).strip().lower()
+            if phase2_stage:
+                row["phase2_stage"] = phase2_stage
+            rows.append(row)
         if rows:
             return rows
 

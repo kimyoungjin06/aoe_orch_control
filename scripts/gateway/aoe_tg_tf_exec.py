@@ -553,10 +553,13 @@ def aggregate_parallel_stage_states(
             role = str(role_row.get("role", "")).strip()
             if not role:
                 continue
+            lane_id = str(role_row.get("lane_id", "")).strip()
+            phase2_stage_row = str(role_row.get("phase2_stage", "")).strip().lower()
+            role_key = "::".join(token for token in [role, phase2_stage_row, lane_id] if token) or role
             status = str(role_row.get("status", "pending")).strip().lower() or "pending"
-            prev = role_rows.get(role)
+            prev = role_rows.get(role_key)
             if prev is None or status_rank.get(status, 0) >= status_rank.get(str(prev.get("status", "")).strip().lower(), 0):
-                role_rows[role] = dict(role_row)
+                role_rows[role_key] = dict(role_row)
         done_roles.extend(list(row.get("done_roles") or []))
         failed_roles.extend(list(row.get("failed_roles") or []))
         pending_roles.extend(list(row.get("pending_roles") or []))
@@ -566,6 +569,35 @@ def aggregate_parallel_stage_states(
     aggregate["failed_roles"] = dedupe_roles(failed_roles)
     aggregate["pending_roles"] = [role for role in dedupe_roles(pending_roles) if role not in aggregate["failed_roles"]]
     return aggregate
+
+
+def annotate_lane_role_rows(state: Dict[str, Any], *, lane_id: str, phase2_stage: str) -> Dict[str, Any]:
+    if not isinstance(state, dict):
+        return {}
+    annotated = dict(state)
+    role_states = annotated.get("role_states")
+    if isinstance(role_states, list):
+        new_rows: List[Dict[str, Any]] = []
+        for row in role_states:
+            if not isinstance(row, dict):
+                continue
+            item = dict(row)
+            item.setdefault("lane_id", lane_id)
+            item.setdefault("phase2_stage", phase2_stage)
+            new_rows.append(item)
+        annotated["role_states"] = new_rows
+    roles_obj = annotated.get("roles")
+    if isinstance(roles_obj, list) and roles_obj and isinstance(roles_obj[0], dict):
+        new_roles: List[Dict[str, Any]] = []
+        for row in roles_obj:
+            if not isinstance(row, dict):
+                continue
+            item = dict(row)
+            item.setdefault("lane_id", lane_id)
+            item.setdefault("phase2_stage", phase2_stage)
+            new_roles.append(item)
+        annotated["roles"] = new_roles
+    return annotated
 
 
 def parse_json_object_from_text(text: str) -> Optional[Dict[str, Any]]:
@@ -1346,7 +1378,11 @@ def run_aoe_orch(
             for future in concurrent.futures.as_completed(future_map):
                 lane_id = future_map[future]
                 result_lane_id, lane_state, lane_meta, lane_roles = future.result()
-                lane_states[result_lane_id] = lane_state
+                lane_states[result_lane_id] = annotate_lane_role_rows(
+                    lane_state,
+                    lane_id=result_lane_id,
+                    phase2_stage=stage_name,
+                )
                 lane_metas[result_lane_id] = lane_meta
                 lane_role_rows[result_lane_id] = lane_roles
                 lane_workers.append(
