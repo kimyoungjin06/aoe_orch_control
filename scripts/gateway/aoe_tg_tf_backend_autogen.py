@@ -26,7 +26,7 @@ from aoe_tg_tf_exec import create_request_id, parse_roles_csv
 
 READONLY_ANALYST_ROLE = "Codex-Analyst"
 READONLY_WRITER_ROLE = "Codex-Writer"
-READONLY_REVIEWER_ROLE = "Reviewer"
+READONLY_REVIEWER_ROLE = "Codex-Reviewer"
 
 
 def autogen_core_installed() -> bool:
@@ -508,7 +508,7 @@ async def _run_autogen_runtime(request: TFBackendRequest, deps: TFBackendDeps) -
                 item_count=len(message.todo_items),
             )
 
-    class ReviewerAgent(RoutedAgent):
+    class CodexReviewerAgent(RoutedAgent):
         def __init__(self) -> None:
             super().__init__("sandbox reviewer")
 
@@ -630,7 +630,7 @@ async def _run_autogen_runtime(request: TFBackendRequest, deps: TFBackendDeps) -
     runtime = SingleThreadedAgentRuntime()
     await AnalystAgent.register(runtime, "analyst", lambda: AnalystAgent())
     await WriterAgent.register(runtime, "writer", lambda: WriterAgent())
-    await ReviewerAgent.register(runtime, "reviewer", lambda: ReviewerAgent())
+    await CodexReviewerAgent.register(runtime, "reviewer", lambda: CodexReviewerAgent())
     await OrchestratorAgent.register(runtime, "tf_orchestrator", lambda: OrchestratorAgent())
     runtime.start()
     recorder.add(

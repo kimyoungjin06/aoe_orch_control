@@ -1354,8 +1354,8 @@ def test_offdesk_prepare_warns_on_active_task_role_mismatch(tmp_path: Path) -> N
                 "updated_at": "2026-03-13T10:00:00+0900",
                 "created_at": "2026-03-13T09:55:00+0900",
                 "result": {
-                    "requested_roles": ["Codex-Writer", "Reviewer"],
-                    "executed_roles": ["Codex-Analyst", "Reviewer"],
+                    "requested_roles": ["Codex-Writer", "Codex-Reviewer"],
+                    "executed_roles": ["Codex-Analyst", "Codex-Reviewer"],
                     "dropped_roles": ["Codex-Writer"],
                     "added_roles": ["Codex-Analyst"],
                     "role_mismatch": True,
@@ -1368,7 +1368,7 @@ def test_offdesk_prepare_warns_on_active_task_role_mismatch(tmp_path: Path) -> N
 
     assert "- O7 MismatchProject [warn]" in text
     assert "task:role_mismatch" in text
-    assert "active_task_roles: requested=Codex-Writer, Reviewer | executed=Codex-Analyst, Reviewer" in text
+    assert "active_task_roles: requested=Codex-Writer, Codex-Reviewer | executed=Codex-Analyst, Codex-Reviewer" in text
     assert "active_task_role_mismatch: dropped=Codex-Writer added=Codex-Analyst" in text
 
 

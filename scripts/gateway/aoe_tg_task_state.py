@@ -58,7 +58,7 @@ def _normalize_lane_state_rows(raw_rows: Any, *, kind: str) -> List[Dict[str, An
             continue
         item: Dict[str, Any] = {
             "lane_id": lane_id[:32],
-            "role": str(row.get("role", "")).strip()[:64] or ("Reviewer" if kind == "review" else "Worker"),
+            "role": str(row.get("role", "")).strip()[:64] or ("Codex-Reviewer" if kind == "review" else "Worker"),
             "status": _normalize_lane_status(row.get("status")),
         }
         if kind == "execution":
@@ -317,7 +317,7 @@ def derive_lane_states(
         lane_id = str(row.get("lane_id", "")).strip()
         if not lane_id:
             continue
-        role = str(row.get("role", "")).strip() or "Reviewer"
+        role = str(row.get("role", "")).strip() or "Codex-Reviewer"
         depends = [str(x).strip() for x in (row.get("depends_on") or []) if str(x).strip()]
         waiting_on = [
             lane for lane in depends if execution_status_by_lane.get(lane, "pending") not in {"done"}

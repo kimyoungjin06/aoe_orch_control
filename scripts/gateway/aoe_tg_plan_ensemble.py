@@ -58,7 +58,7 @@ def _planner_prompt(
         f"- subtasks는 1~{max(1, int(max_subtasks))}개\n"
         "- 각 subtask는 겹치지 않는 산출물과 검증 기준을 가져야 한다\n"
         "- 실행팀이 병렬로 일할 수 있도록 독립 가능한 단위로 분해한다\n"
-        "- Reviewer/critic이 최종 검증할 수 있도록 acceptance를 구체적으로 쓴다\n"
+        "- Codex-Reviewer/critic이 최종 검증할 수 있도록 acceptance를 구체적으로 쓴다\n"
         "- 계획이 덜 완성됐으면 범위를 줄이고, ambiguity를 드러내라\n"
         f"{feedback}\n"
         f"사용자 요청:\n{user_prompt.strip()}\n"
@@ -161,7 +161,7 @@ def run_phase1_ensemble_planning(
     plan_roles_from_subtasks: Callable[[Optional[Dict[str, Any]]], List[str]],
     report_progress: Optional[Callable[..., None]] = None,
 ) -> Dict[str, Any]:
-    workers = [str(r).strip() for r in (available_roles or []) if str(r).strip()] or ["Reviewer"]
+    workers = [str(r).strip() for r in (available_roles or []) if str(r).strip()] or ["Codex-Reviewer"]
     providers_csv = str(getattr(args, "plan_phase1_providers", "codex,claude") or "codex,claude")
     preferred = []
     for token in providers_csv.split(","):

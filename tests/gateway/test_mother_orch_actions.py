@@ -60,7 +60,7 @@ def test_normalize_dispatch_task_requires_objective_and_preserves_roles() -> Non
             "action": "dispatch",
             "project_key": "O3",
             "prompt": "최근 TODO와 분석 문맥을 보고 다음 실행 우선순위를 정리해줘",
-            "requested_roles": ["Codex-Analyst", "Reviewer"],
+            "requested_roles": ["Codex-Analyst", "Codex-Reviewer"],
         }
     )
 
@@ -70,7 +70,7 @@ def test_normalize_dispatch_task_requires_objective_and_preserves_roles() -> Non
     assert row["readonly"] is False
     assert row["mutates_runtime"] is True
     assert row["args"]["objective"].startswith("최근 TODO")
-    assert row["args"]["requested_roles"] == ["Codex-Analyst", "Reviewer"]
+    assert row["args"]["requested_roles"] == ["Codex-Analyst", "Codex-Reviewer"]
 
 
 def test_normalize_retry_task_requires_task_ref() -> None:

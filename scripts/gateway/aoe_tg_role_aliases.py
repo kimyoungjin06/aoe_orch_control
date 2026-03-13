@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Role naming compatibility helpers.
 
-This module preserves compatibility with older `Local-*` role names while the
-canonical naming scheme moves to provider-explicit `Codex-*` roles.
+This module preserves compatibility with older role names while the canonical
+naming scheme moves to provider-explicit `Codex-*` roles.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from typing import Iterable, List
 
 
 ROLE_RENAMES = {
+    "Reviewer": "Codex-Reviewer",
     "Local-Dev": "Codex-Dev",
     "Local-Writer": "Codex-Writer",
     "Local-Analyst": "Codex-Analyst",

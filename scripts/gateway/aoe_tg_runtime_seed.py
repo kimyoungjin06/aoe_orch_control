@@ -20,7 +20,7 @@ from aoe_tg_role_aliases import canonicalize_role_name, resolve_role_asset, reso
 
 DEFAULT_REPAIR_AGENTS = [
     "DataEngineer:codex",
-    "Reviewer:codex",
+    "Codex-Reviewer:codex",
     "Claude-Reviewer:claude",
     "Codex-Dev:codex",
     "Codex-Writer:codex",

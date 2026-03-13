@@ -116,7 +116,7 @@ Current repo concept -> AutoGen Core concept:
 
 - project orch -> external supervisor outside AutoGen
 - TF run -> one AutoGen runtime session
-- worker role (`Reviewer`, `Codex-Dev`, `DataEngineer`) -> RoutedAgent type
+- worker role (`Codex-Reviewer`, `Codex-Dev`, `DataEngineer`) -> RoutedAgent type
 - Orch request context -> runtime/session bootstrap payload
 - critic/verifier gate -> intervention handler or dedicated reviewer agent
 - follow-up proposal extraction -> adapter post-processing, not AutoGen-owned backlog mutation
@@ -180,9 +180,9 @@ Current status:
 - read-only AutoGen Core runner is implemented for analyst/reviewer and writer/reviewer shapes
 - benchmark parity remains green for review, synthesis, and reporting contract cases
 - successful sandbox pilots completed against canonical `TODO.md` in:
-  - `TwinPaper` (`Codex-Analyst` + `Reviewer`)
-  - `KISTI_NanoClustering` (`Codex-Analyst` + `Reviewer`)
-  - `Local_Map_Analysis` (`Codex-Writer` + `Reviewer`)
+  - `TwinPaper` (`Codex-Analyst` + `Codex-Reviewer`)
+  - `KISTI_NanoClustering` (`Codex-Analyst` + `Codex-Reviewer`)
+  - `Local_Map_Analysis` (`Codex-Writer` + `Codex-Reviewer`)
 - backend-native follow-up proposals are emitted in sandbox gateway runs
 
 Not for:

@@ -26,7 +26,7 @@ def test_normalize_orch_task_spec_fills_defaults_and_lineage() -> None:
         {
             "title": "Rebuild nightly queue",
             "objective": "Recover actionable backlog from recent work and prepare offdesk execution",
-            "roles": ["Codex-Analyst", "Reviewer"],
+            "roles": ["Codex-Analyst", "Codex-Reviewer"],
             "acceptance": ["Queue is rebuilt from recent docs", "Operator can review drift before offdesk"],
             "retry_budget": {"max_retries": 4, "critic_owned": False},
             "source_ref": {"todo_id": "TODO-101"},
@@ -44,7 +44,7 @@ def test_normalize_orch_task_spec_fills_defaults_and_lineage() -> None:
     assert row["priority"] == "P2"
     assert row["readonly"] is True
     assert row["approval_mode"] == "policy"
-    assert row["requested_roles"] == ["Codex-Analyst", "Reviewer"]
+    assert row["requested_roles"] == ["Codex-Analyst", "Codex-Reviewer"]
     assert row["source_ref"]["todo_id"] == "TODO-101"
     assert row["retry_budget"] == {"max_retries": 4, "critic_owned": False}
 
@@ -54,7 +54,7 @@ def test_normalize_tf_plan_uses_requested_roles_and_block_reasons() -> None:
         {
             "title": "Summarize benchmark drift",
             "objective": "Produce a compact benchmark drift note",
-            "requested_roles": ["Codex-Writer", "Reviewer"],
+            "requested_roles": ["Codex-Writer", "Codex-Reviewer"],
         },
         task_id="TASK-201",
         project_key="O3",
@@ -87,17 +87,17 @@ def test_normalize_phase2_team_spec_builds_parallel_execution_and_review_groups(
                 {"id": "S2", "title": "Document", "goal": "write handoff", "owner_role": "Codex-Writer"},
             ],
         },
-        roles=["Codex-Dev", "Codex-Writer", "Reviewer"],
-        verifier_roles=["Reviewer", "QA"],
+        roles=["Codex-Dev", "Codex-Writer", "Codex-Reviewer"],
+        verifier_roles=["Codex-Reviewer", "QA"],
         require_verifier=True,
     )
 
     assert spec["execution_mode"] == "parallel"
     assert [row["role"] for row in spec["execution_groups"]] == ["Codex-Dev", "Codex-Writer"]
     assert spec["review_mode"] == "parallel"
-    assert [row["role"] for row in spec["review_groups"]] == ["Reviewer", "QA"]
-    assert spec["critic_role"] == "Reviewer"
-    assert "Reviewer" in spec["team_roles"]
+    assert [row["role"] for row in spec["review_groups"]] == ["Codex-Reviewer", "QA"]
+    assert spec["critic_role"] == "Codex-Reviewer"
+    assert "Codex-Reviewer" in spec["team_roles"]
 
 
 def test_normalize_phase2_team_spec_expands_claude_companion_execution_and_review_groups() -> None:
@@ -115,10 +115,10 @@ def test_normalize_phase2_team_spec_expands_claude_companion_execution_and_revie
             "Claude-Writer",
             "Codex-Analyst",
             "Claude-Analyst",
-            "Reviewer",
+            "Codex-Reviewer",
             "Claude-Reviewer",
         ],
-        verifier_roles=["Reviewer"],
+        verifier_roles=["Codex-Reviewer"],
         require_verifier=True,
     )
 
@@ -128,7 +128,7 @@ def test_normalize_phase2_team_spec_expands_claude_companion_execution_and_revie
         "Codex-Analyst",
         "Claude-Analyst",
     ]
-    assert [row["role"] for row in spec["review_groups"]] == ["Reviewer", "Claude-Reviewer"]
+    assert [row["role"] for row in spec["review_groups"]] == ["Codex-Reviewer", "Claude-Reviewer"]
     assert spec["execution_mode"] == "parallel"
     assert spec["review_mode"] == "parallel"
     assert "Claude-Writer" in spec["team_roles"]
