@@ -60,6 +60,7 @@ import aoe_tg_runtime_seed as runtime_seed
 import aoe_tg_todo_policy as todo_policy
 import aoe_tg_run_handlers as run_handlers
 import aoe_tg_sync_catalog as sync_catalog
+import aoe_tg_sync_discovery as sync_discovery
 import aoe_tg_sync_extract as sync_extract
 import aoe_tg_scheduler_handlers as sched
 import aoe_tg_schema as schema
@@ -2542,6 +2543,37 @@ def test_sync_extract_module_matches_scheduler_doc_extraction_exports() -> None:
         text, allow_any_checkbox=False
     )
     assert sync_extract._extract_salvage_proposal_items_from_doc(text) == sched._extract_salvage_proposal_items_from_doc(text)
+
+
+def test_sync_discovery_module_matches_scheduler_discovery_exports(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    team_dir = project_root / ".aoe-team"
+    docs_dir = project_root / "docs"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    docs_dir.mkdir(parents=True, exist_ok=True)
+
+    (team_dir / "AOE_TODO.md").write_text("# AOE_TODO.md\n\n## Tasks\n\n", encoding="utf-8")
+    (project_root / "TODO.md").write_text("- [ ] P1: file fallback todo\n", encoding="utf-8")
+    (docs_dir / "meeting-notes.md").write_text("# Todo\n- P1: recent fallback todo\n", encoding="utf-8")
+
+    mode_a, items_a, meta_a, sources_a = sync_discovery._discover_sync_fallback_todos(
+        project_root=project_root,
+        docs_limit=3,
+        files_limit=20,
+        max_bytes=512 * 1024,
+        min_mtime=0.0,
+    )
+    mode_b, items_b, meta_b, sources_b = sched._discover_sync_fallback_todos(
+        project_root=project_root,
+        docs_limit=3,
+        files_limit=20,
+        max_bytes=512 * 1024,
+        min_mtime=0.0,
+    )
+
+    assert (mode_a, items_a, sources_a) == (mode_b, items_b, sources_b)
+    assert meta_a["items_found"] == meta_b["items_found"]
+    assert meta_a["active_modes"] == meta_b["active_modes"]
 
 
 def test_task_state_sanitize_task_record_matches_gateway(monkeypatch) -> None:
