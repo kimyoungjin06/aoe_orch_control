@@ -59,6 +59,7 @@ import aoe_tg_queue_engine as queue_engine
 import aoe_tg_runtime_seed as runtime_seed
 import aoe_tg_todo_policy as todo_policy
 import aoe_tg_run_handlers as run_handlers
+import aoe_tg_sync_catalog as sync_catalog
 import aoe_tg_scheduler_handlers as sched
 import aoe_tg_schema as schema
 import aoe_tg_task_state as task_state
@@ -2498,6 +2499,30 @@ def test_priority_actions_module_matches_task_and_offdesk_policies() -> None:
         "action": "/sync bootstrap O4 24h",
         "reason": "bootstrap backlog because canonical TODO.md is missing",
     }
+
+
+def test_sync_catalog_module_classifies_sources_and_policy_consistently(tmp_path: Path) -> None:
+    root = tmp_path / "Project"
+    docs = root / "docs" / "handoff"
+    docs.mkdir(parents=True, exist_ok=True)
+    path = docs / "latest_handoff.md"
+    path.write_text("# Handoff\n- [ ] package release notes\n", encoding="utf-8")
+
+    info = sync_catalog._classify_sync_source(path, root, mode="recent_docs")
+    assert info["source_class"] == "recent_doc"
+    assert info["sync_group"] == "recent_docs"
+    assert info["doc_type"] == "handoff"
+    assert float(info["confidence"]) >= 0.8
+
+    policy = {
+        "doc_type_confidence": {"handoff": 0.91},
+        "group_overrides": {"recent_doc": "recent_handoff_docs"},
+        "min_confidence": 0.75,
+    }
+    patched = sync_catalog._apply_sync_policy(info, rel="docs/handoff/latest_handoff.md", policy=policy)
+    assert patched["sync_group"] == "recent_handoff_docs"
+    assert float(patched["confidence"]) == pytest.approx(0.91, rel=0, abs=1e-6)
+    assert sync_catalog._sync_candidate_allowed(patched) is True
 
 
 def test_task_state_sanitize_task_record_matches_gateway(monkeypatch) -> None:
