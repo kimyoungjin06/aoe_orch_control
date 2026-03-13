@@ -60,6 +60,7 @@ import aoe_tg_runtime_seed as runtime_seed
 import aoe_tg_todo_policy as todo_policy
 import aoe_tg_run_handlers as run_handlers
 import aoe_tg_sync_catalog as sync_catalog
+import aoe_tg_sync_extract as sync_extract
 import aoe_tg_scheduler_handlers as sched
 import aoe_tg_schema as schema
 import aoe_tg_task_state as task_state
@@ -2523,6 +2524,24 @@ def test_sync_catalog_module_classifies_sources_and_policy_consistently(tmp_path
     assert patched["sync_group"] == "recent_handoff_docs"
     assert float(patched["confidence"]) == pytest.approx(0.91, rel=0, abs=1e-6)
     assert sync_catalog._sync_candidate_allowed(patched) is True
+
+
+def test_sync_extract_module_matches_scheduler_doc_extraction_exports() -> None:
+    text = """
+# Notes
+
+## Todo
+- Purpose:
+- P1: implement the actual follow-up
+
+## Next steps
+- P2 review the summary before off-desk handoff
+"""
+
+    assert sync_extract._extract_todo_items_from_doc(text, allow_any_checkbox=False) == sched._extract_todo_items_from_doc(
+        text, allow_any_checkbox=False
+    )
+    assert sync_extract._extract_salvage_proposal_items_from_doc(text) == sched._extract_salvage_proposal_items_from_doc(text)
 
 
 def test_task_state_sanitize_task_record_matches_gateway(monkeypatch) -> None:
