@@ -44,6 +44,12 @@ def task_priority_action_snapshot(
         elif manual_exec or manual_review:
             safe_phase = "manual_intervention"
 
+    def _lane_suffix(exec_ids: List[str], review_ids: List[str]) -> str:
+        lane_tokens = [str(x).strip() for x in exec_ids + review_ids if str(x).strip()]
+        if not lane_tokens:
+            return ""
+        return " lane " + ",".join(lane_tokens)
+
     if safe_label and safe_phase in {"needs_retry", "critic_review"}:
         lane_bits: List[str] = []
         if rerun_exec:
@@ -64,7 +70,7 @@ def task_priority_action_snapshot(
             lane_bits.append("review=" + ",".join(manual_review))
         suffix = f" target {'; '.join(lane_bits)}" if lane_bits else ""
         return {
-            "action": f"/task {safe_label}",
+            "action": f"/followup {safe_label}{_lane_suffix(manual_exec, manual_review)}",
             "reason": f"active task requires operator review ({safe_phase}){suffix}",
         }
 
