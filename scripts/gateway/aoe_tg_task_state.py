@@ -1060,6 +1060,33 @@ def summarize_task_monitor(
         review_summary = lane_summary.get("review") if isinstance(lane_summary.get("review"), dict) else {}
         review_verdicts = lane_summary.get("review_verdicts") if isinstance(lane_summary.get("review_verdicts"), dict) else {}
         lane_parts: List[str] = []
+        phase1_parts: List[str] = []
+        phase1_mode = str(task.get("phase1_mode", "")).strip()
+        phase1_rounds = max(0, int(task.get("phase1_rounds", 0) or 0))
+        phase1_providers = dedupe_roles(task.get("phase1_providers") or [])
+        phase1_current_phase = str(task.get("phase1_current_phase", "")).strip()
+        phase1_current_round = max(0, int(task.get("phase1_current_round", 0) or 0))
+        phase1_current_total = max(0, int(task.get("phase1_current_total_rounds", 0) or 0))
+        phase1_current_provider = str(task.get("phase1_current_provider", "")).strip()
+        phase1_current_planner = str(task.get("phase1_current_planner", "")).strip()
+        phase1_current_critic = str(task.get("phase1_current_critic", "")).strip()
+        if tf_phase == "planning" and (phase1_mode or phase1_rounds or phase1_providers):
+            phase1_token = "phase1 {mode} {rounds}".format(
+                mode=phase1_mode or "single",
+                rounds=(
+                    f"{phase1_current_round}/{phase1_current_total}"
+                    if phase1_current_round and phase1_current_total
+                    else str(phase1_rounds or 1)
+                ),
+            )
+            phase1_parts.append(phase1_token)
+            if phase1_providers:
+                phase1_parts.append("providers=" + ",".join(phase1_providers))
+            current_actor = phase1_current_provider or phase1_current_planner or phase1_current_critic
+            if current_actor:
+                phase1_parts.append("now=" + current_actor)
+            if phase1_current_phase:
+                phase1_parts.append("step=" + phase1_current_phase)
         if exec_summary:
             lane_parts.append("exec " + ",".join(f"{key}={value}" for key, value in sorted(exec_summary.items())))
         if review_summary:
@@ -1088,6 +1115,8 @@ def summarize_task_monitor(
             lane_parts.append(" ".join(request_parts))
         if lane_parts:
             lane_text += " [" + " | ".join(lane_parts) + "]"
+        if phase1_parts:
+            lane_text += " <" + " ".join(phase1_parts) + ">"
         target_parts: List[str] = []
         if rerun_exec or rerun_review:
             target_parts.append(

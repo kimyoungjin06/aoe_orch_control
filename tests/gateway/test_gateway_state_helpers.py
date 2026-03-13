@@ -988,6 +988,36 @@ def test_plan_critic_primary_issue_and_lifecycle_summary_use_schema_reason() -> 
     assert "exec_reason: need a stricter acceptance contract" in summary
 
 
+def test_task_lifecycle_summary_includes_phase1_planning_metadata() -> None:
+    summary = gw.summarize_task_lifecycle(
+        "Demo",
+        {
+            "request_id": "REQ-PLAN",
+            "short_id": "T-301",
+            "prompt": "Investigate issue and prepare plan",
+            "status": "running",
+            "mode": "dispatch",
+            "roles": ["Codex-Analyst", "Claude-Analyst"],
+            "verifier_roles": [],
+            "tf_phase": "planning",
+            "tf_phase_reason": "planner | 1/3 | phase1 round 1/3 provider=codex",
+            "phase1_mode": "ensemble",
+            "phase1_rounds": 3,
+            "phase1_providers": ["codex", "claude"],
+            "phase1_candidate_roles": ["Codex-Analyst", "Claude-Analyst", "Reviewer"],
+            "phase1_current_phase": "planner",
+            "phase1_current_round": 1,
+            "phase1_current_total_rounds": 3,
+            "phase1_current_provider": "codex",
+            "stages": {"planning": "running"},
+        },
+    )
+
+    assert "phase1: ensemble rounds=3 providers=codex, claude" in summary
+    assert "phase1_progress: planner 1/3 provider=codex" in summary
+    assert "phase1_candidate_roles: Codex-Analyst, Claude-Analyst, Reviewer" in summary
+
+
 def test_blocked_state_helpers_clear_and_promote_manual_followup() -> None:
     item = {
         "status": "running",
@@ -1246,6 +1276,45 @@ def test_task_state_module_matches_gateway_alias_and_monitor_helpers() -> None:
     )
     assert state_summary == gw_summary
     assert "lanes E1/R1" in gw_summary
+
+
+def test_task_monitor_includes_phase1_planning_progress() -> None:
+    entry = {
+        "tasks": {
+            "REQ-PLAN": {
+                "request_id": "REQ-PLAN",
+                "short_id": "T-301",
+                "prompt": "Investigate issue and prepare plan",
+                "status": "running",
+                "stage": "planning",
+                "tf_phase": "planning",
+                "roles": ["Codex-Analyst", "Claude-Analyst"],
+                "phase1_mode": "ensemble",
+                "phase1_rounds": 3,
+                "phase1_providers": ["codex", "claude"],
+                "phase1_current_phase": "planner",
+                "phase1_current_round": 1,
+                "phase1_current_total_rounds": 3,
+                "phase1_current_provider": "codex",
+                "stages": {"planning": "running"},
+                "updated_at": "2026-03-13T20:10:00+0900",
+                "created_at": "2026-03-13T20:05:00+0900",
+            }
+        },
+        "task_alias_index": {},
+        "task_seq": 0,
+    }
+
+    summary = task_state.summarize_task_monitor(
+        "Demo",
+        entry,
+        limit=5,
+        normalize_task_status=gw.normalize_task_status,
+        dedupe_roles=gw.dedupe_roles,
+        task_display_label=gw.task_display_label,
+        lifecycle_stages=gw.LIFECYCLE_STAGES,
+    )
+    assert "<phase1 ensemble 1/3 providers=codex,claude now=codex step=planner>" in summary
 
 
 def test_task_state_snapshot_and_sync_match_gateway() -> None:

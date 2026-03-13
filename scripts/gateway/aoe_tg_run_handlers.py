@@ -4,6 +4,7 @@
 import copy
 import os
 import threading
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
@@ -701,6 +702,9 @@ def _provision_planning_task(
     touch_chat_recent_task_ref: Callable[..., None],
     set_chat_selected_task_ref: Callable[..., None],
     now_iso: Callable[[], str],
+    phase1_mode: str = "",
+    phase1_rounds: int = 0,
+    phase1_providers: Optional[List[str]] = None,
 ) -> tuple[str, Dict[str, Any]]:
     request_id = str(create_request_id() or "").strip()
     task = ensure_task_record(
@@ -718,6 +722,13 @@ def _provision_planning_task(
     lifecycle_set_stage(task, "planning", "running", note="phase1 planning queued")
     task["tf_phase"] = "planning"
     task["tf_phase_reason"] = "phase1 planning queued"
+    if phase1_mode:
+        task["phase1_mode"] = str(phase1_mode).strip()
+    if int(phase1_rounds or 0) > 0:
+        task["phase1_rounds"] = int(phase1_rounds)
+    if phase1_providers:
+        task["phase1_providers"] = [str(item).strip() for item in phase1_providers if str(item).strip()]
+    task["phase1_candidate_roles"] = [str(item).strip() for item in (selected_roles or []) if str(item).strip()]
     task["updated_at"] = now_iso()
     entry["last_request_id"] = request_id
     entry["updated_at"] = now_iso()
@@ -751,6 +762,22 @@ def _update_provisional_planning_task(
     task["status"] = "running"
     task["tf_phase"] = "planning"
     task["tf_phase_reason"] = note
+    task["phase1_current_phase"] = token or "planning"
+    task["phase1_current_detail"] = str(detail or "").strip()[:240]
+    if attempt > 0:
+        task["phase1_current_round"] = int(attempt)
+    if total > 0:
+        task["phase1_current_total_rounds"] = int(total)
+    detail_text = str(detail or "").strip()
+    provider_match = re.search(r"\bprovider=([a-zA-Z0-9._-]+)", detail_text)
+    planner_match = re.search(r"\bplanner=([a-zA-Z0-9._-]+)", detail_text)
+    critic_match = re.search(r"\bcritic=([a-zA-Z0-9._-]+)", detail_text)
+    if provider_match:
+        task["phase1_current_provider"] = provider_match.group(1)
+    if planner_match:
+        task["phase1_current_planner"] = planner_match.group(1)
+    if critic_match:
+        task["phase1_current_critic"] = critic_match.group(1)
     task["updated_at"] = now_iso()
 
 
@@ -1514,6 +1541,16 @@ def handle_run_or_unknown_command(
     effective_no_wait = bool(effective.no_wait)
 
     planning_requested = bool(getattr(args, "task_planning", False)) or (run_control_mode in {"retry", "replan"})
+    configured_phase1_mode = (
+        "ensemble" if bool(getattr(args, "plan_phase1_ensemble", True)) and planning_requested and dispatch_mode else "single"
+    )
+    configured_phase1_rounds = max(3, int(getattr(args, "plan_phase1_rounds", 3) or 3)) if configured_phase1_mode == "ensemble" else 1
+    configured_phase1_providers = [
+        str(token).strip().lower()
+        for token in str(getattr(args, "plan_phase1_providers", "codex,claude") or "codex,claude").split(",")
+        if str(token).strip()
+    ]
+    selected_dispatch_roles = parse_roles_csv(dispatch_roles)
     provisional_req_id = ""
     provisional_task: Optional[Dict[str, Any]] = None
     if dispatch_mode and planning_requested and (not args.dry_run):
@@ -1523,7 +1560,7 @@ def handle_run_or_unknown_command(
             chat_id=chat_id,
             key=key,
             prompt=prompt,
-            selected_roles=parse_roles_csv(dispatch_roles),
+            selected_roles=selected_dispatch_roles,
             require_verifier=bool(args.require_verifier),
             create_request_id=create_request_id,
             ensure_task_record=ensure_task_record,
@@ -1531,11 +1568,14 @@ def handle_run_or_unknown_command(
             touch_chat_recent_task_ref=touch_chat_recent_task_ref,
             set_chat_selected_task_ref=set_chat_selected_task_ref,
             now_iso=now_iso,
+            phase1_mode=configured_phase1_mode,
+            phase1_rounds=configured_phase1_rounds,
+            phase1_providers=configured_phase1_providers,
         )
         save_manager_state(args.manager_state_file, manager_state)
 
     if args.dry_run:
-        selected_roles = parse_roles_csv(dispatch_roles)
+        selected_roles = list(selected_dispatch_roles)
         plan_meta = _compute_dispatch_plan(
             args=args,
             p_args=p_args,
