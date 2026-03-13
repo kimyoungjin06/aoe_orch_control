@@ -23,6 +23,7 @@ from aoe_tg_ops_view import (
 from aoe_tg_package_paths import team_tmux_script
 from aoe_tg_project_runtime import project_runtime_issue, project_runtime_label
 from aoe_tg_task_view import task_display_label
+from aoe_tg_task_state import task_lane_target_snapshot, task_priority_action_snapshot
 from aoe_tg_todo_policy import (
     normalize_proposal_kind,
     normalize_proposal_priority,
@@ -115,7 +116,7 @@ def _sync_quality_snapshot(entry: Dict[str, Any]) -> Dict[str, Any]:
         quality = "never"
     elif mode == "scenario" and has_backlog_docs and not non_backlog_docs:
         quality = "canonical"
-    elif ("fallback:" in mode) or mode in {"recent_docs", "salvage_docs", "todo_files"}:
+    elif ("fallback:" in mode) or mode in {"recent_docs", "salvage_docs", "bootstrap_docs", "todo_files"}:
         quality = "discovery"
         warn = True
         note = f"last sync used non-canonical discovery mode ({mode})"
@@ -209,6 +210,61 @@ def _proposal_triage_snapshot(entry: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _priority_action_snapshot(
+    *,
+    alias: str,
+    active_task_label: str,
+    active_task_tf_phase: str,
+    active_task_targets: Optional[Dict[str, List[str]]] = None,
+    syncback_pending: bool,
+    followup_count: int,
+    proposal_count: int,
+    bootstrap_recommended: bool,
+    blocked_count: int,
+    open_count: int,
+    sync_quality_warn: bool,
+) -> Dict[str, str]:
+    task_priority = task_priority_action_snapshot(
+        label=active_task_label,
+        tf_phase=active_task_tf_phase,
+        rerun_execution_lane_ids=list((active_task_targets or {}).get("rerun_execution_lane_ids") or []),
+        rerun_review_lane_ids=list((active_task_targets or {}).get("rerun_review_lane_ids") or []),
+        manual_followup_execution_lane_ids=list((active_task_targets or {}).get("manual_followup_execution_lane_ids") or []),
+        manual_followup_review_lane_ids=list((active_task_targets or {}).get("manual_followup_review_lane_ids") or []),
+    )
+    if str(task_priority.get("action", "")).strip():
+        return task_priority
+    if syncback_pending:
+        return {
+            "action": f"/todo {alias} syncback preview",
+            "reason": "canonical TODO drift pending syncback",
+        }
+    if followup_count > 0:
+        return {
+            "action": f"/todo {alias} followup",
+            "reason": "manual follow-up backlog pending review",
+        }
+    if proposal_count > 0:
+        return {
+            "action": f"/todo {alias} proposals",
+            "reason": "open todo proposals pending triage",
+        }
+    if bootstrap_recommended:
+        return {
+            "action": f"/sync bootstrap {alias} 24h",
+            "reason": "bootstrap backlog from recent project documents",
+        }
+    if blocked_count > 0 or open_count == 0 or sync_quality_warn:
+        return {
+            "action": f"/sync preview {alias} 24h",
+            "reason": "review sync source quality before execution",
+        }
+    return {
+        "action": f"/orch status {alias}",
+        "reason": "inspect current project runtime and queue state",
+    }
+
+
 def _normalize_task_status(raw: Any) -> str:
     token = str(raw or "").strip().lower()
     if token in {"pending", "running", "completed", "failed"}:
@@ -285,11 +341,11 @@ def _latest_task_snapshot(entry: Dict[str, Any]) -> Dict[str, Any]:
     exec_summary = lane_summary.get("execution") if isinstance(lane_summary.get("execution"), dict) else {}
     review_summary = lane_summary.get("review") if isinstance(lane_summary.get("review"), dict) else {}
     review_verdicts = lane_summary.get("review_verdicts") if isinstance(lane_summary.get("review_verdicts"), dict) else {}
-    exec_critic = best_task.get("exec_critic") if isinstance(best_task.get("exec_critic"), dict) else {}
-    rerun_exec = [str(x).strip() for x in (exec_critic.get("rerun_execution_lane_ids") or []) if str(x).strip()]
-    rerun_review = [str(x).strip() for x in (exec_critic.get("rerun_review_lane_ids") or []) if str(x).strip()]
-    manual_exec = [str(x).strip() for x in (exec_critic.get("manual_followup_execution_lane_ids") or []) if str(x).strip()]
-    manual_review = [str(x).strip() for x in (exec_critic.get("manual_followup_review_lane_ids") or []) if str(x).strip()]
+    lane_targets = task_lane_target_snapshot(best_task)
+    rerun_exec = list(lane_targets.get("rerun_execution_lane_ids") or [])
+    rerun_review = list(lane_targets.get("rerun_review_lane_ids") or [])
+    manual_exec = list(lane_targets.get("manual_followup_execution_lane_ids") or [])
+    manual_review = list(lane_targets.get("manual_followup_review_lane_ids") or [])
     return {
         "request_id": best_req,
         "label": label,
@@ -304,6 +360,7 @@ def _latest_task_snapshot(entry: Dict[str, Any]) -> Dict[str, Any]:
         "rerun_review_lane_ids": rerun_review,
         "manual_followup_execution_lane_ids": manual_exec,
         "manual_followup_review_lane_ids": manual_review,
+        "lane_targets": lane_targets,
     }
 
 
@@ -525,39 +582,63 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
     manual_followup_count = blocked_bucket_count(todos, "manual_followup")
     blocked_head = blocked_head_summary(todos)
     notes: List[str] = []
+    attention: List[str] = []
+    severity_score = 0
     status = "ready"
     if runtime_issue:
         status = "blocked"
         notes.append(f"runtime not ready: {runtime_label}")
+        attention.append("runtime")
+        severity_score += 100
     if not scenario_exists:
         status = "blocked"
         notes.append("missing .aoe-team/AOE_TODO.md")
+        attention.append("bootstrap")
+        severity_score += 90
     if not canonical_exists:
         status = "warn" if status == "ready" else status
         notes.append("missing canonical TODO.md")
+        attention.append("bootstrap")
+        severity_score += 70
     if canonical_exists and not include_ok:
         status = "warn" if status == "ready" else status
         notes.append("AOE_TODO.md does not include canonical TODO.md")
+        attention.append("bootstrap")
+        severity_score += 65
     if counts["open"] == 0 and counts["running"] == 0 and counts["blocked"] == 0 and open_proposals == 0:
         status = "blocked" if status == "ready" else status
         notes.append("no runnable backlog")
+        attention.append("backlog:none")
+        severity_score += 85
     if pending_flag:
         status = "warn" if status == "ready" else status
         notes.append("pending todo awaiting dispatch/approval")
+        attention.append("pending")
+        severity_score += 20
     if counts["running"] > 0:
         status = "warn" if status == "ready" else status
         notes.append("task already running")
+        attention.append("running")
+        severity_score += 15
     if counts["blocked"] > 0:
         status = "warn" if status == "ready" else status
         notes.append(f"blocked backlog present ({counts['blocked']})")
+        attention.append(f"blocked:{counts['blocked']}")
+        severity_score += 45
     if manual_followup_count > 0:
         status = "warn" if status == "ready" else status
         notes.append(f"manual follow-up backlog present ({manual_followup_count})")
+        attention.append(f"followup:{manual_followup_count}")
+        severity_score += 55
     if open_proposals > 0:
         status = "warn" if status == "ready" else status
         notes.append(f"open todo proposals pending review ({open_proposals})")
+        attention.append(f"proposals:{open_proposals}")
+        severity_score += 25
         if bool(proposal_triage.get("high_priority", False)):
             notes.append(f"high-priority proposals pending review ({proposal_triage.get('priority_summary', '-')})")
+            attention.append(f"proposal_p1:{proposal_triage.get('priority_summary', '-')}")
+            severity_score += 20
     if syncback_pending:
         status = "warn" if status == "ready" else status
         notes.append(
@@ -565,31 +646,78 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
             f"(done={syncback_counts['done']} reopen={syncback_counts['reopen']} "
             f"append={syncback_counts['append']} blocked_notes={syncback_counts['blocked']})"
         )
+        attention.append("syncback")
+        severity_score += 15
     if syncback_error:
         status = "warn" if status == "ready" else status
         notes.append(f"syncback preview failed: {syncback_error}")
+        attention.append("syncback:error")
+        severity_score += 20
     if bool(sync_quality.get("warn")):
         status = "warn" if status == "ready" else status
         note = str(sync_quality.get("note", "")).strip()
         if note:
             notes.append(note)
+        attention.append(f"sync:{sync_quality.get('quality', 'unknown')}")
+        severity_score += 35
     task_tf_phase = str(latest_task.get("tf_phase", "")).strip()
     task_status = str(latest_task.get("status", "")).strip()
     if task_tf_phase in {"needs_retry", "manual_intervention", "blocked", "critic_review"}:
         status = "warn" if status == "ready" else status
         notes.append(f"active task needs attention ({task_tf_phase})")
+        attention.append(f"task:{task_tf_phase}")
+        severity_score += 60
     elif task_status in {"running", "pending"}:
         status = "warn" if status == "ready" else status
         notes.append(f"active task in progress ({task_tf_phase or task_status})")
+        attention.append(f"task:{task_tf_phase or task_status}")
+        severity_score += 15
     if last_sync_mode == "never" or not last_sync_at:
         status = "warn" if status == "ready" else status
         notes.append("queue has not been synced yet")
+        attention.append("sync:never")
+        severity_score += 30
     elif sync_stale:
         status = "warn" if status == "ready" else status
         notes.append(f"last sync is stale ({last_sync_disp})")
+        attention.append(f"sync:stale:{last_sync_disp}")
+        severity_score += 25
+
+    dedup_attention: List[str] = []
+    seen_attention: set[str] = set()
+    for item in attention:
+        token = str(item or "").strip()
+        if not token or token in seen_attention:
+            continue
+        seen_attention.add(token)
+        dedup_attention.append(token)
+    attention_summary = ", ".join(dedup_attention[:4]) if dedup_attention else "-"
+
+    bootstrap_recommended = (
+        (not canonical_exists)
+        or (canonical_exists and not include_ok)
+        or (last_sync_mode == "never")
+        or bool(sync_quality.get("warn", False))
+        or bool(sync_stale)
+    )
+    priority_action = _priority_action_snapshot(
+        alias=alias,
+        active_task_label=str(latest_task.get("label", "")).strip(),
+        active_task_tf_phase=task_tf_phase,
+        active_task_targets=latest_task.get("lane_targets") if isinstance(latest_task.get("lane_targets"), dict) else None,
+        syncback_pending=syncback_pending,
+        followup_count=manual_followup_count,
+        proposal_count=open_proposals,
+        bootstrap_recommended=bootstrap_recommended,
+        blocked_count=counts["blocked"],
+        open_count=counts["open"],
+        sync_quality_warn=bool(sync_quality.get("warn", False)),
+    )
 
     lines = [
         f"- {alias} {display} [{status}]",
+        f"  attention: {attention_summary}",
+        f"  first: {priority_action.get('action', '-')} | {priority_action.get('reason', '-')}",
         f"  runtime: {runtime_label}",
         f"  canonical: {canonical_rel if canonical_exists else 'missing TODO.md'}",
         f"  scenario_include: {include_display}",
@@ -668,19 +796,36 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
         "active_task_label": str(latest_task.get("label", "")).strip(),
         "active_task_tf_phase": str(latest_task.get("tf_phase", "")).strip(),
         "active_task_status": str(latest_task.get("status", "")).strip(),
-        "bootstrap_recommended": (
-            (not canonical_exists)
-            or (canonical_exists and not include_ok)
-            or (last_sync_mode == "never")
-            or bool(sync_quality.get("warn", False))
-            or bool(sync_stale)
-        ),
+        "bootstrap_recommended": bootstrap_recommended,
         "sync_quality": str(sync_quality.get("quality", "")).strip(),
         "sync_quality_warn": bool(sync_quality.get("warn", False)),
         "sync_candidate_classes": dict(sync_quality.get("candidate_classes") or {}),
         "sync_candidate_doc_types": dict(sync_quality.get("candidate_doc_types") or {}),
+        "severity_score": int(severity_score),
+        "attention_summary": attention_summary,
+        "priority_action": str(priority_action.get("action", "")).strip(),
+        "priority_reason": str(priority_action.get("reason", "")).strip(),
         "notes": list(notes),
     }
+
+
+def sort_offdesk_reports(reports: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _status_rank(row: Dict[str, Any]) -> int:
+        status = str(row.get("status", "ready")).strip().lower()
+        return {"blocked": 0, "warn": 1, "ready": 2}.get(status, 9)
+
+    def _alias_rank(row: Dict[str, Any]) -> int:
+        return alias_index(str(row.get("alias", "")).strip() or str(row.get("display", "")))
+
+    return sorted(
+        [row for row in reports if isinstance(row, dict)],
+        key=lambda row: (
+            _status_rank(row),
+            -int(row.get("severity_score", 0) or 0),
+            _alias_rank(row),
+            str(row.get("display", "")),
+        ),
+    )
 
 
 def offdesk_review_reply_markup(flagged: List[Dict[str, Any]], *, clean: bool = False) -> Dict[str, Any]:
@@ -704,14 +849,26 @@ def offdesk_review_reply_markup(flagged: List[Dict[str, Any]], *, clean: bool = 
         primary: List[Dict[str, str]] = []
         secondary: List[Dict[str, str]] = []
         tertiary: List[Dict[str, str]] = []
+        priority_action = str(row.get("priority_action", "")).strip()
+        if priority_action:
+            primary.append({"text": priority_action})
         if bool(row.get("syncback_pending", False)):
             primary.append({"text": f"/todo {alias} syncback preview"})
-        if int(row.get("proposals", 0) or 0) > 0 and len(primary) < 3:
+        if int(row.get("proposals", 0) or 0) > 0:
             primary.append({"text": f"/todo {alias} proposals"})
-        if int(row.get("followup_count", 0) or 0) > 0 and len(primary) < 3:
+        if int(row.get("followup_count", 0) or 0) > 0:
             primary.append({"text": f"/todo {alias} followup"})
         if primary:
-            keyboard.append(primary[:3])
+            dedup_primary: List[Dict[str, str]] = []
+            seen_primary: set[str] = set()
+            for btn in primary:
+                text = str(btn.get("text", "")).strip()
+                if not text or text in seen_primary:
+                    continue
+                seen_primary.add(text)
+                dedup_primary.append(btn)
+            for idx in range(0, len(dedup_primary), 3):
+                keyboard.append(dedup_primary[idx : idx + 3])
 
         active_task_label = str(row.get("active_task_label", "")).strip()
         active_task_tf_phase = str(row.get("active_task_tf_phase", "")).strip()
@@ -775,15 +932,27 @@ def offdesk_prepare_reply_markup(
         primary: List[Dict[str, str]] = []
         secondary: List[Dict[str, str]] = []
         tertiary: List[Dict[str, str]] = []
+        priority_action = str(row.get("priority_action", "")).strip()
+        if priority_action:
+            primary.append({"text": priority_action})
 
         if bool(row.get("syncback_pending", False)):
             primary.append({"text": f"/todo {alias} syncback preview"})
-        if int(row.get("proposals", 0) or 0) > 0 and len(primary) < 3:
+        if int(row.get("proposals", 0) or 0) > 0:
             primary.append({"text": f"/todo {alias} proposals"})
-        if int(row.get("followup_count", 0) or 0) > 0 and len(primary) < 3:
+        if int(row.get("followup_count", 0) or 0) > 0:
             primary.append({"text": f"/todo {alias} followup"})
         if primary:
-            keyboard.append(primary[:3])
+            dedup_primary: List[Dict[str, str]] = []
+            seen_primary: set[str] = set()
+            for btn in primary:
+                text = str(btn.get("text", "")).strip()
+                if not text or text in seen_primary:
+                    continue
+                seen_primary.add(text)
+                dedup_primary.append(btn)
+            for idx in range(0, len(dedup_primary), 3):
+                keyboard.append(dedup_primary[idx : idx + 3])
 
         active_task_label = str(row.get("active_task_label", "")).strip()
         active_task_tf_phase = str(row.get("active_task_tf_phase", "")).strip()

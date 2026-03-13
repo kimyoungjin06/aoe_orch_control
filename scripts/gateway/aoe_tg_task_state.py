@@ -162,6 +162,71 @@ def _derive_exec_critic_lane_targets(task: Dict[str, Any], critic: Dict[str, Any
     }
 
 
+def task_lane_target_snapshot(task: Dict[str, Any]) -> Dict[str, List[str]]:
+    exec_critic = task.get("exec_critic") if isinstance(task.get("exec_critic"), dict) else {}
+    return {
+        "rerun_execution_lane_ids": [str(x).strip()[:32] for x in (exec_critic.get("rerun_execution_lane_ids") or []) if str(x).strip()],
+        "rerun_review_lane_ids": [str(x).strip()[:32] for x in (exec_critic.get("rerun_review_lane_ids") or []) if str(x).strip()],
+        "manual_followup_execution_lane_ids": [
+            str(x).strip()[:32] for x in (exec_critic.get("manual_followup_execution_lane_ids") or []) if str(x).strip()
+        ],
+        "manual_followup_review_lane_ids": [
+            str(x).strip()[:32] for x in (exec_critic.get("manual_followup_review_lane_ids") or []) if str(x).strip()
+        ],
+    }
+
+
+def task_priority_action_snapshot(
+    *,
+    label: str,
+    tf_phase: str,
+    rerun_execution_lane_ids: List[str],
+    rerun_review_lane_ids: List[str],
+    manual_followup_execution_lane_ids: List[str],
+    manual_followup_review_lane_ids: List[str],
+) -> Dict[str, str]:
+    safe_label = str(label or "").strip()
+    safe_phase = normalize_tf_phase(tf_phase, "queued")
+    rerun_exec = [str(x).strip() for x in rerun_execution_lane_ids if str(x).strip()]
+    rerun_review = [str(x).strip() for x in rerun_review_lane_ids if str(x).strip()]
+    manual_exec = [str(x).strip() for x in manual_followup_execution_lane_ids if str(x).strip()]
+    manual_review = [str(x).strip() for x in manual_followup_review_lane_ids if str(x).strip()]
+
+    # Older task rows or partial snapshots may not carry a normalized tf_phase yet.
+    # Fall back to lane targets so monitor/offdesk can still surface the first action.
+    if safe_phase not in {"needs_retry", "critic_review", "manual_intervention", "blocked"}:
+        if rerun_exec or rerun_review:
+            safe_phase = "needs_retry"
+        elif manual_exec or manual_review:
+            safe_phase = "manual_intervention"
+
+    if safe_label and safe_phase in {"needs_retry", "critic_review"}:
+        lane_bits: List[str] = []
+        if rerun_exec:
+            lane_bits.append("execution=" + ",".join(rerun_exec))
+        if rerun_review:
+            lane_bits.append("review=" + ",".join(rerun_review))
+        suffix = f" target {'; '.join(lane_bits)}" if lane_bits else ""
+        return {
+            "action": f"/retry {safe_label}",
+            "reason": f"active task requires retry ({safe_phase}){suffix}",
+        }
+
+    if safe_label and safe_phase in {"manual_intervention", "blocked"}:
+        lane_bits = []
+        if manual_exec:
+            lane_bits.append("execution=" + ",".join(manual_exec))
+        if manual_review:
+            lane_bits.append("review=" + ",".join(manual_review))
+        suffix = f" target {'; '.join(lane_bits)}" if lane_bits else ""
+        return {
+            "action": f"/task {safe_label}",
+            "reason": f"active task requires operator review ({safe_phase}){suffix}",
+        }
+
+    return {"action": "", "reason": ""}
+
+
 def apply_review_lane_verdicts(task: Dict[str, Any], critic: Optional[Dict[str, Any]] = None) -> None:
     lane_states = task.get("lane_states")
     if not isinstance(lane_states, dict):
@@ -1014,11 +1079,11 @@ def summarize_task_monitor(
             lane_parts.append("review_verdict " + ",".join(f"{key}={value}" for key, value in sorted(review_verdicts.items())))
         if lane_parts:
             lane_text += " [" + " | ".join(lane_parts) + "]"
-        exec_critic = task.get("exec_critic") if isinstance(task.get("exec_critic"), dict) else {}
-        rerun_exec = [str(x).strip() for x in (exec_critic.get("rerun_execution_lane_ids") or []) if str(x).strip()]
-        rerun_review = [str(x).strip() for x in (exec_critic.get("rerun_review_lane_ids") or []) if str(x).strip()]
-        manual_exec = [str(x).strip() for x in (exec_critic.get("manual_followup_execution_lane_ids") or []) if str(x).strip()]
-        manual_review = [str(x).strip() for x in (exec_critic.get("manual_followup_review_lane_ids") or []) if str(x).strip()]
+        lane_targets = task_lane_target_snapshot(task)
+        rerun_exec = list(lane_targets.get("rerun_execution_lane_ids") or [])
+        rerun_review = list(lane_targets.get("rerun_review_lane_ids") or [])
+        manual_exec = list(lane_targets.get("manual_followup_execution_lane_ids") or [])
+        manual_review = list(lane_targets.get("manual_followup_review_lane_ids") or [])
         target_parts: List[str] = []
         if rerun_exec or rerun_review:
             target_parts.append(
@@ -1038,6 +1103,17 @@ def summarize_task_monitor(
             lane_text += " {" + " | ".join(target_parts) + "}"
         updated = str(task.get("updated_at", "")).strip() or "-"
         lines.append(f"- {idx}. {label} | {status}/{stage}/{tf_phase} | {role_text or '-'}{lane_text} | {updated}")
+        priority_action = task_priority_action_snapshot(
+            label=label,
+            tf_phase=tf_phase,
+            rerun_execution_lane_ids=rerun_exec,
+            rerun_review_lane_ids=rerun_review,
+            manual_followup_execution_lane_ids=manual_exec,
+            manual_followup_review_lane_ids=manual_review,
+        )
+        first_action = str(priority_action.get("action", "")).strip()
+        if first_action:
+            lines.append(f"  first: {first_action} | {str(priority_action.get('reason', '')).strip() or '-'}")
 
     lines.append("")
     lines.append("alias map (number/label -> request_id):")

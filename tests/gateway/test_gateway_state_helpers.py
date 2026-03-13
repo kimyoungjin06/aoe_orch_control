@@ -2441,6 +2441,10 @@ def test_task_monitor_includes_lane_rerun_and_followup_targets() -> None:
         lifecycle_stages=gw.LIFECYCLE_STAGES,
     )
     assert "{rerun E:L2 R:R1 | followup E:L3 R:-}" in summary
+    assert (
+        "first: /retry T-001 | collect-data-write-memo | active task requires retry (needs_retry) "
+        "target execution=L2; review=R1"
+    ) in summary
 
 
 def test_task_state_sanitize_task_record_matches_gateway(monkeypatch) -> None:
@@ -8798,6 +8802,9 @@ def test_offdesk_prepare_includes_proposal_triage_summary(tmp_path: Path) -> Non
     assert "proposal_top: PROP-001[P1 handoff 0.92] prepare handoff summary for owner review" in body
     assert "PROP-002[P2 risk 0.71] capture residual risk note for benchmark drift" in body
     assert "high-priority proposals pending review (P1=1, P2=1)" in body
+    assert "attention: proposals:2, proposal_p1:P1=1, P2=1" in body or "attention: proposal_p1:P1=1, P2=1, proposals:2" in body
+    assert "first: /todo O3 syncback preview | canonical TODO drift pending syncback" in body
+    assert _button_texts(_markup)[0] == "/todo O3 syncback preview"
 
 
 def test_offdesk_review_includes_proposal_triage_summary(tmp_path: Path) -> None:
@@ -8844,6 +8851,58 @@ def test_offdesk_review_includes_proposal_triage_summary(tmp_path: Path) -> None
 
     assert "proposal_triage: priorities=P2=1 | kinds=handoff=1" in body
     assert "proposal_top: PROP-001[P2 handoff 0.88] draft publish-ready caption set for map panels" in body
+    assert "first: /todo O4 syncback preview | canonical TODO drift pending syncback" in body
+
+
+def test_offdesk_review_sorts_flagged_projects_by_severity(tmp_path: Path) -> None:
+    state = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+
+    root_o3 = tmp_path / "Nano"
+    team_o3 = root_o3 / ".aoe-team"
+    team_o3.mkdir(parents=True, exist_ok=True)
+    (root_o3 / "TODO.md").write_text("# Tasks\n- [ ] current task\n", encoding="utf-8")
+    (team_o3 / "AOE_TODO.md").write_text("@include ../TODO.md\n", encoding="utf-8")
+    (team_o3 / "orchestrator.json").write_text("{}", encoding="utf-8")
+    state["projects"]["nano"] = {
+        "name": "nano",
+        "display_name": "Nano",
+        "project_alias": "O3",
+        "project_root": str(root_o3),
+        "team_dir": str(team_o3),
+        "runtime_ready": True,
+        "todos": [{"id": "TODO-001", "summary": "current task", "priority": "P1", "status": "open"}],
+        "todo_proposals": [{"id": "PROP-001", "summary": "owner handoff", "priority": "P1", "kind": "handoff", "confidence": 0.9, "status": "open"}],
+        "last_sync_at": "2026-03-12T20:00:00+0900",
+        "last_sync_mode": "scenario",
+        "last_sync_candidate_classes": {"scenario": 1},
+        "last_sync_candidate_doc_types": {"todo": 1},
+    }
+
+    root_o4 = tmp_path / "Map"
+    team_o4 = root_o4 / ".aoe-team"
+    team_o4.mkdir(parents=True, exist_ok=True)
+    (root_o4 / "TODO.md").write_text("# Tasks\n- [ ] current task\n", encoding="utf-8")
+    (team_o4 / "AOE_TODO.md").write_text("@include ../TODO.md\n", encoding="utf-8")
+    (team_o4 / "orchestrator.json").write_text("{}", encoding="utf-8")
+    state["projects"]["map"] = {
+        "name": "map",
+        "display_name": "Map",
+        "project_alias": "O4",
+        "project_root": str(root_o4),
+        "team_dir": str(team_o4),
+        "runtime_ready": False,
+        "todos": [],
+        "todo_proposals": [],
+        "last_sync_mode": "never",
+    }
+
+    body = _call_management_status(tmp_path=tmp_path, manager_state=state, cmd="offdesk", rest="review all")
+
+    idx_o4 = body.index("- O4 Map [blocked]")
+    idx_o3 = body.index("- O3 Nano [warn]")
+    assert idx_o4 < idx_o3
+    assert "attention: backlog:none, sync:never" in body
+    assert "first: /sync bootstrap O4 24h | bootstrap backlog from recent project documents" in body
 
 
 def test_offdesk_prepare_reply_markup_includes_clean_actions(tmp_path: Path) -> None:

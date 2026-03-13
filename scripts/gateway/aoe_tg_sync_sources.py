@@ -335,10 +335,10 @@ def _classify_sync_doc_type(path: Path, root: Path) -> str:
         return "spec"
     if any(token in rel_low or token in name_low for token in manuscript_markers):
         return "manuscript"
-    if any(token in rel_low or token in name_low for token in note_markers):
-        return "note"
     if "/docs/research/" in rel_low or rel_low.startswith("docs/research/"):
         return "research_note"
+    if any(token in rel_low or token in name_low for token in note_markers):
+        return "note"
     return "doc"
 
 
@@ -352,7 +352,7 @@ def _source_confidence_for(mode: str, doc_type: str) -> float:
             "spec": 0.60,
             "manuscript": 0.52,
             "note": 0.64,
-            "research_note": 0.68,
+            "research_note": 0.72,
             "doc": 0.62,
         }.get(dtype, 0.62)
     if token == "recent_docs":
