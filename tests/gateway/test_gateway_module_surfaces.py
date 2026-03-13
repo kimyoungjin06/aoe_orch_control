@@ -103,44 +103,97 @@ def test_chat_aliases_module_matches_gateway_exports(tmp_path: Path) -> None:
 def test_orch_roles_module_matches_gateway_exports(tmp_path: Path) -> None:
     team_dir = tmp_path / ".aoe-team"
     (team_dir / "agents" / "Reviewer").mkdir(parents=True, exist_ok=True)
-    (team_dir / "agents" / "Local-Dev").mkdir(parents=True, exist_ok=True)
+    (team_dir / "agents" / "Codex-Dev").mkdir(parents=True, exist_ok=True)
     (team_dir / "agents" / "Reviewer" / "AGENTS.md").write_text(
         "# AGENTS.md - Reviewer\n\n## Mission\nFind risks, regressions, and missing tests before merge.\n",
         encoding="utf-8",
     )
-    (team_dir / "agents" / "Local-Dev" / "AGENTS.md").write_text(
-        "# AGENTS.md - Local-Dev\n\n## Mission\nImplement code changes and fix application bugs.\n",
+    (team_dir / "agents" / "Codex-Dev" / "AGENTS.md").write_text(
+        "# AGENTS.md - Codex-Dev\n\n## Mission\nImplement code changes and fix application bugs.\n",
         encoding="utf-8",
     )
     (team_dir / "orchestrator.json").write_text(
         json.dumps(
             {
                 "coordinator": {"role": "Orchestrator"},
-                "agents": [{"role": "Reviewer"}, {"role": "Local-Dev"}],
+                "agents": [{"role": "Reviewer"}, {"role": "Codex-Dev"}],
             }
         ),
         encoding="utf-8",
     )
 
-    assert gw.parse_roles_csv("Reviewer, Local-Dev,Reviewer") == orch_roles.parse_roles_csv("Reviewer, Local-Dev,Reviewer")
+    assert gw.parse_roles_csv("Reviewer, Codex-Dev,Reviewer") == orch_roles.parse_roles_csv("Reviewer, Codex-Dev,Reviewer")
     assert gw.load_orchestrator_roles(team_dir) == orch_roles.load_orchestrator_roles(team_dir)
     assert gw.load_orchestrator_role_profiles(team_dir) == orch_roles.load_orchestrator_role_profiles(team_dir)
     assert gw.resolve_verifier_candidates("") == orch_roles.resolve_verifier_candidates("", default_verifier_roles=gw.DEFAULT_VERIFIER_ROLES)
-    assert gw.ensure_verifier_roles(["Local-Dev"], ["Reviewer", "Local-Dev"], ["Reviewer"]) == orch_roles.ensure_verifier_roles(
-        ["Local-Dev"],
-        ["Reviewer", "Local-Dev"],
+    assert gw.ensure_verifier_roles(["Codex-Dev"], ["Reviewer", "Codex-Dev"], ["Reviewer"]) == orch_roles.ensure_verifier_roles(
+        ["Codex-Dev"],
+        ["Reviewer", "Codex-Dev"],
         ["Reviewer"],
     )
     assert gw.choose_auto_dispatch_roles(
         "로그인 버그를 수정하고 회귀 리스크도 같이 검토해줘.",
-        available_roles=["Local-Dev", "Reviewer"],
+        available_roles=["Codex-Dev", "Reviewer"],
         team_dir=team_dir,
     ) == orch_roles.choose_auto_dispatch_roles(
         "로그인 버그를 수정하고 회귀 리스크도 같이 검토해줘.",
-        available_roles=["Local-Dev", "Reviewer"],
+        available_roles=["Codex-Dev", "Reviewer"],
         team_dir=team_dir,
     )
     assert gw.available_worker_roles([]) == orch_roles.available_worker_roles([])
+
+
+def test_orch_roles_canonicalize_legacy_local_roles(tmp_path: Path) -> None:
+    team_dir = tmp_path / ".aoe-team"
+    (team_dir / "agents" / "Local-Writer").mkdir(parents=True, exist_ok=True)
+    (team_dir / "agents" / "Local-Writer" / "AGENTS.md").write_text(
+        "# AGENTS.md - Local-Writer\n\n## Mission\nWrite concise project documents.\n",
+        encoding="utf-8",
+    )
+    (team_dir / "orchestrator.json").write_text(
+        json.dumps(
+            {
+                "coordinator": {"role": "Orchestrator"},
+                "agents": [{"role": "Local-Writer"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert orch_roles.parse_roles_csv("Local-Writer,Reviewer") == ["Codex-Writer", "Reviewer"]
+    assert orch_roles.load_orchestrator_roles(team_dir) == ["Orchestrator", "Codex-Writer"]
+    profiles = orch_roles.load_orchestrator_role_profiles(team_dir)
+    assert profiles[1]["role"] == "Codex-Writer"
+    assert profiles[1]["mission"] == "Write concise project documents."
+
+
+def test_runtime_seed_migrates_legacy_local_roles_to_codex_names(tmp_path: Path) -> None:
+    template_root = ROOT / "templates" / "aoe-team"
+    project_root = tmp_path / "project"
+    team_dir = project_root / ".aoe-team"
+    project_root.mkdir(parents=True, exist_ok=True)
+
+    spec = {
+        "coordinator": {"role": "Orchestrator", "provider": "codex", "launch": "codex"},
+        "agents": [{"role": "Local-Writer", "provider": "codex", "launch": "codex"}],
+    }
+
+    logs = runtime_seed.seed_runtime_from_spec(
+        template_root=template_root,
+        project_root=project_root,
+        team_dir=team_dir,
+        overview="demo",
+        spec=spec,
+        force=True,
+    )
+
+    orch = json.loads((team_dir / "orchestrator.json").read_text(encoding="utf-8"))
+    roles = [row["role"] for row in orch["agents"]]
+    assert "Codex-Writer" in roles
+    assert "Local-Writer" not in roles
+    assert (team_dir / "agents" / "Codex-Writer" / "AGENTS.md").exists()
+    assert (team_dir / "workers" / "Codex-Writer.json").exists()
+    assert any("Codex-Writer" in row for row in logs)
 
 
 def test_gateway_state_module_matches_gateway_poll_and_replay_helpers(tmp_path: Path) -> None:
@@ -761,4 +814,3 @@ def test_apply_success_first_prompt_fallbacks_for_latest_created_markdown_reques
     assert "birth time" in prompt
     assert "git first-seen/add time" in prompt
     assert "filesystem mtime" in prompt
-

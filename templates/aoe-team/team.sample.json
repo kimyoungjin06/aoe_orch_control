@@ -8,10 +8,10 @@
     "DataEngineer",
     "Reviewer",
     "Claude-Reviewer",
-    "Local-Dev",
-    "Local-Writer",
+    "Codex-Dev",
+    "Codex-Writer",
     "Claude-Writer",
-    "Local-Analyst",
+    "Codex-Analyst",
     "Claude-Analyst"
   ],
   "created_at": "__CREATED_AT__",

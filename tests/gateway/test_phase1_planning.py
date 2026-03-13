@@ -41,7 +41,7 @@ def test_phase1_ensemble_runs_three_rounds_and_uses_both_providers() -> None:
     def _runner(name: str):
         def _run(prompt: str, timeout_sec: int) -> str:
             prompts.append(f"{name}:{prompt.splitlines()[0]}")
-            return '{"summary":"plan from %s","subtasks":[{"id":"S1","title":"Draft","goal":"Write the plan","owner_role":"Local-Writer","acceptance":["has a concise plan"]}]}' % name
+            return '{"summary":"plan from %s","subtasks":[{"id":"S1","title":"Draft","goal":"Write the plan","owner_role":"Codex-Writer","acceptance":["has a concise plan"]}]}' % name
         return _run
 
     args = SimpleNamespace(
@@ -55,7 +55,7 @@ def test_phase1_ensemble_runs_three_rounds_and_uses_both_providers() -> None:
     result = ensemble_mod.run_phase1_ensemble_planning(
         args=args,
         user_prompt="Prepare a stable execution plan",
-        available_roles=["Local-Writer", "Reviewer"],
+        available_roles=["Codex-Writer", "Reviewer"],
         normalize_task_plan_payload=gw.normalize_task_plan_payload,
         parse_json_object_from_text=gw.parse_json_object_from_text,
         run_provider_execs={"codex": _runner("codex"), "claude": _runner("claude")},
@@ -67,7 +67,7 @@ def test_phase1_ensemble_runs_three_rounds_and_uses_both_providers() -> None:
     assert result["phase1_rounds"] == 3
     assert result["phase1_providers"] == ["codex", "claude"]
     assert len(result["plan_replans"]) == 3
-    assert result["plan_data"]["subtasks"][0]["owner_role"] == "Local-Writer"
+    assert result["plan_data"]["subtasks"][0]["owner_role"] == "Codex-Writer"
     assert result["plan_gate_blocked"] is False
     assert any(item.startswith("codex:") for item in prompts)
     assert any(item.startswith("claude:") for item in prompts)
@@ -84,7 +84,7 @@ def test_phase1_ensemble_launches_round1_planners_in_parallel() -> None:
                 with lock:
                     start_times.setdefault(name, time.monotonic())
                 time.sleep(0.25)
-                return '{"summary":"plan from %s","subtasks":[{"id":"S1","title":"Draft","goal":"Write the plan","owner_role":"Local-Writer","acceptance":["has a concise plan"]}]}' % name
+                return '{"summary":"plan from %s","subtasks":[{"id":"S1","title":"Draft","goal":"Write the plan","owner_role":"Codex-Writer","acceptance":["has a concise plan"]}]}' % name
             time.sleep(0.25)
             return '{"approved": true, "issues": [], "recommendations": []}'
         return _run
@@ -100,7 +100,7 @@ def test_phase1_ensemble_launches_round1_planners_in_parallel() -> None:
     ensemble_mod.run_phase1_ensemble_planning(
         args=args,
         user_prompt="Prepare a stable execution plan",
-        available_roles=["Local-Writer", "Reviewer"],
+        available_roles=["Codex-Writer", "Reviewer"],
         normalize_task_plan_payload=gw.normalize_task_plan_payload,
         parse_json_object_from_text=gw.parse_json_object_from_text,
         run_provider_execs={"codex": _runner("codex"), "claude": _runner("claude")},
@@ -120,7 +120,7 @@ def test_resolve_dispatch_mode_defaults_to_tf_dispatch_when_not_forced_direct() 
         auto_dispatch_enabled=False,
         prompt="로그인 버그를 수정하고 회귀 리스크를 검토해줘",
         choose_auto_dispatch_roles=lambda *args, **kwargs: [],
-        available_roles=["Local-Dev", "Reviewer"],
+        available_roles=["Codex-Dev", "Reviewer"],
         team_dir=None,
     )
 
@@ -151,7 +151,7 @@ def test_compute_dispatch_plan_uses_phase1_plan_roles_for_phase2_execution() -> 
         run_control_mode="normal",
         run_source_task=None,
         selected_roles=["Reviewer"],
-        available_roles=["Local-Dev", "Local-Writer", "Reviewer"],
+        available_roles=["Codex-Dev", "Codex-Writer", "Reviewer"],
         available_worker_roles=lambda roles: roles,
         normalize_task_plan_payload=lambda parsed, **_kwargs: parsed,
         build_task_execution_plan=lambda *_args, **_kwargs: {},
@@ -163,12 +163,12 @@ def test_compute_dispatch_plan_uses_phase1_plan_roles_for_phase2_execution() -> 
             "plan_data": {
                 "summary": "phase1 plan",
                 "subtasks": [
-                    {"id": "S1", "title": "implement", "goal": "do implementation", "owner_role": "Local-Dev", "acceptance": ["code complete"]},
-                    {"id": "S2", "title": "write", "goal": "document plan", "owner_role": "Local-Writer", "acceptance": ["report complete"]},
+                    {"id": "S1", "title": "implement", "goal": "do implementation", "owner_role": "Codex-Dev", "acceptance": ["code complete"]},
+                    {"id": "S2", "title": "write", "goal": "document plan", "owner_role": "Codex-Writer", "acceptance": ["report complete"]},
                 ],
             },
             "plan_critic": {"approved": True, "issues": [], "recommendations": []},
-            "plan_roles": ["Local-Dev", "Local-Writer"],
+            "plan_roles": ["Codex-Dev", "Codex-Writer"],
             "plan_replans": [{"attempt": 1}, {"attempt": 2}, {"attempt": 3}],
             "plan_error": "",
             "plan_gate_blocked": False,
@@ -180,7 +180,7 @@ def test_compute_dispatch_plan_uses_phase1_plan_roles_for_phase2_execution() -> 
         report_progress=lambda **kwargs: phases.append(kwargs),
     )
 
-    assert meta.selected_roles == ["Local-Dev", "Local-Writer"]
+    assert meta.selected_roles == ["Codex-Dev", "Codex-Writer"]
     assert meta.phase1_mode == "ensemble"
     assert meta.phase1_rounds == 3
     assert meta.phase1_providers == ["codex", "claude"]
@@ -192,22 +192,22 @@ def test_normalize_task_plan_payload_derives_phase2_team_spec() -> None:
         {
             "summary": "parallel execution",
             "subtasks": [
-                {"id": "S1", "title": "Implement", "goal": "build feature", "owner_role": "Local-Dev", "acceptance": ["done"]},
-                {"id": "S2", "title": "Document", "goal": "write handoff", "owner_role": "Local-Writer", "acceptance": ["done"]},
+                {"id": "S1", "title": "Implement", "goal": "build feature", "owner_role": "Codex-Dev", "acceptance": ["done"]},
+                {"id": "S2", "title": "Document", "goal": "write handoff", "owner_role": "Codex-Writer", "acceptance": ["done"]},
             ],
         },
         user_prompt="계획 수립 후 병렬 실행팀을 꾸려라",
-        workers=["Local-Dev", "Local-Writer", "Reviewer"],
+        workers=["Codex-Dev", "Codex-Writer", "Reviewer"],
         max_subtasks=4,
     )
 
     spec = plan["meta"]["phase2_team_spec"]
     execution_plan = plan["meta"]["phase2_execution_plan"]
     assert spec["execution_mode"] == "parallel"
-    assert [row["role"] for row in spec["execution_groups"]] == ["Local-Dev", "Local-Writer"]
+    assert [row["role"] for row in spec["execution_groups"]] == ["Codex-Dev", "Codex-Writer"]
     assert spec["review_groups"] == []
     assert execution_plan["execution_mode"] == "parallel"
-    assert [row["role"] for row in execution_plan["execution_lanes"]] == ["Local-Dev", "Local-Writer"]
+    assert [row["role"] for row in execution_plan["execution_lanes"]] == ["Codex-Dev", "Codex-Writer"]
     assert execution_plan["parallel_workers"] is True
     assert execution_plan["readonly"] is True
 
@@ -217,17 +217,17 @@ def test_build_planned_dispatch_prompt_includes_phase2_team_lanes() -> None:
         {
             "summary": "parallel execution",
             "subtasks": [
-                {"id": "S1", "title": "Implement", "goal": "build feature", "owner_role": "Local-Dev", "acceptance": ["done"]},
-                {"id": "S2", "title": "Document", "goal": "write handoff", "owner_role": "Local-Writer", "acceptance": ["done"]},
+                {"id": "S1", "title": "Implement", "goal": "build feature", "owner_role": "Codex-Dev", "acceptance": ["done"]},
+                {"id": "S2", "title": "Document", "goal": "write handoff", "owner_role": "Codex-Writer", "acceptance": ["done"]},
             ],
         },
         user_prompt="계획 수립 후 병렬 실행팀을 꾸려라",
-        workers=["Local-Dev", "Local-Writer", "Reviewer"],
+        workers=["Codex-Dev", "Codex-Writer", "Reviewer"],
         max_subtasks=4,
     )
     plan = gw.attach_phase2_team_spec(
         plan,
-        roles=["Local-Dev", "Local-Writer", "Reviewer"],
+        roles=["Codex-Dev", "Codex-Writer", "Reviewer"],
         verifier_roles=["Reviewer"],
         require_verifier=True,
     )
@@ -239,7 +239,7 @@ def test_build_planned_dispatch_prompt_includes_phase2_team_lanes() -> None:
     )
 
     assert "Phase2 execution lanes: parallel" in prompt
-    assert "lane E1 [Local-Dev] -> S1" in prompt
+    assert "lane E1 [Codex-Dev] -> S1" in prompt
     assert "Phase2 critic lanes: single" in prompt
     assert "review R1 [Reviewer/verifier]" in prompt
 
@@ -249,17 +249,17 @@ def test_normalize_task_plan_payload_with_companion_workers_derives_parallel_cla
         {
             "summary": "parallel reporting",
             "subtasks": [
-                {"id": "S1", "title": "Document", "goal": "write handoff", "owner_role": "Local-Writer", "acceptance": ["done"]},
-                {"id": "S2", "title": "Analyze", "goal": "compare options", "owner_role": "Local-Analyst", "acceptance": ["done"]},
+                {"id": "S1", "title": "Document", "goal": "write handoff", "owner_role": "Codex-Writer", "acceptance": ["done"]},
+                {"id": "S2", "title": "Analyze", "goal": "compare options", "owner_role": "Codex-Analyst", "acceptance": ["done"]},
             ],
         },
         user_prompt="계획 수립 후 병렬 실행팀을 꾸려라",
-        workers=["Local-Writer", "Claude-Writer", "Local-Analyst", "Claude-Analyst", "Reviewer", "Claude-Reviewer"],
+        workers=["Codex-Writer", "Claude-Writer", "Codex-Analyst", "Claude-Analyst", "Reviewer", "Claude-Reviewer"],
         max_subtasks=4,
     )
     plan = gw.attach_phase2_team_spec(
         plan,
-        roles=["Local-Writer", "Claude-Writer", "Local-Analyst", "Claude-Analyst", "Reviewer", "Claude-Reviewer"],
+        roles=["Codex-Writer", "Claude-Writer", "Codex-Analyst", "Claude-Analyst", "Reviewer", "Claude-Reviewer"],
         verifier_roles=["Reviewer"],
         require_verifier=True,
     )
@@ -267,16 +267,16 @@ def test_normalize_task_plan_payload_with_companion_workers_derives_parallel_cla
     spec = plan["meta"]["phase2_team_spec"]
     execution_plan = plan["meta"]["phase2_execution_plan"]
     assert [row["role"] for row in spec["execution_groups"]] == [
-        "Local-Writer",
+        "Codex-Writer",
         "Claude-Writer",
-        "Local-Analyst",
+        "Codex-Analyst",
         "Claude-Analyst",
     ]
     assert [row["role"] for row in spec["review_groups"]] == ["Reviewer", "Claude-Reviewer"]
     assert [row["role"] for row in execution_plan["execution_lanes"]] == [
-        "Local-Writer",
+        "Codex-Writer",
         "Claude-Writer",
-        "Local-Analyst",
+        "Codex-Analyst",
         "Claude-Analyst",
     ]
     assert [row["role"] for row in execution_plan["review_lanes"]] == ["Reviewer", "Claude-Reviewer"]

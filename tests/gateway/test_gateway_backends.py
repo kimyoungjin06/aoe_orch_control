@@ -88,7 +88,7 @@ def test_autogen_compare_includes_runtime_event_contract() -> None:
         "id": "demo_case",
         "project_key": "O3",
         "task": "Summarize latest analysis findings and propose next steps",
-        "roles": ["Local-Analyst", "Reviewer"],
+        "roles": ["Codex-Analyst", "Reviewer"],
         "retry_budget": 3,
         "approval_required": False,
     }
@@ -190,7 +190,7 @@ def test_autogen_backend_reports_availability_and_stays_not_implemented(tmp_path
                 ),
                 prompt="Summarize the canonical backlog and confirm the first next step.",
                 chat_id="chat-1",
-                roles_override="Local-Analyst,Reviewer",
+                roles_override="Codex-Analyst,Reviewer",
             ),
             tf_backend.build_tf_backend_deps(
                 default_tf_exec_mode="local",
@@ -210,7 +210,7 @@ def test_autogen_backend_reports_availability_and_stays_not_implemented(tmp_path
         assert result["followup_proposals"]
         assert all(not errs for errs in tf_event_schema.validate_runtime_events(result["runtime_events"]))
         assert all(not errs for errs in tf_event_schema.validate_followup_proposals(result["followup_proposals"]))
-        assert result["replies"][0]["role"] == "Local-Analyst"
+        assert result["replies"][0]["role"] == "Codex-Analyst"
         assert result["replies"][1]["role"] == "Reviewer"
     else:
         assert "not installed" in availability.reason
@@ -262,7 +262,7 @@ def test_gateway_run_aoe_orch_executes_real_autogen_backend_when_available(tmp_p
         args,
         "Summarize the canonical Twin backlog and identify the first next focus.",
         "chat-1",
-        roles_override="Local-Analyst,Reviewer",
+        roles_override="Codex-Analyst,Reviewer",
     )
 
     assert result["backend"] == "autogen_core"
@@ -332,14 +332,14 @@ def test_gateway_run_aoe_orch_executes_writer_shape_with_real_autogen_backend_wh
         args,
         "Draft a short operator-facing handoff report from the canonical backlog without modifying files.",
         "chat-1",
-        roles_override="Local-Writer,Reviewer",
+        roles_override="Codex-Writer,Reviewer",
     )
 
     assert result["backend"] == "autogen_core"
     assert result["complete"] is True
-    assert result["replies"][0]["role"] == "Local-Writer"
-    assert "Local-Writer handoff" in result["replies"][0]["body"]
-    assert "Local-Writer, Reviewer" in result["replies"][1]["body"]
+    assert result["replies"][0]["role"] == "Codex-Writer"
+    assert "Codex-Writer handoff" in result["replies"][0]["body"]
+    assert "Codex-Writer, Reviewer" in result["replies"][1]["body"]
     assert result["followup_proposals"]
     assert result["followup_proposals"][0]["kind"] == "handoff"
 
@@ -758,17 +758,17 @@ def test_local_run_aoe_orch_stages_review_lanes_after_execution(monkeypatch, tmp
             roles = cmd[cmd.index("--roles") + 1] if "--roles" in cmd else ""
             req_id = cmd[cmd.index("--request-id") + 1]
             recorded_roles.append((req_id, roles))
-            if roles == "Local-Dev":
+            if roles == "Codex-Dev":
                 payload = {
                     "request_id": req_id,
                     "complete": True,
                     "counts": {"assignments": 1, "replies": 1},
-                    "roles": [{"role": "Local-Dev", "status": "done", "message_id": "MSG-EXEC"}],
-                    "done_roles": ["Local-Dev"],
+                    "roles": [{"role": "Codex-Dev", "status": "done", "message_id": "MSG-EXEC"}],
+                    "done_roles": ["Codex-Dev"],
                     "failed_roles": [],
                     "pending_roles": [],
-                    "replies": [{"role": "Local-Dev", "body": "execution done"}],
-                    "reply_messages": [{"id": "REP-EXEC", "from": "Local-Dev", "status": "sent"}],
+                    "replies": [{"role": "Codex-Dev", "body": "execution done"}],
+                    "reply_messages": [{"id": "REP-EXEC", "from": "Codex-Dev", "status": "sent"}],
                 }
                 return Proc(returncode=0, stdout=json.dumps(payload), stderr="")
             if roles == "Reviewer":
@@ -809,11 +809,11 @@ def test_local_run_aoe_orch_stages_review_lanes_after_execution(monkeypatch, tmp
         default_tf_worker_startup_grace_sec=gw.DEFAULT_TF_WORKER_STARTUP_GRACE_SEC,
         now_iso=gw.now_iso,
         run_command=fake_run_command,
-        roles_override="Local-Dev,Reviewer",
+        roles_override="Codex-Dev,Reviewer",
         metadata={
             "phase2_execution_plan": {
                 "execution_mode": "single",
-                "execution_lanes": [{"lane_id": "L1", "role": "Local-Dev", "subtask_ids": ["S1"], "parallel": False}],
+                "execution_lanes": [{"lane_id": "L1", "role": "Codex-Dev", "subtask_ids": ["S1"], "parallel": False}],
                 "review_mode": "single",
                 "review_lanes": [{"lane_id": "R1", "role": "Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": False}],
                 "parallel_workers": False,
@@ -823,12 +823,12 @@ def test_local_run_aoe_orch_stages_review_lanes_after_execution(monkeypatch, tmp
         },
     )
 
-    assert recorded_roles == [("REQ-EXEC", "Local-Dev"), ("REQ-REVIEW", "Reviewer")]
+    assert recorded_roles == [("REQ-EXEC", "Codex-Dev"), ("REQ-REVIEW", "Reviewer")]
     assert result["phase2_review_triggered"] is True
     assert result["phase2_request_ids"] == {"execution": "REQ-EXEC", "review": "REQ-REVIEW"}
     assert result["linked_request_ids"] == ["REQ-EXEC", "REQ-REVIEW"]
     assert len(result["replies"]) == 2
-    assert {row["role"] for row in result["role_states"]} == {"Local-Dev", "Reviewer"}
+    assert {row["role"] for row in result["role_states"]} == {"Codex-Dev", "Reviewer"}
     assert result["tf_workers"]["execution"]["sessions"][0]["execution_lane_ids"] == ["L1"]
     assert result["tf_workers"]["review"]["sessions"][0]["review_lane_ids"] == ["R1"]
 

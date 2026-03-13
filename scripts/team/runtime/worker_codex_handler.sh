@@ -198,7 +198,7 @@ R
 - 결과는 운영 적용 순서로 정리한다.
 R
       ;;
-    *local-dev*|*local_dev*|*localdev*|*developer*|*builder*|*implement*)
+    *codex-dev*|*codex_dev*|*codexdev*|*local-dev*|*local_dev*|*localdev*|*developer*|*builder*|*implement*)
       cat <<'R'
 - 코드 수정, 버그 재현, 검증 순서를 우선 본다.
 - 변경 파일과 검증 결과를 분명히 적는다.
@@ -212,7 +212,7 @@ R
 - 장황한 설명보다 전달력과 재사용성을 우선한다.
 R
       ;;
-    *analyst*|*analysis*|*research*|*tuner*)
+    *codex-analyst*|*codex_analyst*|*codexanalyst*|*analyst*|*analysis*|*research*|*tuner*)
       cat <<'R'
 - 현재 상태를 조사하고, 선택지와 트레이드오프를 분리해서 정리한다.
 - 사실과 해석을 섞지 말고, 결론에는 이유를 붙인다.

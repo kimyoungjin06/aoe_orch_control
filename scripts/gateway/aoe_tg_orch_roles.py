@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from aoe_tg_role_aliases import canonicalize_role_name, canonicalize_roles, resolve_role_asset
 from aoe_tg_task_view import dedupe_roles
 
 
@@ -15,17 +16,17 @@ DEFAULT_WORKER_ROLE_POOL = [
     "DataEngineer",
     "Reviewer",
     "Claude-Reviewer",
-    "Local-Dev",
-    "Local-Writer",
+    "Codex-Dev",
+    "Codex-Writer",
     "Claude-Writer",
-    "Local-Analyst",
+    "Codex-Analyst",
     "Claude-Analyst",
 ]
 
 CLAUDE_COMPANION_ROLES = {
     "Reviewer": "Claude-Reviewer",
-    "Local-Writer": "Claude-Writer",
-    "Local-Analyst": "Claude-Analyst",
+    "Codex-Writer": "Claude-Writer",
+    "Codex-Analyst": "Claude-Analyst",
 }
 
 
@@ -35,7 +36,7 @@ def parse_roles_csv(raw: Optional[str]) -> List[str]:
     out: List[str] = []
     seen = set()
     for item in str(raw).split(","):
-        token = item.strip()
+        token = canonicalize_role_name(item)
         if not token:
             continue
         key = token.lower()
@@ -61,7 +62,7 @@ def load_orchestrator_roles(team_dir: Path) -> List[str]:
     roles: List[str] = []
     coordinator = data.get("coordinator")
     if isinstance(coordinator, dict):
-        role = str(coordinator.get("role", "")).strip()
+        role = canonicalize_role_name(coordinator.get("role", ""))
         if role:
             roles.append(role)
 
@@ -69,21 +70,21 @@ def load_orchestrator_roles(team_dir: Path) -> List[str]:
     if isinstance(agents, list):
         for row in agents:
             if isinstance(row, dict):
-                role = str(row.get("role", "")).strip()
+                role = canonicalize_role_name(row.get("role", ""))
             else:
-                role = str(row).strip()
+                role = canonicalize_role_name(row)
             if role:
                 roles.append(role)
 
-    return dedupe_roles(roles)
+    return dedupe_roles(canonicalize_roles(roles))
 
 
 def load_orchestrator_role_profiles(team_dir: Path, available_roles: Optional[List[str]] = None) -> List[Dict[str, str]]:
-    roles = dedupe_roles(available_roles or load_orchestrator_roles(team_dir))
+    roles = dedupe_roles(canonicalize_roles(available_roles or load_orchestrator_roles(team_dir)))
     profiles: List[Dict[str, str]] = []
     for role in roles:
         mission = ""
-        agent_doc = team_dir / "agents" / role / "AGENTS.md"
+        agent_doc = resolve_role_asset(team_dir / "agents", role, "AGENTS.md")
         if agent_doc.exists():
             try:
                 text = agent_doc.read_text(encoding="utf-8")
@@ -106,15 +107,15 @@ def ensure_verifier_roles(
     available_roles: List[str],
     verifier_candidates: List[str],
 ) -> Tuple[List[str], List[str], bool, List[str]]:
-    selected = dedupe_roles(selected_roles)
-    available = dedupe_roles(available_roles)
+    selected = dedupe_roles(canonicalize_roles(selected_roles))
+    available = dedupe_roles(canonicalize_roles(available_roles))
 
-    candidate_keys = [c.lower() for c in verifier_candidates if c]
+    candidate_keys = [canonicalize_role_name(c).lower() for c in verifier_candidates if c]
     selected_verifiers = [r for r in selected if r.lower() in candidate_keys]
 
     available_verifiers: List[str] = []
     for cand in verifier_candidates:
-        ckey = cand.lower()
+        ckey = canonicalize_role_name(cand).lower()
         for role in available:
             if role.lower() == ckey and role not in available_verifiers:
                 available_verifiers.append(role)
@@ -276,13 +277,13 @@ def choose_auto_dispatch_roles(
             if "Claude-Reviewer" in available_set:
                 roles.append("Claude-Reviewer")
         if any(k in prompt_lower for k in build_keys):
-            roles.append("Local-Dev")
+            roles.append("Codex-Dev")
         if any(k in prompt_lower for k in doc_keys):
-            roles.append("Local-Writer")
+            roles.append("Codex-Writer")
             if "Claude-Writer" in available_set:
                 roles.append("Claude-Writer")
         if any(k in prompt_lower for k in analysis_keys):
-            roles.append("Local-Analyst")
+            roles.append("Codex-Analyst")
             if "Claude-Analyst" in available_set:
                 roles.append("Claude-Analyst")
         if not roles and any(k in prompt_lower for k in both_keys):

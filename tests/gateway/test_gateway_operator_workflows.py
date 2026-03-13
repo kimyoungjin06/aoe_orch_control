@@ -1449,14 +1449,14 @@ def test_enforce_dispatch_policies_verifier_gate_setup_adds_project_quick_action
         args=argparse.Namespace(require_verifier=True),
         key="twinpaper",
         entry={"project_alias": "O2"},
-        selected_roles=["Local-Dev"],
-        available_roles=["Local-Dev"],
+        selected_roles=["Codex-Dev"],
+        available_roles=["Codex-Dev"],
         verifier_candidates=["Reviewer"],
         plan_gate_blocked=False,
         plan_gate_reason="",
         plan_replans=[],
-        ensure_verifier_roles=lambda **kwargs: (["Local-Dev"], [], False, []),
-        dispatch_roles="Local-Dev",
+        ensure_verifier_roles=lambda **kwargs: (["Codex-Dev"], [], False, []),
+        dispatch_roles="Codex-Dev",
         send=lambda body, **kwargs: sent.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
     )
 
@@ -1483,14 +1483,14 @@ def test_enforce_dispatch_policies_planning_gate_adds_project_quick_actions() ->
         args=argparse.Namespace(require_verifier=False),
         key="twinpaper",
         entry={"project_alias": "O2"},
-        selected_roles=["Local-Dev"],
-        available_roles=["Local-Dev", "Reviewer"],
+        selected_roles=["Codex-Dev"],
+        available_roles=["Codex-Dev", "Reviewer"],
         verifier_candidates=["Reviewer"],
         plan_gate_blocked=True,
         plan_gate_reason="critic unresolved after auto-replan",
         plan_replans=[{"attempt": 1}],
-        ensure_verifier_roles=lambda **kwargs: (["Local-Dev"], ["Reviewer"], False, ["Reviewer"]),
-        dispatch_roles="Local-Dev",
+        ensure_verifier_roles=lambda **kwargs: (["Codex-Dev"], ["Reviewer"], False, ["Reviewer"]),
+        dispatch_roles="Codex-Dev",
         send=lambda body, **kwargs: sent.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
     )
 
@@ -1616,14 +1616,14 @@ def test_run_guards_module_matches_run_guard_exports() -> None:
         args=argparse.Namespace(require_verifier=False),
         key="twinpaper",
         entry={"project_alias": "O2"},
-        selected_roles=["Local-Dev"],
-        available_roles=["Local-Dev", "Reviewer"],
+        selected_roles=["Codex-Dev"],
+        available_roles=["Codex-Dev", "Reviewer"],
         verifier_candidates=["Reviewer"],
         plan_gate_blocked=True,
         plan_gate_reason="critic unresolved after auto-replan",
         plan_replans=[{"attempt": 1}],
-        ensure_verifier_roles=lambda **kwargs: (["Local-Dev"], ["Reviewer"], False, ["Reviewer"]),
-        dispatch_roles="Local-Dev",
+        ensure_verifier_roles=lambda **kwargs: (["Codex-Dev"], ["Reviewer"], False, ["Reviewer"]),
+        dispatch_roles="Codex-Dev",
         send=lambda body, **kwargs: policy_sent_run.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
     )
     policy_mod = run_guards.enforce_dispatch_policies(
@@ -1631,14 +1631,14 @@ def test_run_guards_module_matches_run_guard_exports() -> None:
         args=argparse.Namespace(require_verifier=False),
         key="twinpaper",
         entry={"project_alias": "O2"},
-        selected_roles=["Local-Dev"],
-        available_roles=["Local-Dev", "Reviewer"],
+        selected_roles=["Codex-Dev"],
+        available_roles=["Codex-Dev", "Reviewer"],
         verifier_candidates=["Reviewer"],
         plan_gate_blocked=True,
         plan_gate_reason="critic unresolved after auto-replan",
         plan_replans=[{"attempt": 1}],
-        ensure_verifier_roles=lambda **kwargs: (["Local-Dev"], ["Reviewer"], False, ["Reviewer"]),
-        dispatch_roles="Local-Dev",
+        ensure_verifier_roles=lambda **kwargs: (["Codex-Dev"], ["Reviewer"], False, ["Reviewer"]),
+        dispatch_roles="Codex-Dev",
         send=lambda body, **kwargs: policy_sent_mod.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
     )
     assert policy_run == policy_mod
@@ -2000,9 +2000,9 @@ def test_handle_run_or_unknown_command_sends_dispatch_exception_and_returns_true
             save_manager_state=lambda path, manager_state: saved.append(path),
         ),
         planning=run_handlers.RunPlanningDeps(
-            choose_auto_dispatch_roles=lambda *args, **kwargs: ["Local-Dev"],
+            choose_auto_dispatch_roles=lambda *args, **kwargs: ["Codex-Dev"],
             resolve_verifier_candidates=lambda text: [],
-            load_orchestrator_roles=lambda team_dir: ["Local-Dev"],
+            load_orchestrator_roles=lambda team_dir: ["Codex-Dev"],
             parse_roles_csv=lambda csv: [token for token in str(csv or "").split(",") if token],
             ensure_verifier_roles=lambda **kwargs: (kwargs.get("selected_roles", []), [], False, []),
             available_worker_roles=lambda roles: roles,
@@ -2022,7 +2022,7 @@ def test_handle_run_or_unknown_command_sends_dispatch_exception_and_returns_true
                 argparse.Namespace(
                     project_root=project_root,
                     team_dir=team_dir,
-                    roles="Local-Dev",
+                    roles="Codex-Dev",
                     priority="P2",
                     orch_timeout_sec=120,
                     no_wait=False,
@@ -2133,9 +2133,9 @@ def test_handle_run_or_unknown_command_materializes_provisional_task_before_plan
             save_manager_state=lambda path, manager_state: saved.append(path),
         ),
         planning=run_handlers.RunPlanningDeps(
-            choose_auto_dispatch_roles=lambda *args, **kwargs: ["Local-Dev"],
+            choose_auto_dispatch_roles=lambda *args, **kwargs: ["Codex-Dev"],
             resolve_verifier_candidates=lambda text: [],
-            load_orchestrator_roles=lambda team_dir: ["Local-Dev", "Reviewer"],
+            load_orchestrator_roles=lambda team_dir: ["Codex-Dev", "Reviewer"],
             parse_roles_csv=lambda csv: [token for token in str(csv or "").split(",") if token],
             ensure_verifier_roles=lambda **kwargs: (kwargs.get("selected_roles", []), [], False, []),
             available_worker_roles=lambda roles: roles,
@@ -2151,7 +2151,7 @@ def test_handle_run_or_unknown_command_materializes_provisional_task_before_plan
             ) or {
                 "plan_data": {"summary": "blocked", "subtasks": []},
                 "plan_critic": {"approved": False, "issues": [{"issue": "missing acceptance"}], "recommendations": []},
-                "plan_roles": ["Local-Dev"],
+                "plan_roles": ["Codex-Dev"],
                 "plan_replans": [{"attempt": 1}],
                 "plan_error": "",
                 "plan_gate_blocked": True,
@@ -2168,7 +2168,7 @@ def test_handle_run_or_unknown_command_materializes_provisional_task_before_plan
                 argparse.Namespace(
                     project_root=project_root,
                     team_dir=team_dir,
-                    roles="Local-Dev",
+                    roles="Codex-Dev",
                     priority="P2",
                     orch_timeout_sec=120,
                     no_wait=False,
@@ -2246,11 +2246,11 @@ def test_handle_run_or_unknown_command_reuses_provisional_request_id_for_dispatc
         return {
             "request_id": req_id,
             "complete": True,
-            "roles": ["Local-Dev"],
-            "role_states": [{"role": "Local-Dev", "status": "done"}],
-            "replies": [{"role": "Local-Dev", "text": "done"}],
+            "roles": ["Codex-Dev"],
+            "role_states": [{"role": "Codex-Dev", "status": "done"}],
+            "replies": [{"role": "Codex-Dev", "text": "done"}],
             "counts": {"assignments": 1, "replies": 1},
-            "done_roles": ["Local-Dev"],
+            "done_roles": ["Codex-Dev"],
             "failed_roles": [],
             "pending_roles": [],
         }
@@ -2304,9 +2304,9 @@ def test_handle_run_or_unknown_command_reuses_provisional_request_id_for_dispatc
             save_manager_state=lambda path, manager_state: None,
         ),
         planning=run_handlers.RunPlanningDeps(
-            choose_auto_dispatch_roles=lambda *args, **kwargs: ["Local-Dev"],
+            choose_auto_dispatch_roles=lambda *args, **kwargs: ["Codex-Dev"],
             resolve_verifier_candidates=lambda text: [],
-            load_orchestrator_roles=lambda team_dir: ["Local-Dev"],
+            load_orchestrator_roles=lambda team_dir: ["Codex-Dev"],
             parse_roles_csv=lambda csv: [token for token in str(csv or "").split(",") if token],
             ensure_verifier_roles=lambda **kwargs: (kwargs.get("selected_roles", []), [], False, []),
             available_worker_roles=lambda roles: roles,
@@ -2315,12 +2315,12 @@ def test_handle_run_or_unknown_command_reuses_provisional_request_id_for_dispatc
             critique_task_execution_plan=lambda **kwargs: {"approved": True, "issues": [], "recommendations": []},
             critic_has_blockers=lambda critic: False,
             repair_task_execution_plan=lambda **kwargs: {},
-            plan_roles_from_subtasks=lambda payload: ["Local-Dev"],
+            plan_roles_from_subtasks=lambda payload: ["Codex-Dev"],
             build_planned_dispatch_prompt=lambda prompt, plan_data, plan_critic: prompt,
             phase1_ensemble_planning=lambda *args, **kwargs: {
-                "plan_data": {"summary": "ready", "subtasks": [{"id": "S1", "owner_role": "Local-Dev", "title": "Implement", "goal": "do it", "acceptance": ["done"]}]},
+                "plan_data": {"summary": "ready", "subtasks": [{"id": "S1", "owner_role": "Codex-Dev", "title": "Implement", "goal": "do it", "acceptance": ["done"]}]},
                 "plan_critic": {"approved": True, "issues": [], "recommendations": []},
-                "plan_roles": ["Local-Dev"],
+                "plan_roles": ["Codex-Dev"],
                 "plan_replans": [{"attempt": 1}, {"attempt": 2}, {"attempt": 3}],
                 "plan_error": "",
                 "plan_gate_blocked": False,
@@ -2337,7 +2337,7 @@ def test_handle_run_or_unknown_command_reuses_provisional_request_id_for_dispatc
                 argparse.Namespace(
                     project_root=project_root,
                     team_dir=team_dir,
-                    roles="Local-Dev",
+                    roles="Codex-Dev",
                     priority="P2",
                     orch_timeout_sec=120,
                     no_wait=False,
@@ -2388,30 +2388,30 @@ def test_filter_phase2_retry_scope_limits_plan_to_target_lanes() -> None:
     plan_data = {
         "summary": "ready",
         "subtasks": [
-            {"id": "S1", "owner_role": "Local-Dev", "title": "Implement", "goal": "do impl"},
-            {"id": "S2", "owner_role": "Local-Writer", "title": "Document", "goal": "write handoff"},
+            {"id": "S1", "owner_role": "Codex-Dev", "title": "Implement", "goal": "do impl"},
+            {"id": "S2", "owner_role": "Codex-Writer", "title": "Document", "goal": "write handoff"},
         ],
         "meta": {
             "phase2_team_spec": {
                 "execution_mode": "parallel",
                 "execution_groups": [
-                    {"group_id": "L1", "role": "Local-Dev", "subtask_ids": ["S1"], "parallel": True},
-                    {"group_id": "L2", "role": "Local-Writer", "subtask_ids": ["S2"], "parallel": True},
+                    {"group_id": "L1", "role": "Codex-Dev", "subtask_ids": ["S1"], "parallel": True},
+                    {"group_id": "L2", "role": "Codex-Writer", "subtask_ids": ["S2"], "parallel": True},
                 ],
                 "review_mode": "parallel",
                 "review_groups": [
                     {"group_id": "R1", "role": "Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": True},
                     {"group_id": "R2", "role": "Reviewer", "kind": "verifier", "depends_on": ["L2"], "parallel": True},
                 ],
-                "team_roles": ["Local-Dev", "Local-Writer", "Reviewer"],
+                "team_roles": ["Codex-Dev", "Codex-Writer", "Reviewer"],
                 "critic_role": "Reviewer",
                 "integration_role": "Reviewer",
             },
             "phase2_execution_plan": {
                 "execution_mode": "parallel",
                 "execution_lanes": [
-                    {"lane_id": "L1", "role": "Local-Dev", "subtask_ids": ["S1"], "parallel": True},
-                    {"lane_id": "L2", "role": "Local-Writer", "subtask_ids": ["S2"], "parallel": True},
+                    {"lane_id": "L1", "role": "Codex-Dev", "subtask_ids": ["S1"], "parallel": True},
+                    {"lane_id": "L2", "role": "Codex-Writer", "subtask_ids": ["S2"], "parallel": True},
                 ],
                 "review_mode": "parallel",
                 "review_lanes": [
@@ -2443,37 +2443,37 @@ def test_filter_phase2_retry_scope_limits_plan_to_target_lanes() -> None:
     assert [row["lane_id"] for row in exec_plan["execution_lanes"]] == ["L2"]
     assert [row["lane_id"] for row in exec_plan["review_lanes"]] == ["R2"]
     assert [row["id"] for row in filtered["subtasks"]] == ["S2"]
-    assert scope["planned_roles"] == ["Local-Writer", "Reviewer"]
+    assert scope["planned_roles"] == ["Codex-Writer", "Reviewer"]
 
 
 def test_filter_phase2_retry_scope_honors_operator_selected_lane_subset() -> None:
     plan_data = {
         "summary": "ready",
         "subtasks": [
-            {"id": "S1", "owner_role": "Local-Dev", "title": "Implement", "goal": "do impl"},
-            {"id": "S2", "owner_role": "Local-Writer", "title": "Document", "goal": "write handoff"},
+            {"id": "S1", "owner_role": "Codex-Dev", "title": "Implement", "goal": "do impl"},
+            {"id": "S2", "owner_role": "Codex-Writer", "title": "Document", "goal": "write handoff"},
         ],
         "meta": {
             "phase2_team_spec": {
                 "execution_mode": "parallel",
                 "execution_groups": [
-                    {"group_id": "L1", "role": "Local-Dev", "subtask_ids": ["S1"], "parallel": True},
-                    {"group_id": "L2", "role": "Local-Writer", "subtask_ids": ["S2"], "parallel": True},
+                    {"group_id": "L1", "role": "Codex-Dev", "subtask_ids": ["S1"], "parallel": True},
+                    {"group_id": "L2", "role": "Codex-Writer", "subtask_ids": ["S2"], "parallel": True},
                 ],
                 "review_mode": "parallel",
                 "review_groups": [
                     {"group_id": "R1", "role": "Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": True},
                     {"group_id": "R2", "role": "Reviewer", "kind": "verifier", "depends_on": ["L2"], "parallel": True},
                 ],
-                "team_roles": ["Local-Dev", "Local-Writer", "Reviewer"],
+                "team_roles": ["Codex-Dev", "Codex-Writer", "Reviewer"],
                 "critic_role": "Reviewer",
                 "integration_role": "Reviewer",
             },
             "phase2_execution_plan": {
                 "execution_mode": "parallel",
                 "execution_lanes": [
-                    {"lane_id": "L1", "role": "Local-Dev", "subtask_ids": ["S1"], "parallel": True},
-                    {"lane_id": "L2", "role": "Local-Writer", "subtask_ids": ["S2"], "parallel": True},
+                    {"lane_id": "L1", "role": "Codex-Dev", "subtask_ids": ["S1"], "parallel": True},
+                    {"lane_id": "L2", "role": "Codex-Writer", "subtask_ids": ["S2"], "parallel": True},
                 ],
                 "review_mode": "parallel",
                 "review_lanes": [
@@ -2537,15 +2537,15 @@ def test_handle_run_or_unknown_command_retry_filters_phase2_dispatch_to_target_l
         return {
             "request_id": req_id,
             "complete": True,
-            "roles": ["Local-Dev", "Local-Writer", "Reviewer"],
+            "roles": ["Codex-Dev", "Codex-Writer", "Reviewer"],
             "role_states": [
-                {"role": "Local-Dev", "status": "done"},
-                {"role": "Local-Writer", "status": "done"},
+                {"role": "Codex-Dev", "status": "done"},
+                {"role": "Codex-Writer", "status": "done"},
                 {"role": "Reviewer", "status": "done"},
             ],
             "replies": [{"role": "Reviewer", "text": "done"}],
             "counts": {"assignments": 1, "replies": 1},
-            "done_roles": ["Local-Dev", "Local-Writer", "Reviewer"],
+            "done_roles": ["Codex-Dev", "Codex-Writer", "Reviewer"],
             "failed_roles": [],
             "pending_roles": [],
         }
@@ -2565,30 +2565,30 @@ def test_handle_run_or_unknown_command_retry_filters_phase2_dispatch_to_target_l
     plan_payload = {
         "summary": "ready",
         "subtasks": [
-            {"id": "S1", "owner_role": "Local-Dev", "title": "Implement", "goal": "do impl", "acceptance": ["done"]},
-            {"id": "S2", "owner_role": "Local-Writer", "title": "Document", "goal": "write handoff", "acceptance": ["done"]},
+            {"id": "S1", "owner_role": "Codex-Dev", "title": "Implement", "goal": "do impl", "acceptance": ["done"]},
+            {"id": "S2", "owner_role": "Codex-Writer", "title": "Document", "goal": "write handoff", "acceptance": ["done"]},
         ],
         "meta": {
             "phase2_team_spec": {
                 "execution_mode": "parallel",
                 "execution_groups": [
-                    {"group_id": "L1", "role": "Local-Dev", "subtask_ids": ["S1"], "parallel": True},
-                    {"group_id": "L2", "role": "Local-Writer", "subtask_ids": ["S2"], "parallel": True},
+                    {"group_id": "L1", "role": "Codex-Dev", "subtask_ids": ["S1"], "parallel": True},
+                    {"group_id": "L2", "role": "Codex-Writer", "subtask_ids": ["S2"], "parallel": True},
                 ],
                 "review_mode": "parallel",
                 "review_groups": [
                     {"group_id": "R1", "role": "Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": True},
                     {"group_id": "R2", "role": "Reviewer", "kind": "verifier", "depends_on": ["L2"], "parallel": True},
                 ],
-                "team_roles": ["Local-Dev", "Local-Writer", "Reviewer"],
+                "team_roles": ["Codex-Dev", "Codex-Writer", "Reviewer"],
                 "critic_role": "Reviewer",
                 "integration_role": "Reviewer",
             },
             "phase2_execution_plan": {
                 "execution_mode": "parallel",
                 "execution_lanes": [
-                    {"lane_id": "L1", "role": "Local-Dev", "subtask_ids": ["S1"], "parallel": True},
-                    {"lane_id": "L2", "role": "Local-Writer", "subtask_ids": ["S2"], "parallel": True},
+                    {"lane_id": "L1", "role": "Codex-Dev", "subtask_ids": ["S1"], "parallel": True},
+                    {"lane_id": "L2", "role": "Codex-Writer", "subtask_ids": ["S2"], "parallel": True},
                 ],
                 "review_mode": "parallel",
                 "review_lanes": [
@@ -2651,9 +2651,9 @@ def test_handle_run_or_unknown_command_retry_filters_phase2_dispatch_to_target_l
             save_manager_state=lambda *args, **kwargs: None,
         ),
         planning=run_handlers.RunPlanningDeps(
-            choose_auto_dispatch_roles=lambda *args, **kwargs: ["Local-Dev", "Local-Writer", "Reviewer"],
+            choose_auto_dispatch_roles=lambda *args, **kwargs: ["Codex-Dev", "Codex-Writer", "Reviewer"],
             resolve_verifier_candidates=lambda text: [],
-            load_orchestrator_roles=lambda team_dir: ["Local-Dev", "Local-Writer", "Reviewer"],
+            load_orchestrator_roles=lambda team_dir: ["Codex-Dev", "Codex-Writer", "Reviewer"],
             parse_roles_csv=lambda csv: [token for token in str(csv or "").split(",") if token],
             ensure_verifier_roles=lambda **kwargs: (kwargs.get("selected_roles", []), [], False, []),
             available_worker_roles=lambda roles: roles,
@@ -2662,12 +2662,12 @@ def test_handle_run_or_unknown_command_retry_filters_phase2_dispatch_to_target_l
             critique_task_execution_plan=lambda **kwargs: {"approved": True, "issues": [], "recommendations": []},
             critic_has_blockers=lambda critic: False,
             repair_task_execution_plan=lambda **kwargs: {},
-            plan_roles_from_subtasks=lambda payload: ["Local-Dev", "Local-Writer", "Reviewer"],
+            plan_roles_from_subtasks=lambda payload: ["Codex-Dev", "Codex-Writer", "Reviewer"],
             build_planned_dispatch_prompt=lambda prompt, plan_data, plan_critic: prompt,
             phase1_ensemble_planning=lambda *args, **kwargs: {
                 "plan_data": copy.deepcopy(plan_payload),
                 "plan_critic": {"approved": True, "issues": [], "recommendations": []},
-                "plan_roles": ["Local-Dev", "Local-Writer", "Reviewer"],
+                "plan_roles": ["Codex-Dev", "Codex-Writer", "Reviewer"],
                 "plan_replans": [{"attempt": 1}, {"attempt": 2}, {"attempt": 3}],
                 "plan_error": "",
                 "plan_gate_blocked": False,
@@ -2684,7 +2684,7 @@ def test_handle_run_or_unknown_command_retry_filters_phase2_dispatch_to_target_l
                 argparse.Namespace(
                     project_root=project_root,
                     team_dir=team_dir,
-                    roles="Local-Dev,Local-Writer,Reviewer",
+                    roles="Codex-Dev,Codex-Writer,Reviewer",
                     priority="P2",
                     orch_timeout_sec=120,
                     no_wait=False,
@@ -2981,7 +2981,7 @@ def test_capture_todo_proposals_merges_and_alerts() -> None:
         state={
             "complete": True,
             "replies": [
-                {"role": "Local-Writer", "body": "Release note draft is done. We still need a deployment checklist."}
+                {"role": "Codex-Writer", "body": "Release note draft is done. We still need a deployment checklist."}
             ],
         },
         req_id="REQ-900",
@@ -3034,7 +3034,7 @@ def test_capture_todo_proposals_prefers_backend_native_payload() -> None:
         prompt="writer handoff prompt",
         state={
             "complete": True,
-            "replies": [{"role": "Local-Writer", "body": "hints are present but should not be reparsed"}],
+            "replies": [{"role": "Codex-Writer", "body": "hints are present but should not be reparsed"}],
             "followup_proposals": [
                 {
                     "summary": "Draft the machine-readable summary table from the canonical backlog",
@@ -3230,7 +3230,7 @@ def test_exec_pipeline_module_matches_run_dispatch_sync_and_proposal_capture() -
         prompt="run release prep",
         state={
             "complete": True,
-            "replies": [{"role": "Local-Writer", "body": "Release note draft is done. We still need a deployment checklist."}],
+            "replies": [{"role": "Codex-Writer", "body": "Release note draft is done. We still need a deployment checklist."}],
         },
         req_id="REQ-900",
         task={"todo_id": "TODO-010", "short_id": "T-900"},
@@ -3591,7 +3591,7 @@ def test_resolve_retry_replan_transition_rejects_invalid_lane_selector() -> None
             "REQ-123": {
                 "request_id": "REQ-123",
                 "prompt": "retry target",
-                "roles": ["Local-Dev", "Reviewer"],
+                "roles": ["Codex-Dev", "Reviewer"],
                 "exec_critic": {
                     "verdict": "retry",
                     "action": "retry",
@@ -3643,7 +3643,7 @@ def test_resolve_retry_replan_transition_preserves_selected_lane_targets() -> No
             "REQ-123": {
                 "request_id": "REQ-123",
                 "prompt": "retry target",
-                "roles": ["Local-Dev", "Reviewer"],
+                "roles": ["Codex-Dev", "Reviewer"],
                 "exec_critic": {
                     "verdict": "retry",
                     "action": "retry",

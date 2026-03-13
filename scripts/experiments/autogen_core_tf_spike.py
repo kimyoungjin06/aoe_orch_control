@@ -37,7 +37,7 @@ def now_iso() -> str:
 
 def normalize_roles(raw: str) -> List[str]:
     roles = parse_roles_csv(raw)
-    return roles or ["Local-Dev", "Reviewer"]
+    return roles or ["Codex-Dev", "Reviewer"]
 
 
 def build_agent_specs(roles: List[str]) -> List[Dict[str, Any]]:
@@ -214,7 +214,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Emit a dry-run AutoGen Core TF backend plan.")
     p.add_argument("--project-key", default="O3", help="project/orch key label for the TF request")
     p.add_argument("--task", required=True, help="task summary for the TF spike")
-    p.add_argument("--roles", default="Local-Dev,Reviewer", help="comma-separated TF roles")
+    p.add_argument("--roles", default="Codex-Dev,Reviewer", help="comma-separated TF roles")
     p.add_argument("--workspace", default="", help="workspace path for the TF run")
     p.add_argument("--retry-budget", type=int, default=3, help="retry budget for the TF run")
     p.add_argument("--approval-required", action="store_true", help="mark the TF as approval-gated")

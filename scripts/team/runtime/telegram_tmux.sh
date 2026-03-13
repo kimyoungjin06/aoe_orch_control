@@ -116,10 +116,10 @@ try:
         if role:
             roles.append(role)
 except Exception:
-    roles = ['DataEngineer', 'Reviewer', 'Local-Dev', 'Local-Writer', 'Local-Analyst']
+    roles = ['DataEngineer', 'Reviewer', 'Codex-Dev', 'Codex-Writer', 'Codex-Analyst']
 
 if not roles:
-    roles = ['DataEngineer', 'Reviewer', 'Local-Dev', 'Local-Writer', 'Local-Analyst']
+    roles = ['DataEngineer', 'Reviewer', 'Codex-Dev', 'Codex-Writer', 'Codex-Analyst']
 
 seen = set()
 for r in roles:

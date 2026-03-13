@@ -31,8 +31,8 @@ TEAM_EXECUTION_MODES = ("single", "parallel")
 TEAM_REVIEW_MODES = ("skip", "single", "parallel")
 COMPANION_ROLE_MAP = {
     "Reviewer": "Claude-Reviewer",
-    "Local-Writer": "Claude-Writer",
-    "Local-Analyst": "Claude-Analyst",
+    "Codex-Writer": "Claude-Writer",
+    "Codex-Analyst": "Claude-Analyst",
 }
 
 

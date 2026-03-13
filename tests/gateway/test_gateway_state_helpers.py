@@ -618,7 +618,7 @@ def test_extract_followup_todo_proposals_normalizes_json_payload() -> None:
         rows = gw.extract_followup_todo_proposals(
             argparse.Namespace(orch_command_timeout_sec=120),
             "run release prep",
-            {"replies": [{"role": "Local-Writer", "body": "release note draft is done; deployment checklist is still missing"}]},
+            {"replies": [{"role": "Codex-Writer", "body": "release note draft is done; deployment checklist is still missing"}]},
             task={"todo_id": "TODO-001", "plan": {"summary": "release prep"}},
             reply_lang="en",
         )
@@ -858,12 +858,12 @@ def test_schema_normalizes_plan_and_exec_critic_payloads() -> None:
         {
             "summary": "demo",
             "subtasks": [
-                {"title": "collect data", "role": "Local-Analyst", "acceptance": ["done"]},
+                {"title": "collect data", "role": "Codex-Analyst", "acceptance": ["done"]},
                 {"id": "S2", "goal": "write memo", "owner_role": "UnknownRole"},
             ],
         },
         user_prompt="analyze and summarize",
-        workers=["Local-Analyst", "Local-Writer"],
+        workers=["Codex-Analyst", "Codex-Writer"],
         max_subtasks=2,
     )
     critic = schema.normalize_plan_critic_payload(
@@ -878,7 +878,7 @@ def test_schema_normalizes_plan_and_exec_critic_payloads() -> None:
     )
 
     assert plan["summary"] == "demo"
-    assert plan["subtasks"][0]["owner_role"] == "Local-Analyst"
+    assert plan["subtasks"][0]["owner_role"] == "Codex-Analyst"
     assert plan["subtasks"][1]["owner_role"] == "UnknownRole"
     assert critic["approved"] is False
     assert critic["issues"] == ["missing acceptance"]
@@ -924,30 +924,30 @@ def test_plan_critic_primary_issue_and_lifecycle_summary_use_schema_reason() -> 
             "request_id": "REQ-101",
             "status": "failed",
             "mode": "dispatch",
-            "roles": ["Local-Dev"],
+            "roles": ["Codex-Dev"],
             "verifier_roles": ["Reviewer"],
             "stages": {"planning": "failed"},
             "plan": {
                 "summary": "demo plan",
-                "subtasks": [{"id": "S1", "title": "collect data", "owner_role": "Local-Dev"}],
+                "subtasks": [{"id": "S1", "title": "collect data", "owner_role": "Codex-Dev"}],
                 "meta": {
                     "phase2_team_spec": {
                         "execution_mode": "single",
                         "execution_groups": [
-                            {"group_id": "E1", "role": "Local-Dev", "subtask_ids": ["S1"], "subtask_titles": ["collect data"], "goals": ["collect data"]}
+                            {"group_id": "E1", "role": "Codex-Dev", "subtask_ids": ["S1"], "subtask_titles": ["collect data"], "goals": ["collect data"]}
                         ],
                         "review_mode": "single",
                         "review_groups": [
                             {"group_id": "R1", "role": "Reviewer", "kind": "verifier", "scope": "phase2_outputs", "depends_on": ["E1"]}
                         ],
-                        "team_roles": ["Local-Dev", "Reviewer"],
+                        "team_roles": ["Codex-Dev", "Reviewer"],
                         "critic_role": "Reviewer",
                         "integration_role": "Reviewer",
                     },
                     "phase2_execution_plan": {
                         "execution_mode": "single",
                         "execution_lanes": [
-                            {"lane_id": "L1", "role": "Local-Dev", "subtask_ids": ["S1"], "parallel": False}
+                            {"lane_id": "L1", "role": "Codex-Dev", "subtask_ids": ["S1"], "parallel": False}
                         ],
                         "review_mode": "single",
                         "review_lanes": [
@@ -979,7 +979,7 @@ def test_plan_critic_primary_issue_and_lifecycle_summary_use_schema_reason() -> 
     assert "phase2_execution: single lanes=1" in summary
     assert "phase2_review: single lanes=1" in summary
     assert "phase2_exec_plan: single workers_parallel=no reviews_parallel=no readonly=yes" in summary
-    assert "- exec L1 [Local-Dev/serial]" in summary
+    assert "- exec L1 [Codex-Dev/serial]" in summary
     assert "-> S1" in summary
     assert "- critic R1 [Reviewer/verifier/serial]" in summary
     assert "after L1" in summary
@@ -1088,7 +1088,7 @@ def test_apply_exec_critic_lifecycle_overlays_review_lane_verdicts() -> None:
         },
         "plan": {"meta": {}},
         "lane_states": {
-            "execution": [{"lane_id": "L1", "role": "Local-Dev", "status": "done"}],
+            "execution": [{"lane_id": "L1", "role": "Codex-Dev", "status": "done"}],
             "review": [{"lane_id": "R1", "role": "Reviewer", "kind": "verifier", "status": "done", "depends_on": ["L1"]}],
             "summary": {
                 "execution": {"done": 1},
@@ -1132,8 +1132,8 @@ def test_apply_exec_critic_lifecycle_marks_manual_followup_lane_targets() -> Non
         "plan": {"meta": {}},
         "lane_states": {
             "execution": [
-                {"lane_id": "L1", "role": "Local-Dev", "status": "done"},
-                {"lane_id": "L2", "role": "Local-Writer", "status": "done"},
+                {"lane_id": "L1", "role": "Codex-Dev", "status": "done"},
+                {"lane_id": "L2", "role": "Codex-Writer", "status": "done"},
             ],
             "review": [{"lane_id": "R1", "role": "Reviewer", "kind": "verifier", "status": "done", "depends_on": ["L1", "L2"]}],
             "summary": {
@@ -1177,7 +1177,7 @@ def test_task_view_module_matches_gateway_lifecycle_summary() -> None:
         "alias": "demo-task",
         "status": "running",
         "mode": "dispatch",
-        "roles": ["Local-Dev", "Reviewer"],
+        "roles": ["Codex-Dev", "Reviewer"],
         "verifier_roles": ["Reviewer"],
         "stages": {"planning": "done", "execution": "running"},
         "context": {
@@ -1187,12 +1187,12 @@ def test_task_view_module_matches_gateway_lifecycle_summary() -> None:
             "source_request_id": "REQ-101",
             "control_mode": "retry",
         },
-        "plan": {"summary": "demo", "subtasks": [{"id": "S1", "title": "collect", "owner_role": "Local-Dev"}]},
+        "plan": {"summary": "demo", "subtasks": [{"id": "S1", "title": "collect", "owner_role": "Codex-Dev"}]},
         "plan_critic": {"approved": False, "issues": ["missing acceptance"]},
         "plan_gate_passed": False,
         "plan_gate_reason": "missing acceptance",
         "exec_critic": {"verdict": "retry", "action": "replan", "reason": "need evidence", "attempt": 1, "max_attempts": 3, "at": "2026-03-10T10:00:00+0900"},
-        "result": {"assignments": 1, "replies": 0, "complete": False, "pending_roles": ["Local-Dev"]},
+        "result": {"assignments": 1, "replies": 0, "complete": False, "pending_roles": ["Codex-Dev"]},
         "history": [{"at": "2026-03-10T10:00:00+0900", "stage": "planning", "status": "done", "note": "critic issues"}],
     }
 
@@ -1209,12 +1209,12 @@ def test_task_state_module_matches_gateway_alias_and_monitor_helpers() -> None:
                 "prompt": "collect data and write memo",
                 "status": "running",
                 "stage": "execution",
-                "roles": ["Local-Dev", "Reviewer"],
+                "roles": ["Codex-Dev", "Reviewer"],
                 "plan": {
                     "meta": {
                         "phase2_execution_plan": {
                             "execution_mode": "single",
-                            "execution_lanes": [{"lane_id": "L1", "role": "Local-Dev"}],
+                            "execution_lanes": [{"lane_id": "L1", "role": "Codex-Dev"}],
                             "review_mode": "single",
                             "review_lanes": [{"lane_id": "R1", "role": "Reviewer"}],
                         }
@@ -1252,7 +1252,7 @@ def test_task_state_snapshot_and_sync_match_gateway() -> None:
     request_data = {
         "request_id": "REQ-301",
         "role_states": [
-            {"role": "Local-Dev", "status": "done"},
+            {"role": "Codex-Dev", "status": "done"},
             {"role": "Reviewer", "status": "pending"},
         ],
         "counts": {"assignments": 2, "replies": 1},
@@ -1270,7 +1270,7 @@ def test_task_state_snapshot_and_sync_match_gateway() -> None:
         request_data=request_data,
         prompt="Validate output",
         mode="dispatch",
-        selected_roles=["Local-Dev", "Reviewer"],
+        selected_roles=["Codex-Dev", "Reviewer"],
         verifier_roles=["Reviewer"],
         require_verifier=True,
         verifier_candidates=["Reviewer"],
@@ -1280,7 +1280,7 @@ def test_task_state_snapshot_and_sync_match_gateway() -> None:
         request_data,
         prompt="Validate output",
         mode="dispatch",
-        selected_roles=["Local-Dev", "Reviewer"],
+        selected_roles=["Codex-Dev", "Reviewer"],
         verifier_roles=["Reviewer"],
         require_verifier=True,
         verifier_candidates=["Reviewer"],
@@ -1303,10 +1303,10 @@ def test_task_state_snapshot_and_sync_match_gateway() -> None:
 def test_task_state_sync_records_role_mismatch_and_task_summary_surfaces_it() -> None:
     request_data = {
         "request_id": "REQ-ROLE-1",
-        "requested_roles": ["Local-Writer", "Reviewer"],
-        "executed_roles": ["Local-Analyst", "Reviewer"],
+        "requested_roles": ["Codex-Writer", "Reviewer"],
+        "executed_roles": ["Codex-Analyst", "Reviewer"],
         "role_states": [
-            {"role": "Local-Analyst", "status": "done"},
+            {"role": "Codex-Analyst", "status": "done"},
             {"role": "Reviewer", "status": "done"},
         ],
         "counts": {"assignments": 2, "replies": 2},
@@ -1319,7 +1319,7 @@ def test_task_state_sync_records_role_mismatch_and_task_summary_surfaces_it() ->
         request_data,
         prompt="Write the handoff note",
         mode="dispatch",
-        selected_roles=["Local-Writer", "Reviewer"],
+        selected_roles=["Codex-Writer", "Reviewer"],
         verifier_roles=["Reviewer"],
         require_verifier=True,
         verifier_candidates=["Reviewer"],
@@ -1332,13 +1332,13 @@ def test_task_state_sync_records_role_mismatch_and_task_summary_surfaces_it() ->
 
     assert task is not None
     assert task["result"]["role_mismatch"] is True
-    assert task["result"]["dropped_roles"] == ["Local-Writer"]
-    assert task["result"]["added_roles"] == ["Local-Analyst"]
+    assert task["result"]["dropped_roles"] == ["Codex-Writer"]
+    assert task["result"]["added_roles"] == ["Codex-Analyst"]
 
     summary = gw.summarize_task_lifecycle("Demo", task)
-    assert "requested_roles: Local-Writer, Reviewer" in summary
-    assert "executed_roles: Local-Analyst, Reviewer" in summary
-    assert "role_mismatch: dropped=Local-Writer added=Local-Analyst" in summary
+    assert "requested_roles: Codex-Writer, Reviewer" in summary
+    assert "executed_roles: Codex-Analyst, Reviewer" in summary
+    assert "role_mismatch: dropped=Codex-Writer added=Codex-Analyst" in summary
 
 
 def test_task_monitor_surfaces_role_mismatch_targets() -> None:
@@ -1349,12 +1349,12 @@ def test_task_monitor_surfaces_role_mismatch_targets() -> None:
                 "prompt": "Write summary",
                 "status": "running",
                 "stage": "execution",
-                "roles": ["Local-Writer", "Reviewer"],
+                "roles": ["Codex-Writer", "Reviewer"],
                 "result": {
-                    "requested_roles": ["Local-Writer", "Reviewer"],
-                    "executed_roles": ["Local-Analyst", "Reviewer"],
-                    "dropped_roles": ["Local-Writer"],
-                    "added_roles": ["Local-Analyst"],
+                    "requested_roles": ["Codex-Writer", "Reviewer"],
+                    "executed_roles": ["Codex-Analyst", "Reviewer"],
+                    "dropped_roles": ["Codex-Writer"],
+                    "added_roles": ["Codex-Analyst"],
                     "role_mismatch": True,
                 },
                 "updated_at": "2026-03-13T10:00:00+0900",
@@ -1376,15 +1376,15 @@ def test_task_monitor_surfaces_role_mismatch_targets() -> None:
         lifecycle_stages=gw.LIFECYCLE_STAGES,
     )
 
-    assert "roles drop:Local-Writer add:Local-Analyst" in summary
+    assert "roles drop:Codex-Writer add:Codex-Analyst" in summary
 
 
 def test_task_state_sync_derives_lane_states_and_review_waits_on_dependencies() -> None:
     request_data = {
         "request_id": "REQ-302",
         "role_states": [
-            {"role": "Local-Dev", "status": "done"},
-            {"role": "Local-Writer", "status": "running"},
+            {"role": "Codex-Dev", "status": "done"},
+            {"role": "Codex-Writer", "status": "running"},
             {"role": "Reviewer", "status": "pending"},
         ],
         "counts": {"assignments": 3, "replies": 1},
@@ -1393,15 +1393,15 @@ def test_task_state_sync_derives_lane_states_and_review_waits_on_dependencies() 
     plan = {
         "summary": "parallel execution",
         "subtasks": [
-            {"id": "S1", "title": "implement", "owner_role": "Local-Dev"},
-            {"id": "S2", "title": "write report", "owner_role": "Local-Writer"},
+            {"id": "S1", "title": "implement", "owner_role": "Codex-Dev"},
+            {"id": "S2", "title": "write report", "owner_role": "Codex-Writer"},
         ],
         "meta": {
             "phase2_execution_plan": {
                 "execution_mode": "parallel",
                 "execution_lanes": [
-                    {"lane_id": "L1", "role": "Local-Dev", "subtask_ids": ["S1"], "parallel": True},
-                    {"lane_id": "L2", "role": "Local-Writer", "subtask_ids": ["S2"], "parallel": True},
+                    {"lane_id": "L1", "role": "Codex-Dev", "subtask_ids": ["S1"], "parallel": True},
+                    {"lane_id": "L2", "role": "Codex-Writer", "subtask_ids": ["S2"], "parallel": True},
                 ],
                 "review_mode": "single",
                 "review_lanes": [
@@ -1420,7 +1420,7 @@ def test_task_state_sync_derives_lane_states_and_review_waits_on_dependencies() 
         request_id="REQ-302",
         prompt="Parallelize implementation and reporting",
         mode="dispatch",
-        roles=["Local-Dev", "Local-Writer", "Reviewer"],
+        roles=["Codex-Dev", "Codex-Writer", "Reviewer"],
         verifier_roles=["Reviewer"],
         require_verifier=True,
     )
@@ -1431,7 +1431,7 @@ def test_task_state_sync_derives_lane_states_and_review_waits_on_dependencies() 
         request_data,
         prompt="Parallelize implementation and reporting",
         mode="dispatch",
-        selected_roles=["Local-Dev", "Local-Writer", "Reviewer"],
+        selected_roles=["Codex-Dev", "Codex-Writer", "Reviewer"],
         verifier_roles=["Reviewer"],
         require_verifier=True,
         verifier_candidates=["Reviewer"],
@@ -1455,8 +1455,8 @@ def test_task_state_sync_derives_lane_states_and_review_waits_on_dependencies() 
 
     summary = gw.summarize_task_lifecycle("Demo", synced)
     assert "phase2_lane_state: exec done=1, running=1 | review waiting_on_dependencies=1" in summary
-    assert "- exec L1 [Local-Dev/parallel] [done] -> S1" in summary
-    assert "- exec L2 [Local-Writer/parallel] [running] -> S2" in summary
+    assert "- exec L1 [Codex-Dev/parallel] [done] -> S1" in summary
+    assert "- exec L2 [Codex-Writer/parallel] [running] -> S2" in summary
     assert "- critic R1 [Reviewer/verifier/serial] [waiting_on_dependencies] after L1, L2" in summary
 
 
@@ -1464,7 +1464,7 @@ def test_task_state_sync_records_phase2_review_trigger_metadata() -> None:
     request_data = {
         "request_id": "REQ-303",
         "role_states": [
-            {"role": "Local-Dev", "status": "done"},
+            {"role": "Codex-Dev", "status": "done"},
             {"role": "Reviewer", "status": "done"},
         ],
         "counts": {"assignments": 2, "replies": 2},
@@ -1474,11 +1474,11 @@ def test_task_state_sync_records_phase2_review_trigger_metadata() -> None:
     }
     plan = {
         "summary": "execution then review",
-        "subtasks": [{"id": "S1", "title": "implement", "owner_role": "Local-Dev"}],
+        "subtasks": [{"id": "S1", "title": "implement", "owner_role": "Codex-Dev"}],
         "meta": {
             "phase2_execution_plan": {
                 "execution_mode": "single",
-                "execution_lanes": [{"lane_id": "L1", "role": "Local-Dev", "subtask_ids": ["S1"], "parallel": False}],
+                "execution_lanes": [{"lane_id": "L1", "role": "Codex-Dev", "subtask_ids": ["S1"], "parallel": False}],
                 "review_mode": "single",
                 "review_lanes": [{"lane_id": "R1", "role": "Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": False}],
                 "parallel_workers": False,
@@ -1493,7 +1493,7 @@ def test_task_state_sync_records_phase2_review_trigger_metadata() -> None:
         request_id="REQ-303",
         prompt="Implement and verify",
         mode="dispatch",
-        roles=["Local-Dev", "Reviewer"],
+        roles=["Codex-Dev", "Reviewer"],
         verifier_roles=["Reviewer"],
         require_verifier=True,
     )
@@ -1504,7 +1504,7 @@ def test_task_state_sync_records_phase2_review_trigger_metadata() -> None:
         request_data,
         prompt="Implement and verify",
         mode="dispatch",
-        selected_roles=["Local-Dev", "Reviewer"],
+        selected_roles=["Codex-Dev", "Reviewer"],
         verifier_roles=["Reviewer"],
         require_verifier=True,
         verifier_candidates=["Reviewer"],
@@ -1530,9 +1530,9 @@ def test_task_monitor_includes_lane_state_summary() -> None:
                 "prompt": "collect data and write memo",
                 "status": "running",
                 "stage": "execution",
-                "roles": ["Local-Dev", "Reviewer"],
+                "roles": ["Codex-Dev", "Reviewer"],
                 "lane_states": {
-                    "execution": [{"lane_id": "L1", "role": "Local-Dev", "status": "running"}],
+                    "execution": [{"lane_id": "L1", "role": "Codex-Dev", "status": "running"}],
                     "review": [{"lane_id": "R1", "role": "Reviewer", "status": "waiting_on_dependencies", "depends_on": ["L1"]}],
                     "summary": {
                         "execution": {"running": 1},
@@ -1543,7 +1543,7 @@ def test_task_monitor_includes_lane_state_summary() -> None:
                     "meta": {
                         "phase2_execution_plan": {
                             "execution_mode": "single",
-                            "execution_lanes": [{"lane_id": "L1", "role": "Local-Dev"}],
+                            "execution_lanes": [{"lane_id": "L1", "role": "Codex-Dev"}],
                             "review_mode": "single",
                             "review_lanes": [{"lane_id": "R1", "role": "Reviewer"}],
                         }
@@ -1577,9 +1577,9 @@ def test_task_monitor_includes_review_verdict_summary() -> None:
                 "prompt": "collect data and write memo",
                 "status": "running",
                 "stage": "integration",
-                "roles": ["Local-Dev", "Reviewer"],
+                "roles": ["Codex-Dev", "Reviewer"],
                 "lane_states": {
-                    "execution": [{"lane_id": "L1", "role": "Local-Dev", "status": "done"}],
+                    "execution": [{"lane_id": "L1", "role": "Codex-Dev", "status": "done"}],
                     "review": [{"lane_id": "R1", "role": "Reviewer", "status": "done", "verdict": "retry", "action": "replan", "depends_on": ["L1"]}],
                     "summary": {
                         "execution": {"done": 1},
@@ -1591,7 +1591,7 @@ def test_task_monitor_includes_review_verdict_summary() -> None:
                     "meta": {
                         "phase2_execution_plan": {
                             "execution_mode": "single",
-                            "execution_lanes": [{"lane_id": "L1", "role": "Local-Dev"}],
+                            "execution_lanes": [{"lane_id": "L1", "role": "Codex-Dev"}],
                             "review_mode": "single",
                             "review_lanes": [{"lane_id": "R1", "role": "Reviewer"}],
                         }
@@ -1625,7 +1625,7 @@ def test_task_monitor_includes_lane_rerun_and_followup_targets() -> None:
                 "prompt": "collect data and write memo",
                 "status": "running",
                 "stage": "integration",
-                "roles": ["Local-Dev", "Reviewer"],
+                "roles": ["Codex-Dev", "Reviewer"],
                 "exec_critic": {
                     "verdict": "retry",
                     "action": "retry",
@@ -1634,7 +1634,7 @@ def test_task_monitor_includes_lane_rerun_and_followup_targets() -> None:
                     "manual_followup_execution_lane_ids": ["L3"],
                 },
                 "lane_states": {
-                    "execution": [{"lane_id": "L1", "role": "Local-Dev", "status": "done"}],
+                    "execution": [{"lane_id": "L1", "role": "Codex-Dev", "status": "done"}],
                     "review": [{"lane_id": "R1", "role": "Reviewer", "status": "done", "verdict": "retry", "action": "replan", "depends_on": ["L2"]}],
                     "summary": {
                         "execution": {"done": 1},
@@ -1646,7 +1646,7 @@ def test_task_monitor_includes_lane_rerun_and_followup_targets() -> None:
                     "meta": {
                         "phase2_execution_plan": {
                             "execution_mode": "parallel",
-                            "execution_lanes": [{"lane_id": "L1", "role": "Local-Dev"}, {"lane_id": "L2", "role": "Claude-Analyst"}],
+                            "execution_lanes": [{"lane_id": "L1", "role": "Codex-Dev"}, {"lane_id": "L2", "role": "Claude-Analyst"}],
                             "review_mode": "single",
                             "review_lanes": [{"lane_id": "R1", "role": "Reviewer"}],
                         }
@@ -1806,7 +1806,7 @@ def test_task_state_sanitize_task_record_matches_gateway(monkeypatch) -> None:
     raw_task = {
         "mode": "weird",
         "prompt": "  Review the output  ",
-        "roles": ["Local-Dev", "Reviewer", "Local-Dev"],
+        "roles": ["Codex-Dev", "Reviewer", "Codex-Dev"],
         "verifier_roles": ["Reviewer", "Reviewer"],
         "require_verifier": 1,
         "stages": {"planning": "complete", "execution": "active", "garbage": "bad"},
@@ -1830,11 +1830,11 @@ def test_task_state_sanitize_task_record_matches_gateway(monkeypatch) -> None:
         "todo_status": "RUNNING",
         "plan": {
             "summary": "demo",
-            "meta": {"worker_roles": ["Reviewer", "Local-Dev", "Reviewer"]},
+            "meta": {"worker_roles": ["Reviewer", "Codex-Dev", "Reviewer"]},
             "subtasks": [{"id": "S1", "title": "check", "owner_role": "Reviewer"}],
         },
         "plan_critic": {"approved": False, "issues": ["missing acceptance"]},
-        "plan_roles": ["Reviewer", "Local-Dev", "Reviewer"],
+        "plan_roles": ["Reviewer", "Codex-Dev", "Reviewer"],
         "plan_replans": [{"attempt": "2", "critic": "retry", "subtasks": "3"}],
         "plan_gate_passed": False,
         "exec_critic": {
@@ -1970,38 +1970,38 @@ def test_choose_auto_dispatch_roles_adds_claude_companion_for_multi_review_reque
 
 def test_choose_auto_dispatch_roles_builds_multi_role_tf_from_prompt_mix(tmp_path: Path) -> None:
     team_dir = tmp_path / ".aoe-team"
-    (team_dir / "agents" / "Local-Dev").mkdir(parents=True, exist_ok=True)
+    (team_dir / "agents" / "Codex-Dev").mkdir(parents=True, exist_ok=True)
     (team_dir / "agents" / "Reviewer").mkdir(parents=True, exist_ok=True)
-    (team_dir / "agents" / "Local-Writer").mkdir(parents=True, exist_ok=True)
-    (team_dir / "agents" / "Local-Dev" / "AGENTS.md").write_text(
-        "# AGENTS.md - Local-Dev\n\n## Mission\nImplement code changes and fix application bugs.\n",
+    (team_dir / "agents" / "Codex-Writer").mkdir(parents=True, exist_ok=True)
+    (team_dir / "agents" / "Codex-Dev" / "AGENTS.md").write_text(
+        "# AGENTS.md - Codex-Dev\n\n## Mission\nImplement code changes and fix application bugs.\n",
         encoding="utf-8",
     )
     (team_dir / "agents" / "Reviewer" / "AGENTS.md").write_text(
         "# AGENTS.md - Reviewer\n\n## Mission\nFind risks, regressions, and missing tests before merge.\n",
         encoding="utf-8",
     )
-    (team_dir / "agents" / "Local-Writer" / "AGENTS.md").write_text(
-        "# AGENTS.md - Local-Writer\n\n## Mission\nWrite concise documents and reports.\n",
+    (team_dir / "agents" / "Codex-Writer" / "AGENTS.md").write_text(
+        "# AGENTS.md - Codex-Writer\n\n## Mission\nWrite concise documents and reports.\n",
         encoding="utf-8",
     )
 
     roles = gw.choose_auto_dispatch_roles(
         "로그인 버그를 수정하고 회귀 리스크도 같이 검토해줘.",
-        available_roles=["Local-Dev", "Reviewer", "Local-Writer"],
+        available_roles=["Codex-Dev", "Reviewer", "Codex-Writer"],
         team_dir=team_dir,
     )
 
-    assert set(roles) == {"Local-Dev", "Reviewer"}
+    assert set(roles) == {"Codex-Dev", "Reviewer"}
     assert len(roles) == 2
 
 
 def test_choose_auto_dispatch_roles_picks_local_analyst_for_analysis_prompt(tmp_path: Path) -> None:
     team_dir = tmp_path / ".aoe-team"
-    (team_dir / "agents" / "Local-Analyst").mkdir(parents=True, exist_ok=True)
+    (team_dir / "agents" / "Codex-Analyst").mkdir(parents=True, exist_ok=True)
     (team_dir / "agents" / "Reviewer").mkdir(parents=True, exist_ok=True)
-    (team_dir / "agents" / "Local-Analyst" / "AGENTS.md").write_text(
-        "# AGENTS.md - Local-Analyst\n\n## Mission\nInvestigate project state, compare options, and surface defensible recommendations.\n",
+    (team_dir / "agents" / "Codex-Analyst" / "AGENTS.md").write_text(
+        "# AGENTS.md - Codex-Analyst\n\n## Mission\nInvestigate project state, compare options, and surface defensible recommendations.\n",
         encoding="utf-8",
     )
     (team_dir / "agents" / "Reviewer" / "AGENTS.md").write_text(
@@ -2011,41 +2011,41 @@ def test_choose_auto_dispatch_roles_picks_local_analyst_for_analysis_prompt(tmp_
 
     roles = gw.choose_auto_dispatch_roles(
         "현재 구조를 조사하고 두 방식의 트레이드오프를 비교해서 추천안을 정리해줘.",
-        available_roles=["Local-Analyst", "Reviewer"],
+        available_roles=["Codex-Analyst", "Reviewer"],
         team_dir=team_dir,
     )
 
-    assert roles == ["Local-Analyst"]
+    assert roles == ["Codex-Analyst"]
 
 
 def test_choose_auto_dispatch_roles_prefers_local_writer_for_doc_request(tmp_path: Path) -> None:
     team_dir = tmp_path / ".aoe-team"
-    (team_dir / "agents" / "Local-Writer").mkdir(parents=True, exist_ok=True)
-    (team_dir / "agents" / "Local-Dev").mkdir(parents=True, exist_ok=True)
-    (team_dir / "agents" / "Local-Writer" / "AGENTS.md").write_text(
-        "# AGENTS.md - Local-Writer\n\n## Mission\nWrite concise project documents, summaries, and handoff notes that people can use immediately.\n",
+    (team_dir / "agents" / "Codex-Writer").mkdir(parents=True, exist_ok=True)
+    (team_dir / "agents" / "Codex-Dev").mkdir(parents=True, exist_ok=True)
+    (team_dir / "agents" / "Codex-Writer" / "AGENTS.md").write_text(
+        "# AGENTS.md - Codex-Writer\n\n## Mission\nWrite concise project documents, summaries, and handoff notes that people can use immediately.\n",
         encoding="utf-8",
     )
-    (team_dir / "agents" / "Local-Dev" / "AGENTS.md").write_text(
-        "# AGENTS.md - Local-Dev\n\n## Mission\nImplement code changes, debug failures, and return verifiable fixes.\n",
+    (team_dir / "agents" / "Codex-Dev" / "AGENTS.md").write_text(
+        "# AGENTS.md - Codex-Dev\n\n## Mission\nImplement code changes, debug failures, and return verifiable fixes.\n",
         encoding="utf-8",
     )
 
     roles = gw.choose_auto_dispatch_roles(
         "배포 전에 문서를 정리하고 요약 보고서를 작성해줘.",
-        available_roles=["Local-Writer", "Local-Dev"],
+        available_roles=["Codex-Writer", "Codex-Dev"],
         team_dir=team_dir,
     )
 
-    assert roles == ["Local-Writer"]
+    assert roles == ["Codex-Writer"]
 
 
 def test_choose_auto_dispatch_roles_adds_claude_writer_and_analyst_companions_when_available(tmp_path: Path) -> None:
     team_dir = tmp_path / ".aoe-team"
     for role, mission in (
-        ("Local-Writer", "Write concise project documents and reports."),
+        ("Codex-Writer", "Write concise project documents and reports."),
         ("Claude-Writer", "Write concise project documents and reports."),
-        ("Local-Analyst", "Investigate project state, compare options, and recommend next steps."),
+        ("Codex-Analyst", "Investigate project state, compare options, and recommend next steps."),
         ("Claude-Analyst", "Investigate project state, compare options, and recommend next steps."),
     ):
         (team_dir / "agents" / role).mkdir(parents=True, exist_ok=True)
@@ -2056,17 +2056,17 @@ def test_choose_auto_dispatch_roles_adds_claude_writer_and_analyst_companions_wh
 
     writer_roles = gw.choose_auto_dispatch_roles(
         "문서를 정리하고 각각 교차검증해서 handoff 초안을 만들어줘.",
-        available_roles=["Local-Writer", "Claude-Writer", "Local-Analyst", "Claude-Analyst"],
+        available_roles=["Codex-Writer", "Claude-Writer", "Codex-Analyst", "Claude-Analyst"],
         team_dir=team_dir,
     )
     analyst_roles = gw.choose_auto_dispatch_roles(
         "현재 구조를 조사하고 각각 비교해서 추천안을 정리해줘.",
-        available_roles=["Local-Writer", "Claude-Writer", "Local-Analyst", "Claude-Analyst"],
+        available_roles=["Codex-Writer", "Claude-Writer", "Codex-Analyst", "Claude-Analyst"],
         team_dir=team_dir,
     )
 
-    assert writer_roles == ["Local-Writer", "Claude-Writer"]
-    assert analyst_roles == ["Local-Analyst", "Claude-Analyst"]
+    assert writer_roles == ["Codex-Writer", "Claude-Writer"]
+    assert analyst_roles == ["Codex-Analyst", "Claude-Analyst"]
 
 
 def test_available_worker_roles_uses_expanded_default_pool() -> None:
@@ -2074,10 +2074,10 @@ def test_available_worker_roles_uses_expanded_default_pool() -> None:
         "DataEngineer",
         "Reviewer",
         "Claude-Reviewer",
-        "Local-Dev",
-        "Local-Writer",
+        "Codex-Dev",
+        "Codex-Writer",
         "Claude-Writer",
-        "Local-Analyst",
+        "Codex-Analyst",
         "Claude-Analyst",
     ]
 
@@ -2087,10 +2087,10 @@ def test_runtime_seed_default_repair_agents_include_claude_companions() -> None:
         "DataEngineer:codex",
         "Reviewer:codex",
         "Claude-Reviewer:claude",
-        "Local-Dev:codex",
-        "Local-Writer:codex",
+        "Codex-Dev:codex",
+        "Codex-Writer:codex",
         "Claude-Writer:claude",
-        "Local-Analyst:codex",
+        "Codex-Analyst:codex",
         "Claude-Analyst:claude",
     ]
 
@@ -2111,9 +2111,9 @@ def test_seed_runtime_from_spec_copies_claude_companion_templates(tmp_path: Path
         "agents": [
             {"role": "Reviewer"},
             {"role": "Claude-Reviewer"},
-            {"role": "Local-Writer"},
+            {"role": "Codex-Writer"},
             {"role": "Claude-Writer"},
-            {"role": "Local-Analyst"},
+            {"role": "Codex-Analyst"},
             {"role": "Claude-Analyst"},
         ],
     }
@@ -2320,8 +2320,8 @@ def test_tf_exec_module_matches_gateway_exec_helpers(tmp_path: Path, monkeypatch
     }
 
     dispatch_metadata = {
-        "phase2_team_spec": {"execution_mode": "parallel", "execution_groups": [{"group_id": "E1", "role": "Local-Dev"}]},
-        "phase2_execution_plan": {"execution_mode": "parallel", "execution_lanes": [{"lane_id": "L1", "role": "Local-Dev"}]},
+        "phase2_team_spec": {"execution_mode": "parallel", "execution_groups": [{"group_id": "E1", "role": "Codex-Dev"}]},
+        "phase2_execution_plan": {"execution_mode": "parallel", "execution_lanes": [{"lane_id": "L1", "role": "Codex-Dev"}]},
         "phase1_mode": "ensemble",
         "phase1_rounds": 3,
         "phase1_providers": ["codex", "claude"],
@@ -2378,8 +2378,8 @@ def test_tf_exec_lane_summary_and_role_merge_helpers() -> None:
         "phase2_execution_plan": {
             "execution_mode": "parallel",
             "execution_lanes": [
-                {"lane_id": "L1", "role": "Local-Dev", "subtask_ids": ["S1"], "parallel": True},
-                {"lane_id": "L2", "role": "Local-Writer", "subtask_ids": ["S2"], "parallel": True},
+                {"lane_id": "L1", "role": "Codex-Dev", "subtask_ids": ["S1"], "parallel": True},
+                {"lane_id": "L2", "role": "Codex-Writer", "subtask_ids": ["S2"], "parallel": True},
             ],
             "review_mode": "single",
             "review_lanes": [
@@ -2393,10 +2393,10 @@ def test_tf_exec_lane_summary_and_role_merge_helpers() -> None:
     summary = tf_exec.phase2_execution_lane_summary(metadata)
     merged = tf_exec.merge_worker_roles_with_lane_summary(["Reviewer"], summary)
 
-    assert summary["execution_roles"] == ["Local-Dev", "Local-Writer"]
+    assert summary["execution_roles"] == ["Codex-Dev", "Codex-Writer"]
     assert summary["review_roles"] == ["Reviewer"]
-    assert summary["planned_roles"] == ["Local-Dev", "Local-Writer", "Reviewer"]
-    assert merged == ["Local-Dev", "Local-Writer", "Reviewer"]
+    assert summary["planned_roles"] == ["Codex-Dev", "Codex-Writer", "Reviewer"]
+    assert merged == ["Codex-Dev", "Codex-Writer", "Reviewer"]
 
 
 def test_infer_natural_run_mode_treats_direct_as_bias_not_force() -> None:
@@ -2542,9 +2542,9 @@ def test_parse_add_provider_shortcuts_and_resolve_slash_add_claude() -> None:
         "launch": "claude",
         "spawn": True,
     }
-    assert tg_parse.parse_cli_message("aoe add-codex Local-Dev --no-spawn") == {
+    assert tg_parse.parse_cli_message("aoe add-codex Codex-Dev --no-spawn") == {
         "cmd": "add-role",
-        "role": "Local-Dev",
+        "role": "Codex-Dev",
         "provider": "codex",
         "launch": "codex",
         "spawn": False,

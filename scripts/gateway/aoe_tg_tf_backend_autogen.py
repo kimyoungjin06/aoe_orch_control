@@ -24,8 +24,8 @@ from aoe_tg_tf_event_schema import normalize_followup_proposals, normalize_runti
 from aoe_tg_tf_exec import create_request_id, parse_roles_csv
 
 
-READONLY_ANALYST_ROLE = "Local-Analyst"
-READONLY_WRITER_ROLE = "Local-Writer"
+READONLY_ANALYST_ROLE = "Codex-Analyst"
+READONLY_WRITER_ROLE = "Codex-Writer"
 READONLY_REVIEWER_ROLE = "Reviewer"
 
 
@@ -431,7 +431,7 @@ async def _run_autogen_runtime(request: TFBackendRequest, deps: TFBackendDeps) -
             if top_items:
                 body = "\n".join(
                     [
-                        "Local-Analyst summary",
+                        "Codex-Analyst summary",
                         f"- source: {message.source_path or '(missing source)'} ({message.source_kind})",
                         f"- extracted actionable items: {len(message.todo_items)}",
                         f"- user request: {message.prompt}",
@@ -442,7 +442,7 @@ async def _run_autogen_runtime(request: TFBackendRequest, deps: TFBackendDeps) -
             else:
                 body = "\n".join(
                     [
-                        "Local-Analyst summary",
+                        "Codex-Analyst summary",
                         f"- source: {message.source_path or '(missing source)'} ({message.source_kind})",
                         "- extracted actionable items: 0",
                         f"- user request: {message.prompt}",
@@ -471,7 +471,7 @@ async def _run_autogen_runtime(request: TFBackendRequest, deps: TFBackendDeps) -
         @rpc
         async def handle_analysis(self, message: AnalysisRequest, ctx: MessageContext) -> AnalysisResponse:
             top_items = _format_item_lines(message.todo_items)
-            intro = "Local-Writer handoff"
+            intro = "Codex-Writer handoff"
             if top_items:
                 body = "\n".join(
                     [
