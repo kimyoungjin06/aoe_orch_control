@@ -107,6 +107,27 @@ def _lane_verdict_counts(rows: List[Dict[str, Any]]) -> Dict[str, int]:
     return {key: value for key, value in counts.items() if value}
 
 
+def derive_role_execution_snapshot(
+    requested_roles: Iterable[str],
+    executed_roles: Iterable[str],
+    *,
+    dedupe_roles: Callable[[Iterable[str]], List[str]],
+) -> Dict[str, Any]:
+    requested = dedupe_roles(requested_roles or [])
+    executed = dedupe_roles(executed_roles or [])
+    executed_lookup = {str(role).strip().lower(): str(role).strip() for role in executed if str(role).strip()}
+    requested_lookup = {str(role).strip().lower(): str(role).strip() for role in requested if str(role).strip()}
+    dropped = [role for role in requested if str(role).strip().lower() not in executed_lookup]
+    added = [role for role in executed if str(role).strip().lower() not in requested_lookup]
+    return {
+        "requested_roles": requested,
+        "executed_roles": executed,
+        "dropped_roles": dropped,
+        "added_roles": added,
+        "role_mismatch": bool(dropped or added),
+    }
+
+
 def _execution_lane_catalog(task: Dict[str, Any]) -> List[str]:
     lane_states = task.get("lane_states") if isinstance(task.get("lane_states"), dict) else {}
     execution_rows = lane_states.get("execution") if isinstance(lane_states.get("execution"), list) else []
@@ -572,6 +593,15 @@ def sanitize_task_record(
     if context:
         task["context"] = context
 
+    result = task.get("result")
+    if isinstance(result, dict):
+        role_snapshot = derive_role_execution_snapshot(
+            result.get("requested_roles") or task.get("roles") or [],
+            result.get("executed_roles") or result.get("done_roles") or task.get("roles") or [],
+            dedupe_roles=dedupe_roles,
+        )
+        result.update(role_snapshot)
+
     refresh_task_tf_state(task)
 
     return task
@@ -1020,6 +1050,9 @@ def summarize_task_monitor(
         rerun_review = list(lane_targets.get("rerun_review_lane_ids") or [])
         manual_exec = list(lane_targets.get("manual_followup_execution_lane_ids") or [])
         manual_review = list(lane_targets.get("manual_followup_review_lane_ids") or [])
+        result = task.get("result") if isinstance(task.get("result"), dict) else {}
+        dropped_roles = [str(x).strip() for x in (result.get("dropped_roles") or []) if str(x).strip()]
+        added_roles = [str(x).strip() for x in (result.get("added_roles") or []) if str(x).strip()]
         target_parts: List[str] = []
         if rerun_exec or rerun_review:
             target_parts.append(
@@ -1033,6 +1066,13 @@ def summarize_task_monitor(
                 "followup E:{exec_ids} R:{review_ids}".format(
                     exec_ids=",".join(manual_exec) if manual_exec else "-",
                     review_ids=",".join(manual_review) if manual_review else "-",
+                )
+            )
+        if bool(result.get("role_mismatch", False)):
+            target_parts.append(
+                "roles drop:{dropped} add:{added}".format(
+                    dropped=",".join(dropped_roles) if dropped_roles else "-",
+                    added=",".join(added_roles) if added_roles else "-",
                 )
             )
         if target_parts:
@@ -1058,7 +1098,10 @@ def summarize_task_monitor(
             continue
         lines.append(f"- {idx}. {task_display_label(task, str(req_id or '').strip())} -> {req_id}")
     lines.append("")
-    lines.append("quick actions: /check <번호|label> /task <번호|label> /retry <번호|label> /replan <번호|label> /cancel <번호|label>")
+    lines.append(
+        "quick actions: /check <번호|label> /task <번호|label> "
+        "/retry <번호|label> [lane <L#|R#>] /replan <번호|label> [lane <L#|R#>] /cancel <번호|label>"
+    )
     return "\n".join(lines)
 
 
@@ -1323,6 +1366,15 @@ def sync_task_lifecycle(
         "failed_roles": sorted(failed_roles),
         "pending_roles": sorted(pending_roles),
     }
+    requested_roles = request_data.get("requested_roles") if isinstance(request_data.get("requested_roles"), list) else roles
+    executed_roles = request_data.get("executed_roles") if isinstance(request_data.get("executed_roles"), list) else inferred_roles
+    task["result"].update(
+        derive_role_execution_snapshot(
+            requested_roles,
+            executed_roles,
+            dedupe_roles=dedupe_roles,
+        )
+    )
     phase2_request_ids = request_data.get("phase2_request_ids")
     if isinstance(phase2_request_ids, dict) and phase2_request_ids:
         task["result"]["phase2_request_ids"] = {

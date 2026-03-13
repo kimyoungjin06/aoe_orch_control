@@ -464,9 +464,23 @@ def action_call_to_resolved_command(call: Any) -> Dict[str, Any]:
             "run_auto_source": f"orch-action:{row.get('intent_class', 'work')}",
         }
     if action == "retry_task":
-        return {"cmd": "orch-retry", "orch_retry_request_id": _trim_text(args.get("task_ref", ""), 120)}
+        lane_ids = args.get("lane_ids") or args.get("lane_ref") or []
+        if isinstance(lane_ids, str):
+            lane_ids = [lane_ids]
+        return {
+            "cmd": "orch-retry",
+            "orch_retry_request_id": _trim_text(args.get("task_ref", ""), 120),
+            "orch_retry_lane_ids": [_trim_text(item, 32) for item in lane_ids if _trim_text(item, 32)],
+        }
     if action == "replan_task":
-        return {"cmd": "orch-replan", "orch_replan_request_id": _trim_text(args.get("task_ref", ""), 120)}
+        lane_ids = args.get("lane_ids") or args.get("lane_ref") or []
+        if isinstance(lane_ids, str):
+            lane_ids = [lane_ids]
+        return {
+            "cmd": "orch-replan",
+            "orch_replan_request_id": _trim_text(args.get("task_ref", ""), 120),
+            "orch_replan_lane_ids": [_trim_text(item, 32) for item in lane_ids if _trim_text(item, 32)],
+        }
     if action == "accept_proposal":
         return {"cmd": "todo", "rest": f"accept {_trim_text(args.get('proposal_ref', ''), 120)}".strip()}
     if action == "reject_proposal":

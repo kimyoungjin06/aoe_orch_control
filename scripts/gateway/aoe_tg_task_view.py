@@ -472,6 +472,21 @@ def summarize_task_lifecycle(project_name: str, task: Dict[str, Any]) -> str:
             lines.append("phase2_review_skip_reason: " + review_skip_reason[:240])
         failed = result.get("failed_roles") or []
         pending = result.get("pending_roles") or []
+        requested_roles = [str(x).strip() for x in (result.get("requested_roles") or []) if str(x).strip()]
+        executed_roles = [str(x).strip() for x in (result.get("executed_roles") or []) if str(x).strip()]
+        dropped_roles = [str(x).strip() for x in (result.get("dropped_roles") or []) if str(x).strip()]
+        added_roles = [str(x).strip() for x in (result.get("added_roles") or []) if str(x).strip()]
+        if requested_roles:
+            lines.append("requested_roles: " + ", ".join(requested_roles))
+        if executed_roles:
+            lines.append("executed_roles: " + ", ".join(executed_roles))
+        if bool(result.get("role_mismatch", False)):
+            lines.append(
+                "role_mismatch: dropped={dropped} added={added}".format(
+                    dropped=", ".join(dropped_roles) if dropped_roles else "-",
+                    added=", ".join(added_roles) if added_roles else "-",
+                )
+            )
         if failed:
             lines.append("failed_roles: " + ", ".join(str(x) for x in failed))
         if pending:

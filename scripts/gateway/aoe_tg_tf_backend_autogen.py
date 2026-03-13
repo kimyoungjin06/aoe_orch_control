@@ -672,6 +672,9 @@ async def _run_autogen_runtime(request: TFBackendRequest, deps: TFBackendDeps) -
         "done_roles": list(response.done_roles),
         "failed_roles": list(response.failed_roles),
         "pending_roles": list(response.pending_roles),
+        "requested_roles": list(roles["requested"]),
+        "executed_roles": list(roles["executed"]),
+        "dropped_roles": list(roles["dropped"]),
         "runtime_events": runtime_events,
         "followup_proposals": list(response.followup_proposals),
         "artifacts": [

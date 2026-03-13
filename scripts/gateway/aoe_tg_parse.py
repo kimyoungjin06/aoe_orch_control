@@ -81,6 +81,34 @@ def parse_command(text: str) -> Tuple[str, str]:
     return token.lower().strip(), rest.strip()
 
 
+def parse_request_lane_args(raw: str, *, usage: str) -> Dict[str, Any]:
+    text = str(raw or "").strip()
+    if not text:
+        raise RuntimeError(usage)
+    match = re.match(r"^(?P<ref>\S+)(?:\s+(?:lane|lanes)\s+(?P<lanes>.+))?$", text, re.IGNORECASE)
+    if not match:
+        raise RuntimeError(usage)
+    request_id = str(match.group("ref") or "").strip()
+    if not request_id:
+        raise RuntimeError(usage)
+    lane_tokens: List[str] = []
+    lanes_raw = str(match.group("lanes") or "").strip()
+    if lanes_raw:
+        seen: set[str] = set()
+        for token in re.split(r"[,\s]+", lanes_raw):
+            lane = str(token or "").strip()[:32]
+            if not lane:
+                continue
+            key = lane.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            lane_tokens.append(lane)
+        if not lane_tokens:
+            raise RuntimeError(usage)
+    return {"request_id": request_id, "lane_ids": lane_tokens}
+
+
 def normalize_mode_token(raw: str) -> str:
     token = str(raw or "").strip().lower()
     aliases = {
@@ -400,6 +428,24 @@ def parse_quick_message(text: str) -> Optional[Dict[str, Any]]:
         return {"cmd": "sync", "rest": f"preview {norm.split(' ', 2)[2].strip()}"}
     if low.startswith("sync "):
         return {"cmd": "sync", "rest": norm.split(" ", 1)[1].strip()}
+
+    if low.startswith("retry "):
+        return parse_request_lane_args(
+            norm.split(" ", 1)[1].strip(),
+            usage="usage: retry <request_or_alias> [lane <L#|R#,...>]",
+        ) | {"cmd": "orch-retry"}
+
+    if low.startswith("replan "):
+        return parse_request_lane_args(
+            norm.split(" ", 1)[1].strip(),
+            usage="usage: replan <request_or_alias> [lane <L#|R#,...>]",
+        ) | {"cmd": "orch-replan"}
+
+    if low.startswith("followup "):
+        return parse_request_lane_args(
+            norm.split(" ", 1)[1].strip(),
+            usage="usage: followup <request_or_alias> [lane <L#|R#,...>]",
+        ) | {"cmd": "orch-followup"}
     if low.startswith("동기화 "):
         return {"cmd": "sync", "rest": norm.split(" ", 1)[1].strip()}
 
@@ -462,9 +508,15 @@ def parse_quick_message(text: str) -> Optional[Dict[str, Any]]:
         return {"cmd": "orch-pick", "request_id": norm.split(" ", 1)[1].strip()}
 
     if low.startswith("retry ") or low.startswith("재시도 ") or low.startswith("다시 "):
-        return {"cmd": "orch-retry", "request_id": norm.split(" ", 1)[1].strip()}
+        return parse_request_lane_args(
+            norm.split(" ", 1)[1].strip(),
+            usage="usage: retry <request_or_alias> [lane <L#|R#,...>]",
+        ) | {"cmd": "orch-retry"}
     if low.startswith("replan ") or low.startswith("재계획 "):
-        return {"cmd": "orch-replan", "request_id": norm.split(" ", 1)[1].strip()}
+        return parse_request_lane_args(
+            norm.split(" ", 1)[1].strip(),
+            usage="usage: replan <request_or_alias> [lane <L#|R#,...>]",
+        ) | {"cmd": "orch-replan"}
     if low.startswith("cancel ") or low.startswith("취소 "):
         return {"cmd": "orch-cancel", "request_id": norm.split(" ", 1)[1].strip()}
 
@@ -697,14 +749,31 @@ def parse_cli_message(text: str) -> Optional[Dict[str, Any]]:
         raise RuntimeError("usage: aoe replay [list|latest|<idx>|<id>|show <idx|id|latest>|purge]")
 
     if cmd == "retry":
-        if len(argv) != 1:
-            raise RuntimeError("usage: aoe retry <request_or_alias>")
-        return {"cmd": "orch-retry", "request_id": argv[0].strip()}
+        if len(argv) == 0:
+            raise RuntimeError("usage: aoe retry <request_or_alias> [lane <L#|R#,...>]")
+        parsed = parse_request_lane_args(
+            " ".join(str(item).strip() for item in argv if str(item).strip()),
+            usage="usage: aoe retry <request_or_alias> [lane <L#|R#,...>]",
+        )
+        return {"cmd": "orch-retry", "request_id": parsed["request_id"], "lane_ids": parsed["lane_ids"]}
 
     if cmd == "replan":
-        if len(argv) != 1:
-            raise RuntimeError("usage: aoe replan <request_or_alias>")
-        return {"cmd": "orch-replan", "request_id": argv[0].strip()}
+        if len(argv) == 0:
+            raise RuntimeError("usage: aoe replan <request_or_alias> [lane <L#|R#,...>]")
+        parsed = parse_request_lane_args(
+            " ".join(str(item).strip() for item in argv if str(item).strip()),
+            usage="usage: aoe replan <request_or_alias> [lane <L#|R#,...>]",
+        )
+        return {"cmd": "orch-replan", "request_id": parsed["request_id"], "lane_ids": parsed["lane_ids"]}
+
+    if cmd in {"followup", "follow-up"}:
+        if len(argv) == 0:
+            raise RuntimeError("usage: aoe followup <request_or_alias> [lane <L#|R#,...>]")
+        parsed = parse_request_lane_args(
+            " ".join(str(item).strip() for item in argv if str(item).strip()),
+            usage="usage: aoe followup <request_or_alias> [lane <L#|R#,...>]",
+        )
+        return {"cmd": "orch-followup", "request_id": parsed["request_id"], "lane_ids": parsed["lane_ids"]}
 
     if cmd == "request":
         if len(argv) != 1:

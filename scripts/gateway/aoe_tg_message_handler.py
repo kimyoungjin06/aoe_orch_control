@@ -380,6 +380,8 @@ def handle_text_message(
             run_control_mode=run_transition.run_control_mode,
             run_source_request_id=run_transition.run_source_request_id,
             run_source_task=run_transition.run_source_task,
+            run_selected_execution_lane_ids=run_transition.run_selected_execution_lane_ids,
+            run_selected_review_lane_ids=run_transition.run_selected_review_lane_ids,
         )
         run_deps = deps["build_run_deps"](
             send=send,

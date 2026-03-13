@@ -12,6 +12,8 @@ class RunTransitionState:
     run_control_mode: str = ""
     run_source_request_id: str = ""
     run_source_task: Optional[Dict[str, Any]] = None
+    run_selected_execution_lane_ids: Optional[list[str]] = None
+    run_selected_review_lane_ids: Optional[list[str]] = None
 
 
 def apply_confirm_transition_to_resolved(resolved: ResolvedCommand, transition: Any) -> bool:
@@ -71,6 +73,12 @@ def apply_retry_transition_to_resolved(
     source_task = transition.get("run_source_task")
     if isinstance(source_task, dict):
         run_transition.run_source_task = source_task
+    next_exec_lane_ids = transition.get("run_selected_execution_lane_ids")
+    if isinstance(next_exec_lane_ids, list):
+        run_transition.run_selected_execution_lane_ids = [str(item).strip() for item in next_exec_lane_ids if str(item).strip()]
+    next_review_lane_ids = transition.get("run_selected_review_lane_ids")
+    if isinstance(next_review_lane_ids, list):
+        run_transition.run_selected_review_lane_ids = [str(item).strip() for item in next_review_lane_ids if str(item).strip()]
     return False
 
 
