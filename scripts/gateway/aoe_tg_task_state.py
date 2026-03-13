@@ -1219,9 +1219,11 @@ def extract_request_snapshot(data: Dict[str, Any], *, dedupe_roles: Callable[[It
             pending_roles.add(token)
 
     request_id = str(data.get("request_id", "")).strip()
+    gateway_request_id = str(data.get("gateway_request_id", "")).strip()
     complete = bool(data.get("complete", False))
     return {
         "request_id": request_id,
+        "gateway_request_id": gateway_request_id,
         "rows": rows,
         "assignments": assignments,
         "replies": replies,
@@ -1249,7 +1251,7 @@ def sync_task_lifecycle(
     sync_task_exec_context: Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, str]],
 ) -> Optional[Dict[str, Any]]:
     snap = extract_request_snapshot(request_data, dedupe_roles=dedupe_roles)
-    request_id = str(snap.get("request_id", "")).strip()
+    request_id = str(snap.get("gateway_request_id", "") or snap.get("request_id", "")).strip()
     if not request_id:
         return None
 
@@ -1375,13 +1377,30 @@ def sync_task_lifecycle(
             dedupe_roles=dedupe_roles,
         )
     )
+    linked_request_ids = request_data.get("linked_request_ids")
+    if isinstance(linked_request_ids, list) and linked_request_ids:
+        task["result"]["linked_request_ids"] = [
+            str(value).strip()
+            for value in linked_request_ids
+            if str(value).strip()
+        ]
     phase2_request_ids = request_data.get("phase2_request_ids")
     if isinstance(phase2_request_ids, dict) and phase2_request_ids:
-        task["result"]["phase2_request_ids"] = {
-            str(key).strip(): str(value).strip()
-            for key, value in phase2_request_ids.items()
-            if str(key).strip() and str(value).strip()
-        }
+        normalized_phase2_request_ids: Dict[str, Any] = {}
+        for key, value in phase2_request_ids.items():
+            bucket = str(key).strip()
+            if not bucket:
+                continue
+            if isinstance(value, list):
+                tokens = [str(item).strip() for item in value if str(item).strip()]
+                if tokens:
+                    normalized_phase2_request_ids[bucket] = tokens
+            else:
+                token = str(value).strip()
+                if token:
+                    normalized_phase2_request_ids[bucket] = token
+        if normalized_phase2_request_ids:
+            task["result"]["phase2_request_ids"] = normalized_phase2_request_ids
     if "phase2_review_triggered" in request_data:
         task["result"]["phase2_review_triggered"] = bool(request_data.get("phase2_review_triggered"))
     review_skip = str(request_data.get("phase2_review_skipped_reason", "")).strip()

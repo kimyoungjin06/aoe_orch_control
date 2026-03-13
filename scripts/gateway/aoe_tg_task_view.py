@@ -462,8 +462,15 @@ def summarize_task_lifecycle(project_name: str, task: Dict[str, Any]) -> str:
         )
         phase2_request_ids = result.get("phase2_request_ids") if isinstance(result.get("phase2_request_ids"), dict) else {}
         if phase2_request_ids:
-            exec_req = str(phase2_request_ids.get("execution", "")).strip() or "-"
-            review_req = str(phase2_request_ids.get("review", "")).strip() or "-"
+            def _render_phase2_request_bucket(value: Any) -> str:
+                if isinstance(value, list):
+                    tokens = [str(item).strip() for item in value if str(item).strip()]
+                    return ", ".join(tokens) if tokens else "-"
+                token = str(value).strip()
+                return token or "-"
+
+            exec_req = _render_phase2_request_bucket(phase2_request_ids.get("execution"))
+            review_req = _render_phase2_request_bucket(phase2_request_ids.get("review"))
             lines.append(f"phase2_requests: execution={exec_req} review={review_req}")
         if "phase2_review_triggered" in result:
             lines.append("phase2_review_triggered: " + ("yes" if bool(result.get("phase2_review_triggered")) else "no"))

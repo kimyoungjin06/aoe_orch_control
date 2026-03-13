@@ -1522,6 +1522,52 @@ def test_task_state_sync_records_phase2_review_trigger_metadata() -> None:
     assert "phase2_review_triggered: yes" in summary
 
 
+def test_task_state_sync_prefers_gateway_request_id_and_keeps_parallel_phase2_requests() -> None:
+    request_data = {
+        "request_id": "REQ-L1",
+        "gateway_request_id": "REQ-TOP",
+        "linked_request_ids": ["REQ-L1", "REQ-L2", "REQ-R1", "REQ-R2"],
+        "role_states": [
+            {"role": "Codex-Dev", "status": "done"},
+            {"role": "Codex-Writer", "status": "done"},
+            {"role": "Reviewer", "status": "done"},
+            {"role": "Claude-Reviewer", "status": "done"},
+        ],
+        "counts": {"assignments": 4, "replies": 4},
+        "complete": True,
+        "phase2_request_ids": {
+            "execution": ["REQ-L1", "REQ-L2"],
+            "review": ["REQ-R1", "REQ-R2"],
+        },
+        "phase2_review_triggered": True,
+    }
+    entry = {"name": "demo_proj", "project_alias": "O9", "project_root": "/tmp/demo", "team_dir": "/tmp/demo/.aoe-team", "tasks": {}, "task_alias_index": {}, "task_seq": 0}
+    synced = task_state.sync_task_lifecycle(
+        entry,
+        request_data,
+        prompt="Implement and review in parallel",
+        mode="dispatch",
+        selected_roles=["Codex-Dev", "Codex-Writer", "Reviewer", "Claude-Reviewer"],
+        verifier_roles=["Reviewer", "Claude-Reviewer"],
+        require_verifier=True,
+        verifier_candidates=["Reviewer", "Claude-Reviewer"],
+        dedupe_roles=gw.dedupe_roles,
+        ensure_task_record=gw.ensure_task_record,
+        lifecycle_set_stage=gw.lifecycle_set_stage,
+        normalize_task_status=gw.normalize_task_status,
+        sync_task_exec_context=lambda current_entry, current_task: current_task.get("context", {}) if isinstance(current_task, dict) else {},
+    )
+
+    assert synced["request_id"] == "REQ-TOP"
+    assert synced["result"]["linked_request_ids"] == ["REQ-L1", "REQ-L2", "REQ-R1", "REQ-R2"]
+    assert synced["result"]["phase2_request_ids"] == {
+        "execution": ["REQ-L1", "REQ-L2"],
+        "review": ["REQ-R1", "REQ-R2"],
+    }
+    summary = gw.summarize_task_lifecycle("Demo", synced)
+    assert "phase2_requests: execution=REQ-L1, REQ-L2 review=REQ-R1, REQ-R2" in summary
+
+
 def test_task_monitor_includes_lane_state_summary() -> None:
     entry = {
         "tasks": {
