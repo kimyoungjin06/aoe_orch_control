@@ -1522,6 +1522,91 @@ def test_task_state_sync_records_phase2_review_trigger_metadata() -> None:
     assert "phase2_review_triggered: yes" in summary
 
 
+def test_task_state_sync_prefers_gateway_request_id_and_keeps_parallel_phase2_requests() -> None:
+    request_data = {
+        "request_id": "REQ-L1",
+        "gateway_request_id": "REQ-TOP",
+        "linked_request_ids": ["REQ-L1", "REQ-L2", "REQ-R1", "REQ-R2"],
+        "role_states": [
+            {"role": "Codex-Dev", "status": "done"},
+            {"role": "Codex-Writer", "status": "done"},
+            {"role": "Reviewer", "status": "done"},
+            {"role": "Claude-Reviewer", "status": "done"},
+        ],
+        "counts": {"assignments": 4, "replies": 4},
+        "complete": True,
+        "phase2_request_ids": {
+            "execution": ["REQ-L1", "REQ-L2"],
+            "review": ["REQ-R1", "REQ-R2"],
+        },
+        "phase2_review_triggered": True,
+    }
+    entry = {"name": "demo_proj", "project_alias": "O9", "project_root": "/tmp/demo", "team_dir": "/tmp/demo/.aoe-team", "tasks": {}, "task_alias_index": {}, "task_seq": 0}
+    synced = task_state.sync_task_lifecycle(
+        entry,
+        request_data,
+        prompt="Implement and review in parallel",
+        mode="dispatch",
+        selected_roles=["Codex-Dev", "Codex-Writer", "Reviewer", "Claude-Reviewer"],
+        verifier_roles=["Reviewer", "Claude-Reviewer"],
+        require_verifier=True,
+        verifier_candidates=["Reviewer", "Claude-Reviewer"],
+        dedupe_roles=gw.dedupe_roles,
+        ensure_task_record=gw.ensure_task_record,
+        lifecycle_set_stage=gw.lifecycle_set_stage,
+        normalize_task_status=gw.normalize_task_status,
+        sync_task_exec_context=lambda current_entry, current_task: current_task.get("context", {}) if isinstance(current_task, dict) else {},
+    )
+
+    assert synced["request_id"] == "REQ-TOP"
+    assert synced["result"]["linked_request_ids"] == ["REQ-L1", "REQ-L2", "REQ-R1", "REQ-R2"]
+    assert synced["result"]["phase2_request_ids"] == {
+        "execution": ["REQ-L1", "REQ-L2"],
+        "review": ["REQ-R1", "REQ-R2"],
+    }
+    summary = gw.summarize_task_lifecycle("Demo", synced)
+    assert "phase2_requests: execution=REQ-L1, REQ-L2 review=REQ-R1, REQ-R2" in summary
+
+
+def test_derive_lane_states_prefers_lane_specific_status_for_same_role_rows() -> None:
+    task = {
+        "plan": {
+            "meta": {
+                "phase2_execution_plan": {
+                    "execution_lanes": [
+                        {"lane_id": "L1", "role": "Codex-Analyst"},
+                        {"lane_id": "L2", "role": "Codex-Analyst"},
+                    ],
+                    "review_lanes": [
+                        {"lane_id": "R1", "role": "Reviewer", "depends_on": ["L1"]},
+                        {"lane_id": "R2", "role": "Reviewer", "depends_on": ["L2"]},
+                    ],
+                }
+            }
+        }
+    }
+    snapshot = {
+        "rows": [
+            {"role": "Codex-Analyst", "status": "done", "lane_id": "L1", "phase2_stage": "execution"},
+            {"role": "Codex-Analyst", "status": "running", "lane_id": "L2", "phase2_stage": "execution"},
+            {"role": "Reviewer", "status": "pending", "lane_id": "R1", "phase2_stage": "review"},
+            {"role": "Reviewer", "status": "pending", "lane_id": "R2", "phase2_stage": "review"},
+        ],
+        "complete": False,
+        "pending_roles": ["Codex-Analyst", "Reviewer"],
+        "done_roles": [],
+        "failed_roles": [],
+    }
+
+    lane_states = task_state.derive_lane_states(task, snapshot)
+    assert lane_states["execution"] == [
+        {"lane_id": "L1", "role": "Codex-Analyst", "status": "done", "parallel": True},
+        {"lane_id": "L2", "role": "Codex-Analyst", "status": "running", "parallel": True},
+    ]
+    assert lane_states["review"][0]["status"] == "pending"
+    assert lane_states["review"][1]["status"] == "waiting_on_dependencies"
+
+
 def test_task_monitor_includes_lane_state_summary() -> None:
     entry = {
         "tasks": {
@@ -1633,6 +1718,14 @@ def test_task_monitor_includes_lane_rerun_and_followup_targets() -> None:
                     "rerun_review_lane_ids": ["R1"],
                     "manual_followup_execution_lane_ids": ["L3"],
                 },
+                "result": {
+                    "phase2_request_ids": {
+                        "execution": ["REQ-L1", "REQ-L2"],
+                        "review": ["REQ-R1"],
+                    },
+                    "linked_request_ids": ["REQ-L1", "REQ-L2", "REQ-R1"],
+                    "phase2_parallelized": True,
+                },
                 "lane_states": {
                     "execution": [{"lane_id": "L1", "role": "Codex-Dev", "status": "done"}],
                     "review": [{"lane_id": "R1", "role": "Reviewer", "status": "done", "verdict": "retry", "action": "replan", "depends_on": ["L2"]}],
@@ -1669,9 +1762,10 @@ def test_task_monitor_includes_lane_rerun_and_followup_targets() -> None:
         task_display_label=gw.task_display_label,
         lifecycle_stages=gw.LIFECYCLE_STAGES,
     )
+    assert "reqs E2/R1 linked=3 parallel=yes" in summary
     assert "{rerun E:L2 R:R1 | followup E:L3 R:-}" in summary
     assert (
-        "first: /retry T-001 | collect-data-write-memo | active task requires retry (needs_retry) "
+        "first: /retry T-001 | collect-data-write-memo lane L2,R1 | active task requires retry (needs_retry) "
         "target execution=L2; review=R1"
     ) in summary
 
@@ -1701,8 +1795,20 @@ def test_priority_actions_module_matches_task_and_offdesk_policies() -> None:
         manual_followup_review_lane_ids=[],
     )
     assert task_priority == {
-        "action": "/retry T-001 | collect-data-write-memo",
+        "action": "/retry T-001 | collect-data-write-memo lane L2,R1",
         "reason": "active task requires retry (needs_retry) target execution=L2; review=R1",
+    }
+    planning_priority = priority_actions.task_priority_action_snapshot(
+        label="T-002 | gather-latest-docs",
+        tf_phase="planning",
+        rerun_execution_lane_ids=[],
+        rerun_review_lane_ids=[],
+        manual_followup_execution_lane_ids=[],
+        manual_followup_review_lane_ids=[],
+    )
+    assert planning_priority == {
+        "action": "/task T-002 | gather-latest-docs",
+        "reason": "active task is still planning",
     }
     offdesk_priority = priority_actions.offdesk_priority_action_snapshot(
         alias="O4",

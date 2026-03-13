@@ -245,20 +245,36 @@ def derive_lane_states(
         return {}
 
     role_status: Dict[str, str] = {}
+    lane_role_status: Dict[Tuple[str, str], str] = {}
     for row in snapshot.get("rows") or []:
         if not isinstance(row, dict):
             continue
         role = str(row.get("role", "")).strip()
         if not role:
             continue
-        role_status[role] = _merge_role_status(role_status.get(role, "pending"), row.get("status"))
+        status = str(row.get("status", "pending")).strip().lower() or "pending"
+        role_status[role] = _merge_role_status(role_status.get(role, "pending"), status)
+        lane_id = str(row.get("lane_id", "")).strip()
+        if lane_id:
+            lane_role_status[(lane_id, role)] = _merge_role_status(
+                lane_role_status.get((lane_id, role), "pending"),
+                status,
+            )
 
     complete = bool(snapshot.get("complete", False))
     pending_roles = {str(x).strip() for x in (snapshot.get("pending_roles") or []) if str(x).strip()}
     done_roles = {str(x).strip() for x in (snapshot.get("done_roles") or []) if str(x).strip()}
     failed_roles = {str(x).strip() for x in (snapshot.get("failed_roles") or []) if str(x).strip()}
 
-    def execution_status_for(role: str) -> Tuple[str, str]:
+    def execution_status_for(role: str, lane_id: str = "") -> Tuple[str, str]:
+        if lane_id:
+            current_lane = lane_role_status.get((lane_id, role), "pending")
+            if current_lane == "failed":
+                return "failed", "lane role failed"
+            if current_lane == "done":
+                return "done", ""
+            if current_lane == "running":
+                return "running", ""
         current = role_status.get(role, "pending")
         if role in failed_roles or current == "failed":
             return "failed", "lane role failed"
@@ -279,7 +295,7 @@ def derive_lane_states(
         if not lane_id:
             continue
         role = str(row.get("role", "")).strip() or "Worker"
-        status, reason = execution_status_for(role)
+        status, reason = execution_status_for(role, lane_id)
         item: Dict[str, Any] = {
             "lane_id": lane_id,
             "role": role,
@@ -315,7 +331,7 @@ def derive_lane_states(
             )
             status = "waiting_on_dependencies"
         else:
-            status, reason = execution_status_for(role)
+            status, reason = execution_status_for(role, lane_id)
         item = {
             "lane_id": lane_id,
             "role": role,
@@ -1010,6 +1026,13 @@ def summarize_task_monitor(
     if invalid_stage_rows:
         lines.append(f"warning: invalid lifecycle stage rows={invalid_stage_rows}")
 
+    def _phase2_request_count(value: Any) -> int:
+        if isinstance(value, list):
+            return len([str(item).strip() for item in value if str(item).strip()])
+        if isinstance(value, str):
+            return 1 if value.strip() else 0
+        return 0
+
     for idx, (req_id, task) in enumerate(rows[:cap], start=1):
         if not isinstance(task, dict):
             continue
@@ -1043,16 +1066,28 @@ def summarize_task_monitor(
             lane_parts.append("review " + ",".join(f"{key}={value}" for key, value in sorted(review_summary.items())))
         if review_verdicts:
             lane_parts.append("review_verdict " + ",".join(f"{key}={value}" for key, value in sorted(review_verdicts.items())))
-        if lane_parts:
-            lane_text += " [" + " | ".join(lane_parts) + "]"
         lane_targets = task_lane_target_snapshot(task)
         rerun_exec = list(lane_targets.get("rerun_execution_lane_ids") or [])
         rerun_review = list(lane_targets.get("rerun_review_lane_ids") or [])
         manual_exec = list(lane_targets.get("manual_followup_execution_lane_ids") or [])
         manual_review = list(lane_targets.get("manual_followup_review_lane_ids") or [])
         result = task.get("result") if isinstance(task.get("result"), dict) else {}
+        phase2_request_ids = result.get("phase2_request_ids") if isinstance(result.get("phase2_request_ids"), dict) else {}
+        linked_request_ids = result.get("linked_request_ids") if isinstance(result.get("linked_request_ids"), list) else []
+        exec_request_count = _phase2_request_count(phase2_request_ids.get("execution"))
+        review_request_count = _phase2_request_count(phase2_request_ids.get("review"))
+        linked_request_count = len([str(item).strip() for item in linked_request_ids if str(item).strip()])
         dropped_roles = [str(x).strip() for x in (result.get("dropped_roles") or []) if str(x).strip()]
         added_roles = [str(x).strip() for x in (result.get("added_roles") or []) if str(x).strip()]
+        if exec_request_count or review_request_count or linked_request_count or bool(result.get("phase2_parallelized", False)):
+            request_parts = [f"reqs E{exec_request_count}/R{review_request_count}"]
+            if linked_request_count:
+                request_parts.append(f"linked={linked_request_count}")
+            if bool(result.get("phase2_parallelized", False)):
+                request_parts.append("parallel=yes")
+            lane_parts.append(" ".join(request_parts))
+        if lane_parts:
+            lane_text += " [" + " | ".join(lane_parts) + "]"
         target_parts: List[str] = []
         if rerun_exec or rerun_review:
             target_parts.append(
@@ -1117,7 +1152,14 @@ def normalize_role_rows(data: Dict[str, Any], *, dedupe_roles: Callable[[Iterabl
             if not role:
                 continue
             status = str(item.get("status", "pending")).strip().lower() or "pending"
-            rows.append({"role": role, "status": status})
+            row = {"role": role, "status": status}
+            lane_id = str(item.get("lane_id", "")).strip()
+            if lane_id:
+                row["lane_id"] = lane_id
+            phase2_stage = str(item.get("phase2_stage", "")).strip().lower()
+            if phase2_stage:
+                row["phase2_stage"] = phase2_stage
+            rows.append(row)
 
     if rows:
         return rows
@@ -1131,7 +1173,14 @@ def normalize_role_rows(data: Dict[str, Any], *, dedupe_roles: Callable[[Iterabl
             if not role:
                 continue
             status = str(item.get("status", "pending")).strip().lower() or "pending"
-            rows.append({"role": role, "status": status})
+            row = {"role": role, "status": status}
+            lane_id = str(item.get("lane_id", "")).strip()
+            if lane_id:
+                row["lane_id"] = lane_id
+            phase2_stage = str(item.get("phase2_stage", "")).strip().lower()
+            if phase2_stage:
+                row["phase2_stage"] = phase2_stage
+            rows.append(row)
         if rows:
             return rows
 
@@ -1219,9 +1268,11 @@ def extract_request_snapshot(data: Dict[str, Any], *, dedupe_roles: Callable[[It
             pending_roles.add(token)
 
     request_id = str(data.get("request_id", "")).strip()
+    gateway_request_id = str(data.get("gateway_request_id", "")).strip()
     complete = bool(data.get("complete", False))
     return {
         "request_id": request_id,
+        "gateway_request_id": gateway_request_id,
         "rows": rows,
         "assignments": assignments,
         "replies": replies,
@@ -1249,7 +1300,7 @@ def sync_task_lifecycle(
     sync_task_exec_context: Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, str]],
 ) -> Optional[Dict[str, Any]]:
     snap = extract_request_snapshot(request_data, dedupe_roles=dedupe_roles)
-    request_id = str(snap.get("request_id", "")).strip()
+    request_id = str(snap.get("gateway_request_id", "") or snap.get("request_id", "")).strip()
     if not request_id:
         return None
 
@@ -1375,13 +1426,30 @@ def sync_task_lifecycle(
             dedupe_roles=dedupe_roles,
         )
     )
+    linked_request_ids = request_data.get("linked_request_ids")
+    if isinstance(linked_request_ids, list) and linked_request_ids:
+        task["result"]["linked_request_ids"] = [
+            str(value).strip()
+            for value in linked_request_ids
+            if str(value).strip()
+        ]
     phase2_request_ids = request_data.get("phase2_request_ids")
     if isinstance(phase2_request_ids, dict) and phase2_request_ids:
-        task["result"]["phase2_request_ids"] = {
-            str(key).strip(): str(value).strip()
-            for key, value in phase2_request_ids.items()
-            if str(key).strip() and str(value).strip()
-        }
+        normalized_phase2_request_ids: Dict[str, Any] = {}
+        for key, value in phase2_request_ids.items():
+            bucket = str(key).strip()
+            if not bucket:
+                continue
+            if isinstance(value, list):
+                tokens = [str(item).strip() for item in value if str(item).strip()]
+                if tokens:
+                    normalized_phase2_request_ids[bucket] = tokens
+            else:
+                token = str(value).strip()
+                if token:
+                    normalized_phase2_request_ids[bucket] = token
+        if normalized_phase2_request_ids:
+            task["result"]["phase2_request_ids"] = normalized_phase2_request_ids
     if "phase2_review_triggered" in request_data:
         task["result"]["phase2_review_triggered"] = bool(request_data.get("phase2_review_triggered"))
     review_skip = str(request_data.get("phase2_review_skipped_reason", "")).strip()

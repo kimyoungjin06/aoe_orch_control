@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
+import copy
 import json
 import os
 import re
@@ -44,7 +46,7 @@ def load_tf_exec_map(team_dir: Path, default_tf_exec_map_file: str) -> Dict[str,
 def save_tf_exec_map(team_dir: Path, data: Dict[str, Any], default_tf_exec_map_file: str) -> None:
     path = tf_exec_map_path(team_dir, default_tf_exec_map_file)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp = path.with_name(path.name + f".tmp.{uuid.uuid4().hex[:8]}")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp, path)
 
@@ -463,6 +465,141 @@ def merge_request_states(execution_state: Dict[str, Any], review_state: Optional
     return merged
 
 
+def lane_request_id(base_request_id: str, stage_name: str, lane_id: str) -> str:
+    base = sanitize_fs_token(str(base_request_id or "").strip(), "req")[:48]
+    stage = sanitize_fs_token(str(stage_name or "").strip().lower(), "stage")[:16]
+    lane = sanitize_fs_token(str(lane_id or "").strip().upper(), "lane")[:16]
+    return f"{base}-{stage}-{lane}"
+
+
+def single_lane_summary(lane_summary: Optional[Dict[str, Any]], *, phase: str, lane_row: Dict[str, Any]) -> Dict[str, Any]:
+    data = lane_summary if isinstance(lane_summary, dict) else {}
+    if phase == "review":
+        rev_rows = [copy.deepcopy(lane_row)]
+        exec_rows: List[Dict[str, Any]] = []
+    else:
+        exec_rows = [copy.deepcopy(lane_row)]
+        rev_rows = []
+    execution_roles = dedupe_roles(
+        str(row.get("role", "")).strip()
+        for row in exec_rows
+        if isinstance(row, dict) and str(row.get("role", "")).strip()
+    )
+    review_roles = dedupe_roles(
+        str(row.get("role", "")).strip()
+        for row in rev_rows
+        if isinstance(row, dict) and str(row.get("role", "")).strip()
+    )
+    return {
+        "execution_lanes": exec_rows,
+        "review_lanes": rev_rows,
+        "execution_roles": execution_roles,
+        "review_roles": review_roles,
+        "planned_roles": dedupe_roles(execution_roles + review_roles),
+        "parallel_workers": False,
+        "parallel_reviews": False,
+        "readonly": bool(data.get("readonly", True)),
+    }
+
+
+def aggregate_parallel_stage_states(
+    states: List[Dict[str, Any]],
+    *,
+    gateway_request_id: str,
+    phase2_stage: str,
+) -> Dict[str, Any]:
+    ordered_states = [row for row in states if isinstance(row, dict)]
+    linked_tokens: List[str] = []
+    for row in ordered_states:
+        nested_linked = row.get("linked_request_ids") if isinstance(row.get("linked_request_ids"), list) else []
+        if nested_linked:
+            linked_tokens.extend(str(item).strip() for item in nested_linked if str(item).strip())
+            continue
+        token = str(row.get("request_id", "")).strip() or str(row.get("gateway_request_id", "")).strip()
+        if token:
+            linked_tokens.append(token)
+    linked_ids = dedupe_roles(linked_tokens)
+    aggregate: Dict[str, Any] = {
+        "request_id": str(gateway_request_id or (linked_ids[0] if linked_ids else "")).strip(),
+        "gateway_request_id": str(gateway_request_id or "").strip(),
+        "phase2_stage": str(phase2_stage or "").strip(),
+        "linked_request_ids": linked_ids,
+        "complete": bool(ordered_states) and all(bool(row.get("complete", False)) for row in ordered_states),
+        "timed_out": any(bool(row.get("timed_out", False)) for row in ordered_states),
+        "replies": [],
+        "reply_messages": [],
+        "role_states": [],
+        "done_roles": [],
+        "failed_roles": [],
+        "pending_roles": [],
+        "counts": {"assignments": 0, "replies": 0},
+    }
+
+    role_rows: Dict[str, Dict[str, Any]] = {}
+    status_rank = {"failed": 4, "error": 4, "fail": 4, "running": 3, "done": 2, "pending": 1}
+    done_roles: List[str] = []
+    failed_roles: List[str] = []
+    pending_roles: List[str] = []
+
+    for row in ordered_states:
+        aggregate["replies"].extend(row.get("replies") or [])
+        aggregate["reply_messages"].extend(row.get("reply_messages") or [])
+        counts = row.get("counts") if isinstance(row.get("counts"), dict) else {}
+        aggregate["counts"]["assignments"] += int(counts.get("assignments", len(row.get("role_states") or row.get("roles") or [])) or 0)
+        aggregate["counts"]["replies"] += int(counts.get("replies", len(row.get("replies") or [])) or 0)
+        for role_row in (row.get("role_states") or row.get("roles") or []):
+            if not isinstance(role_row, dict):
+                continue
+            role = str(role_row.get("role", "")).strip()
+            if not role:
+                continue
+            lane_id = str(role_row.get("lane_id", "")).strip()
+            phase2_stage_row = str(role_row.get("phase2_stage", "")).strip().lower()
+            role_key = "::".join(token for token in [role, phase2_stage_row, lane_id] if token) or role
+            status = str(role_row.get("status", "pending")).strip().lower() or "pending"
+            prev = role_rows.get(role_key)
+            if prev is None or status_rank.get(status, 0) >= status_rank.get(str(prev.get("status", "")).strip().lower(), 0):
+                role_rows[role_key] = dict(role_row)
+        done_roles.extend(list(row.get("done_roles") or []))
+        failed_roles.extend(list(row.get("failed_roles") or []))
+        pending_roles.extend(list(row.get("pending_roles") or []))
+
+    aggregate["role_states"] = list(role_rows.values())
+    aggregate["done_roles"] = [role for role in dedupe_roles(done_roles) if role not in dedupe_roles(failed_roles + pending_roles)]
+    aggregate["failed_roles"] = dedupe_roles(failed_roles)
+    aggregate["pending_roles"] = [role for role in dedupe_roles(pending_roles) if role not in aggregate["failed_roles"]]
+    return aggregate
+
+
+def annotate_lane_role_rows(state: Dict[str, Any], *, lane_id: str, phase2_stage: str) -> Dict[str, Any]:
+    if not isinstance(state, dict):
+        return {}
+    annotated = dict(state)
+    role_states = annotated.get("role_states")
+    if isinstance(role_states, list):
+        new_rows: List[Dict[str, Any]] = []
+        for row in role_states:
+            if not isinstance(row, dict):
+                continue
+            item = dict(row)
+            item.setdefault("lane_id", lane_id)
+            item.setdefault("phase2_stage", phase2_stage)
+            new_rows.append(item)
+        annotated["role_states"] = new_rows
+    roles_obj = annotated.get("roles")
+    if isinstance(roles_obj, list) and roles_obj and isinstance(roles_obj[0], dict):
+        new_roles: List[Dict[str, Any]] = []
+        for row in roles_obj:
+            if not isinstance(row, dict):
+                continue
+            item = dict(row)
+            item.setdefault("lane_id", lane_id)
+            item.setdefault("phase2_stage", phase2_stage)
+            new_roles.append(item)
+        annotated["roles"] = new_roles
+    return annotated
+
+
 def parse_json_object_from_text(text: str) -> Optional[Dict[str, Any]]:
     payload = str(text or "").strip()
     if not payload:
@@ -558,6 +695,16 @@ def sync_task_exec_context(
     team_dir = Path(team_dir_raw).expanduser().resolve() if team_dir_raw else None
 
     tf_meta = load_tf_exec_meta(team_dir, request_id, default_tf_exec_map_file) if team_dir is not None else {}
+    if not tf_meta and team_dir is not None and isinstance(task.get("result"), dict):
+        linked = task["result"].get("linked_request_ids")
+        if isinstance(linked, list):
+            for candidate in linked:
+                token = str(candidate).strip()
+                if not token:
+                    continue
+                tf_meta = load_tf_exec_meta(team_dir, token, default_tf_exec_map_file)
+                if tf_meta:
+                    break
     context = build_task_context(request_id=request_id, entry=entry, task=task, tf_meta=tf_meta)
     if context:
         task["context"] = context
@@ -567,6 +714,17 @@ def sync_task_exec_context(
 
     tf_map = load_tf_exec_map(team_dir, default_tf_exec_map_file)
     row = tf_map.get(request_id) if isinstance(tf_map, dict) else None
+    if not isinstance(row, dict) and isinstance(task.get("result"), dict):
+        linked = task["result"].get("linked_request_ids")
+        if isinstance(linked, list):
+            for candidate in linked:
+                token = str(candidate).strip()
+                if not token:
+                    continue
+                row = tf_map.get(token) if isinstance(tf_map, dict) else None
+                if isinstance(row, dict):
+                    request_id = token
+                    break
     if not isinstance(row, dict):
         return context
 
@@ -1009,8 +1167,6 @@ def run_aoe_orch(
             pass
 
     def requested_stage_request_id(stage_name: str, stage_metadata: Optional[Dict[str, Any]]) -> str:
-        if stage_name not in {"combined", "execution"}:
-            return ""
         if not isinstance(stage_metadata, dict):
             return ""
         token = str(stage_metadata.get("request_id", "") or stage_metadata.get("gateway_request_id", "")).strip()
@@ -1163,6 +1319,114 @@ def run_aoe_orch(
             cleanup_tf_worker_sessions(tf_meta, run_command=run_command)
         return data, tf_meta, worker_roles
 
+    def execute_stage_fanout(
+        *,
+        stage_name: str,
+        stage_prompt: str,
+        stage_lane_summary: Dict[str, Any],
+        stage_metadata: Optional[Dict[str, Any]],
+    ) -> Tuple[Dict[str, Any], Dict[str, Any], List[str]]:
+        phase = "review" if stage_name == "review" else "execution"
+        lane_rows = stage_lane_summary.get("review_lanes") if phase == "review" else stage_lane_summary.get("execution_lanes")
+        if not isinstance(lane_rows, list) or len(lane_rows) <= 1:
+            return execute_stage(
+                stage_name=stage_name,
+                stage_prompt=stage_prompt,
+                stage_roles_csv=",".join(stage_lane_summary.get("planned_roles") or []),
+                stage_lane_summary=stage_lane_summary,
+                stage_metadata=stage_metadata,
+            )
+
+        parent_request_id = requested_stage_request_id(stage_name, stage_metadata) or create_request_id()
+        parent_gateway_request_id = str(parent_request_id).strip()
+        rows_with_ids = [
+            (str(row.get("lane_id", "")).strip() or f"{phase[:1].upper()}{idx + 1}", row)
+            for idx, row in enumerate(lane_rows)
+            if isinstance(row, dict)
+        ]
+        lane_states: Dict[str, Dict[str, Any]] = {}
+        lane_metas: Dict[str, Dict[str, Any]] = {}
+        lane_role_rows: Dict[str, List[str]] = {}
+        lane_workers: List[Dict[str, Any]] = []
+
+        def _run_lane(lane_id: str, lane_row: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str, Any], List[str]]:
+            lane_meta = dict(stage_metadata or {})
+            lane_meta["request_id"] = lane_request_id(parent_gateway_request_id, stage_name, lane_id)
+            lane_meta["gateway_request_id"] = parent_gateway_request_id
+            lane_meta["phase2_stage"] = stage_name
+            lane_meta["phase2_lane_id"] = lane_id
+            lane_lane_summary = single_lane_summary(stage_lane_summary, phase=phase, lane_row=lane_row)
+            lane_prompt = stage_prompt
+            if phase == "review":
+                lane_prompt = stage_review_prompt(stage_prompt, {"request_id": parent_gateway_request_id}, lane_lane_summary)
+            return (
+                lane_id,
+                *execute_stage(
+                    stage_name=stage_name,
+                    stage_prompt=lane_prompt,
+                    stage_roles_csv=str(lane_row.get("role", "")).strip(),
+                    stage_lane_summary=lane_lane_summary,
+                    stage_metadata=lane_meta,
+                ),
+            )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(rows_with_ids))) as executor:
+            future_map = {
+                executor.submit(_run_lane, lane_id, lane_row): lane_id
+                for lane_id, lane_row in rows_with_ids
+            }
+            for future in concurrent.futures.as_completed(future_map):
+                lane_id = future_map[future]
+                result_lane_id, lane_state, lane_meta, lane_roles = future.result()
+                lane_states[result_lane_id] = annotate_lane_role_rows(
+                    lane_state,
+                    lane_id=result_lane_id,
+                    phase2_stage=stage_name,
+                )
+                lane_metas[result_lane_id] = lane_meta
+                lane_role_rows[result_lane_id] = lane_roles
+                lane_workers.append(
+                    {
+                        "lane_id": result_lane_id,
+                        "sessions": (lane_state.get("tf_workers") or {}).get("sessions") or [],
+                        "execution_lane_ids": list((lane_state.get("tf_workers") or {}).get("sessions", [{}])[0].get("execution_lane_ids", []))
+                        if isinstance((lane_state.get("tf_workers") or {}).get("sessions"), list) and (lane_state.get("tf_workers") or {}).get("sessions")
+                        else [],
+                        "review_lane_ids": list((lane_state.get("tf_workers") or {}).get("sessions", [{}])[0].get("review_lane_ids", []))
+                        if isinstance((lane_state.get("tf_workers") or {}).get("sessions"), list) and (lane_state.get("tf_workers") or {}).get("sessions")
+                        else [],
+                    }
+                )
+
+        ordered_states = [lane_states[lane_id] for lane_id, _row in rows_with_ids if lane_id in lane_states]
+        aggregate_state = aggregate_parallel_stage_states(
+            ordered_states,
+            gateway_request_id=parent_gateway_request_id,
+            phase2_stage=stage_name,
+        )
+        aggregate_state["phase2_parallelized"] = True
+        aggregate_state["planned_roles"] = dedupe_roles(
+            role
+            for lane_id, _row in rows_with_ids
+            for role in (lane_role_rows.get(lane_id) or [])
+        )
+        aggregate_state["tf_workers"] = {
+            "parallel": True,
+            "lanes": lane_workers,
+            "sessions": [
+                session
+                for row in lane_workers
+                for session in (row.get("sessions") or [])
+                if isinstance(session, dict)
+            ],
+        }
+        if isinstance(stage_metadata, dict) and stage_metadata:
+            aggregate_state["dispatch_metadata"] = dict(stage_metadata)
+        first_meta = next((lane_metas[lane_id] for lane_id, _row in rows_with_ids if lane_id in lane_metas), {})
+        if isinstance(first_meta, dict) and first_meta.get("phase2_execution_plan"):
+            aggregate_state.setdefault("dispatch_metadata", {})["phase2_execution_plan"] = first_meta["phase2_execution_plan"]
+        return aggregate_state, first_meta if isinstance(first_meta, dict) else {}, aggregate_state.get("planned_roles") or []
+
     stage_execution = lane_summary_subset(lane_summary, phase="execution")
     stage_review = lane_summary_subset(lane_summary, phase="review")
     staged_review = (
@@ -1177,13 +1441,29 @@ def run_aoe_orch(
     stage1_metadata = dict(metadata or {})
     if staged_review:
         stage1_metadata["phase2_stage"] = "execution"
-    stage1_state, stage1_meta, stage1_roles = execute_stage(
-        stage_name="execution" if staged_review else "combined",
-        stage_prompt=prompt,
-        stage_roles_csv=stage1_roles_csv,
-        stage_lane_summary=stage_execution if staged_review else lane_summary,
-        stage_metadata=stage1_metadata,
+    stage1_name = "execution" if staged_review else "combined"
+    stage1_summary = stage_execution if staged_review else lane_summary
+    stage1_parallel = (
+        not effective_no_wait
+        and stage1_name == "execution"
+        and bool(stage1_summary.get("parallel_workers"))
+        and len(stage1_summary.get("execution_lanes") or []) > 1
     )
+    if stage1_parallel:
+        stage1_state, stage1_meta, stage1_roles = execute_stage_fanout(
+            stage_name=stage1_name,
+            stage_prompt=prompt,
+            stage_lane_summary=stage1_summary,
+            stage_metadata=stage1_metadata,
+        )
+    else:
+        stage1_state, stage1_meta, stage1_roles = execute_stage(
+            stage_name=stage1_name,
+            stage_prompt=prompt,
+            stage_roles_csv=stage1_roles_csv,
+            stage_lane_summary=stage1_summary,
+            stage_metadata=stage1_metadata,
+        )
 
     final_state = dict(stage1_state)
     if staged_review:
@@ -1197,24 +1477,46 @@ def run_aoe_orch(
             stage2_metadata.pop("gateway_request_id", None)
             stage2_metadata["phase2_stage"] = "review"
             stage2_metadata["phase2_parent_request_id"] = str(stage1_state.get("request_id", "")).strip() or str(stage1_state.get("gateway_request_id", "")).strip()
-            stage2_state, stage2_meta, stage2_roles = execute_stage(
-                stage_name="review",
-                stage_prompt=review_prompt,
-                stage_roles_csv=",".join(stage_review["planned_roles"]),
-                stage_lane_summary=stage_review,
-                stage_metadata=stage2_metadata,
+            stage2_parallel = (
+                bool(stage_review.get("parallel_reviews"))
+                and len(stage_review.get("review_lanes") or []) > 1
             )
-            final_state = merge_request_states(stage1_state, stage2_state)
+            if stage2_parallel:
+                stage2_state, stage2_meta, stage2_roles = execute_stage_fanout(
+                    stage_name="review",
+                    stage_prompt=prompt,
+                    stage_lane_summary=stage_review,
+                    stage_metadata=stage2_metadata,
+                )
+            else:
+                stage2_state, stage2_meta, stage2_roles = execute_stage(
+                    stage_name="review",
+                    stage_prompt=review_prompt,
+                    stage_roles_csv=",".join(stage_review["planned_roles"]),
+                    stage_lane_summary=stage_review,
+                    stage_metadata=stage2_metadata,
+                )
+            final_state = aggregate_parallel_stage_states(
+                [stage1_state, stage2_state],
+                gateway_request_id=str(stage1_state.get("gateway_request_id", "")).strip() or str(stage1_state.get("request_id", "")).strip(),
+                phase2_stage="combined",
+            )
             final_state["phase2_review_triggered"] = True
             final_state["phase2_request_ids"] = {
-                "execution": str(stage1_state.get("request_id", "")).strip() or str(stage1_state.get("gateway_request_id", "")).strip(),
-                "review": str(stage2_state.get("request_id", "")).strip() or str(stage2_state.get("gateway_request_id", "")).strip(),
+                "execution": list(stage1_state.get("linked_request_ids") or []) or (
+                    str(stage1_state.get("request_id", "")).strip() or str(stage1_state.get("gateway_request_id", "")).strip()
+                ),
+                "review": list(stage2_state.get("linked_request_ids") or []) or (
+                    str(stage2_state.get("request_id", "")).strip() or str(stage2_state.get("gateway_request_id", "")).strip()
+                ),
             }
             final_state["tf_workers"] = {
                 "execution": stage1_state.get("tf_workers"),
                 "review": stage2_state.get("tf_workers"),
             }
             final_state["planned_roles"] = dedupe_roles(stage1_roles + stage2_roles)
+            final_state["request_id"] = str(stage1_state.get("gateway_request_id", "")).strip() or str(stage1_state.get("request_id", "")).strip()
+            final_state["gateway_request_id"] = str(stage1_state.get("gateway_request_id", "")).strip() or str(stage1_state.get("request_id", "")).strip()
             if stage1_meta.get("phase2_execution_plan"):
                 final_state.setdefault("dispatch_metadata", {})["phase2_execution_plan"] = stage1_meta["phase2_execution_plan"]
         else:

@@ -295,6 +295,16 @@ def _latest_task_snapshot(entry: Dict[str, Any]) -> Dict[str, Any]:
     manual_exec = list(lane_targets.get("manual_followup_execution_lane_ids") or [])
     manual_review = list(lane_targets.get("manual_followup_review_lane_ids") or [])
     result = best_task.get("result") if isinstance(best_task.get("result"), dict) else {}
+    phase2_request_ids = result.get("phase2_request_ids") if isinstance(result.get("phase2_request_ids"), dict) else {}
+    linked_request_ids = result.get("linked_request_ids") if isinstance(result.get("linked_request_ids"), list) else []
+
+    def _request_bucket_count(value: Any) -> int:
+        if isinstance(value, list):
+            return len([str(item).strip() for item in value if str(item).strip()])
+        if isinstance(value, str):
+            return 1 if value.strip() else 0
+        return 0
+
     requested_roles = [str(x).strip() for x in (result.get("requested_roles") or []) if str(x).strip()]
     executed_roles = [str(x).strip() for x in (result.get("executed_roles") or []) if str(x).strip()]
     dropped_roles = [str(x).strip() for x in (result.get("dropped_roles") or []) if str(x).strip()]
@@ -319,6 +329,10 @@ def _latest_task_snapshot(entry: Dict[str, Any]) -> Dict[str, Any]:
         "dropped_roles": dropped_roles,
         "added_roles": added_roles,
         "role_mismatch": bool(result.get("role_mismatch", False)),
+        "phase2_execution_request_count": _request_bucket_count(phase2_request_ids.get("execution")),
+        "phase2_review_request_count": _request_bucket_count(phase2_request_ids.get("review")),
+        "linked_request_count": len([str(item).strip() for item in linked_request_ids if str(item).strip()]),
+        "phase2_parallelized": bool(result.get("phase2_parallelized", False)),
     }
 
 
@@ -588,6 +602,30 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
         notes.append(f"manual follow-up backlog present ({manual_followup_count})")
         attention.append(f"followup:{manual_followup_count}")
         severity_score += 55
+    task_tf_phase = str(latest_task.get("tf_phase", "")).strip()
+    task_status = str(latest_task.get("status", "")).strip()
+    if task_tf_phase in {"needs_retry", "manual_intervention", "blocked", "critic_review"}:
+        status = "warn" if status == "ready" else status
+        notes.append(f"active task needs attention ({task_tf_phase})")
+        attention.append(f"task:{task_tf_phase}")
+        severity_score += 60
+    elif task_status in {"running", "pending"}:
+        status = "warn" if status == "ready" else status
+        notes.append(f"active task in progress ({task_tf_phase or task_status})")
+        attention.append(f"task:{task_tf_phase or task_status}")
+        severity_score += 15
+    if bool(latest_task.get("role_mismatch", False)):
+        status = "warn" if status == "ready" else status
+        dropped = list(latest_task.get("dropped_roles") or [])
+        added = list(latest_task.get("added_roles") or [])
+        notes.append(
+            "active task role mismatch (dropped={dropped} added={added})".format(
+                dropped=",".join(dropped) if dropped else "-",
+                added=",".join(added) if added else "-",
+            )
+        )
+        attention.append("task:role_mismatch")
+        severity_score += 35
     if open_proposals > 0:
         status = "warn" if status == "ready" else status
         notes.append(f"open todo proposals pending review ({open_proposals})")
@@ -617,30 +655,6 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
         if note:
             notes.append(note)
         attention.append(f"sync:{sync_quality.get('quality', 'unknown')}")
-        severity_score += 35
-    task_tf_phase = str(latest_task.get("tf_phase", "")).strip()
-    task_status = str(latest_task.get("status", "")).strip()
-    if task_tf_phase in {"needs_retry", "manual_intervention", "blocked", "critic_review"}:
-        status = "warn" if status == "ready" else status
-        notes.append(f"active task needs attention ({task_tf_phase})")
-        attention.append(f"task:{task_tf_phase}")
-        severity_score += 60
-    elif task_status in {"running", "pending"}:
-        status = "warn" if status == "ready" else status
-        notes.append(f"active task in progress ({task_tf_phase or task_status})")
-        attention.append(f"task:{task_tf_phase or task_status}")
-        severity_score += 15
-    if bool(latest_task.get("role_mismatch", False)):
-        status = "warn" if status == "ready" else status
-        dropped = list(latest_task.get("dropped_roles") or [])
-        added = list(latest_task.get("added_roles") or [])
-        notes.append(
-            "active task role mismatch (dropped={dropped} added={added})".format(
-                dropped=",".join(dropped) if dropped else "-",
-                added=",".join(added) if added else "-",
-            )
-        )
-        attention.append("task:role_mismatch")
         severity_score += 35
     if last_sync_mode == "never" or not last_sync_at:
         status = "warn" if status == "ready" else status
@@ -736,6 +750,18 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
                 )
             )
         lines.append("  active_task_lanes: " + " | ".join(lane_parts))
+        exec_request_count = int(latest_task.get("phase2_execution_request_count", 0) or 0)
+        review_request_count = int(latest_task.get("phase2_review_request_count", 0) or 0)
+        linked_request_count = int(latest_task.get("linked_request_count", 0) or 0)
+        if exec_request_count or review_request_count or linked_request_count or bool(latest_task.get("phase2_parallelized", False)):
+            lines.append(
+                "  active_task_requests: execution={execution} review={review} linked={linked} parallel={parallel}".format(
+                    execution=exec_request_count,
+                    review=review_request_count,
+                    linked=linked_request_count,
+                    parallel="yes" if bool(latest_task.get("phase2_parallelized", False)) else "no",
+                )
+            )
         rerun_exec = list(latest_task.get("rerun_execution_lane_ids") or [])
         rerun_review = list(latest_task.get("rerun_review_lane_ids") or [])
         manual_exec = list(latest_task.get("manual_followup_execution_lane_ids") or [])
@@ -863,7 +889,6 @@ def offdesk_review_reply_markup(flagged: List[Dict[str, Any]], *, clean: bool = 
         active_task_tf_phase = str(row.get("active_task_tf_phase", "")).strip()
         if active_task_label and active_task_tf_phase in {"needs_retry", "manual_intervention", "critic_review", "blocked"}:
             tertiary.append({"text": f"/task {active_task_label}"})
-            tertiary.append({"text": f"/retry {active_task_label}"})
 
         if int(row.get("blocked_count", 0) or 0) > 0 or int(row.get("open", 0) or 0) == 0:
             secondary.append({"text": f"/sync preview {alias} 24h"})
@@ -947,7 +972,6 @@ def offdesk_prepare_reply_markup(
         active_task_tf_phase = str(row.get("active_task_tf_phase", "")).strip()
         if active_task_label and active_task_tf_phase in {"needs_retry", "manual_intervention", "critic_review", "blocked"}:
             tertiary.append({"text": f"/task {active_task_label}"})
-            tertiary.append({"text": f"/retry {active_task_label}"})
 
         if bool(row.get("bootstrap_recommended", False)):
             secondary.append({"text": f"/sync bootstrap {alias} 24h"})

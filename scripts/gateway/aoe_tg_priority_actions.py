@@ -50,6 +50,12 @@ def task_priority_action_snapshot(
             return ""
         return " lane " + ",".join(lane_tokens)
 
+    if safe_label and safe_phase == "planning":
+        return {
+            "action": f"/task {safe_label}",
+            "reason": "active task is still planning",
+        }
+
     if safe_label and safe_phase in {"needs_retry", "critic_review"}:
         lane_bits: List[str] = []
         if rerun_exec:
@@ -58,7 +64,7 @@ def task_priority_action_snapshot(
             lane_bits.append("review=" + ",".join(rerun_review))
         suffix = f" target {'; '.join(lane_bits)}" if lane_bits else ""
         return {
-            "action": f"/retry {safe_label}",
+            "action": f"/retry {safe_label}{_lane_suffix(rerun_exec, rerun_review)}",
             "reason": f"active task requires retry ({safe_phase}){suffix}",
         }
 
