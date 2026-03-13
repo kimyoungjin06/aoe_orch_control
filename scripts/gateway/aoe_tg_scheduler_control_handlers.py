@@ -468,6 +468,9 @@ def _handle_offdesk_command(
             alias = str(row.get("alias", "")).strip() or "-"
             display = str(row.get("display", "")).strip() or alias
             actions: List[str] = []
+            first_action = str(row.get("priority_action", "")).strip()
+            if first_action:
+                actions.append(first_action)
             if bool(row.get("syncback_pending", False)):
                 actions.append(f"/todo {alias} syncback preview")
             if int(row.get("proposals", 0) or 0) > 0:
@@ -478,7 +481,6 @@ def _handle_offdesk_command(
             active_task_tf_phase = str(row.get("active_task_tf_phase", "")).strip()
             if active_task_label and active_task_tf_phase in {"needs_retry", "manual_intervention", "critic_review", "blocked"}:
                 actions.append(f"/task {active_task_label}")
-                actions.append(f"/retry {active_task_label}")
             if bool(row.get("bootstrap_recommended", False)):
                 actions.append(f"/sync bootstrap {alias} 24h")
             if (
@@ -493,8 +495,8 @@ def _handle_offdesk_command(
                 actions.append(f"/todo {alias}")
             lines.append(f"- {alias} {display} [{row.get('status', '-')}]")
             lines.append(f"  attention: {str(row.get('attention_summary', '-')).strip() or '-'}")
-            first_action = str(row.get("priority_action", "")).strip() or "-"
             first_reason = str(row.get("priority_reason", "")).strip() or "-"
+            first_action = first_action or "-"
             lines.append(f"  first: {first_action} | {first_reason}")
             note_rows = list(row.get("notes") or [])
             for note in note_rows[:2]:

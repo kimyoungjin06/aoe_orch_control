@@ -889,7 +889,6 @@ def offdesk_review_reply_markup(flagged: List[Dict[str, Any]], *, clean: bool = 
         active_task_tf_phase = str(row.get("active_task_tf_phase", "")).strip()
         if active_task_label and active_task_tf_phase in {"needs_retry", "manual_intervention", "critic_review", "blocked"}:
             tertiary.append({"text": f"/task {active_task_label}"})
-            tertiary.append({"text": f"/retry {active_task_label}"})
 
         if int(row.get("blocked_count", 0) or 0) > 0 or int(row.get("open", 0) or 0) == 0:
             secondary.append({"text": f"/sync preview {alias} 24h"})
@@ -973,7 +972,6 @@ def offdesk_prepare_reply_markup(
         active_task_tf_phase = str(row.get("active_task_tf_phase", "")).strip()
         if active_task_label and active_task_tf_phase in {"needs_retry", "manual_intervention", "critic_review", "blocked"}:
             tertiary.append({"text": f"/task {active_task_label}"})
-            tertiary.append({"text": f"/retry {active_task_label}"})
 
         if bool(row.get("bootstrap_recommended", False)):
             secondary.append({"text": f"/sync bootstrap {alias} 24h"})

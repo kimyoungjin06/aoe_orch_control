@@ -1765,7 +1765,7 @@ def test_task_monitor_includes_lane_rerun_and_followup_targets() -> None:
     assert "reqs E2/R1 linked=3 parallel=yes" in summary
     assert "{rerun E:L2 R:R1 | followup E:L3 R:-}" in summary
     assert (
-        "first: /retry T-001 | collect-data-write-memo | active task requires retry (needs_retry) "
+        "first: /retry T-001 | collect-data-write-memo lane L2,R1 | active task requires retry (needs_retry) "
         "target execution=L2; review=R1"
     ) in summary
 
@@ -1795,7 +1795,7 @@ def test_priority_actions_module_matches_task_and_offdesk_policies() -> None:
         manual_followup_review_lane_ids=[],
     )
     assert task_priority == {
-        "action": "/retry T-001 | collect-data-write-memo",
+        "action": "/retry T-001 | collect-data-write-memo lane L2,R1",
         "reason": "active task requires retry (needs_retry) target execution=L2; review=R1",
     }
     offdesk_priority = priority_actions.offdesk_priority_action_snapshot(

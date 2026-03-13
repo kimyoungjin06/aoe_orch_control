@@ -1496,10 +1496,11 @@ def test_offdesk_review_reply_markup_includes_active_task_retry_actions(tmp_path
 
     assert "offdesk review" in body
     assert "active task needs attention (needs_retry)" in body
-    assert "/task T-101, /retry T-101" in body
+    assert "/retry T-101 lane L2,R1" in body
+    assert "/task T-101" in body
     buttons = _button_texts(markup)
     assert "/task T-101" in buttons
-    assert "/retry T-101" in buttons
+    assert "/retry T-101 lane L2,R1" in buttons
     assert "/orch status O6" in buttons
     assert "/todo O6" in buttons
 

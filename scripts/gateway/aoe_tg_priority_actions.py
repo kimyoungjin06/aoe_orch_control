@@ -58,7 +58,7 @@ def task_priority_action_snapshot(
             lane_bits.append("review=" + ",".join(rerun_review))
         suffix = f" target {'; '.join(lane_bits)}" if lane_bits else ""
         return {
-            "action": f"/retry {safe_label}",
+            "action": f"/retry {safe_label}{_lane_suffix(rerun_exec, rerun_review)}",
             "reason": f"active task requires retry ({safe_phase}){suffix}",
         }
 
