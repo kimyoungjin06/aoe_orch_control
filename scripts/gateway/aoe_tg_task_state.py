@@ -1010,6 +1010,13 @@ def summarize_task_monitor(
     if invalid_stage_rows:
         lines.append(f"warning: invalid lifecycle stage rows={invalid_stage_rows}")
 
+    def _phase2_request_count(value: Any) -> int:
+        if isinstance(value, list):
+            return len([str(item).strip() for item in value if str(item).strip()])
+        if isinstance(value, str):
+            return 1 if value.strip() else 0
+        return 0
+
     for idx, (req_id, task) in enumerate(rows[:cap], start=1):
         if not isinstance(task, dict):
             continue
@@ -1043,16 +1050,28 @@ def summarize_task_monitor(
             lane_parts.append("review " + ",".join(f"{key}={value}" for key, value in sorted(review_summary.items())))
         if review_verdicts:
             lane_parts.append("review_verdict " + ",".join(f"{key}={value}" for key, value in sorted(review_verdicts.items())))
-        if lane_parts:
-            lane_text += " [" + " | ".join(lane_parts) + "]"
         lane_targets = task_lane_target_snapshot(task)
         rerun_exec = list(lane_targets.get("rerun_execution_lane_ids") or [])
         rerun_review = list(lane_targets.get("rerun_review_lane_ids") or [])
         manual_exec = list(lane_targets.get("manual_followup_execution_lane_ids") or [])
         manual_review = list(lane_targets.get("manual_followup_review_lane_ids") or [])
         result = task.get("result") if isinstance(task.get("result"), dict) else {}
+        phase2_request_ids = result.get("phase2_request_ids") if isinstance(result.get("phase2_request_ids"), dict) else {}
+        linked_request_ids = result.get("linked_request_ids") if isinstance(result.get("linked_request_ids"), list) else []
+        exec_request_count = _phase2_request_count(phase2_request_ids.get("execution"))
+        review_request_count = _phase2_request_count(phase2_request_ids.get("review"))
+        linked_request_count = len([str(item).strip() for item in linked_request_ids if str(item).strip()])
         dropped_roles = [str(x).strip() for x in (result.get("dropped_roles") or []) if str(x).strip()]
         added_roles = [str(x).strip() for x in (result.get("added_roles") or []) if str(x).strip()]
+        if exec_request_count or review_request_count or linked_request_count or bool(result.get("phase2_parallelized", False)):
+            request_parts = [f"reqs E{exec_request_count}/R{review_request_count}"]
+            if linked_request_count:
+                request_parts.append(f"linked={linked_request_count}")
+            if bool(result.get("phase2_parallelized", False)):
+                request_parts.append("parallel=yes")
+            lane_parts.append(" ".join(request_parts))
+        if lane_parts:
+            lane_text += " [" + " | ".join(lane_parts) + "]"
         target_parts: List[str] = []
         if rerun_exec or rerun_review:
             target_parts.append(

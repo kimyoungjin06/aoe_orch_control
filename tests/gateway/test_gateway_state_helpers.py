@@ -1679,6 +1679,14 @@ def test_task_monitor_includes_lane_rerun_and_followup_targets() -> None:
                     "rerun_review_lane_ids": ["R1"],
                     "manual_followup_execution_lane_ids": ["L3"],
                 },
+                "result": {
+                    "phase2_request_ids": {
+                        "execution": ["REQ-L1", "REQ-L2"],
+                        "review": ["REQ-R1"],
+                    },
+                    "linked_request_ids": ["REQ-L1", "REQ-L2", "REQ-R1"],
+                    "phase2_parallelized": True,
+                },
                 "lane_states": {
                     "execution": [{"lane_id": "L1", "role": "Codex-Dev", "status": "done"}],
                     "review": [{"lane_id": "R1", "role": "Reviewer", "status": "done", "verdict": "retry", "action": "replan", "depends_on": ["L2"]}],
@@ -1715,6 +1723,7 @@ def test_task_monitor_includes_lane_rerun_and_followup_targets() -> None:
         task_display_label=gw.task_display_label,
         lifecycle_stages=gw.LIFECYCLE_STAGES,
     )
+    assert "reqs E2/R1 linked=3 parallel=yes" in summary
     assert "{rerun E:L2 R:R1 | followup E:L3 R:-}" in summary
     assert (
         "first: /retry T-001 | collect-data-write-memo | active task requires retry (needs_retry) "

@@ -1288,6 +1288,14 @@ def test_offdesk_prepare_reports_active_task_lane_summary_and_targets(tmp_path: 
                     "rerun_execution_lane_ids": ["L2"],
                     "rerun_review_lane_ids": ["R1"],
                 },
+                "result": {
+                    "phase2_request_ids": {
+                        "execution": ["REQ-L1", "REQ-L2"],
+                        "review": "REQ-R1",
+                    },
+                    "linked_request_ids": ["REQ-L1", "REQ-L2", "REQ-R1"],
+                    "phase2_parallelized": True,
+                },
                 "plan": {
                     "meta": {
                         "phase2_execution_plan": {
@@ -1313,6 +1321,7 @@ def test_offdesk_prepare_reports_active_task_lane_summary_and_targets(tmp_path: 
     assert "active task needs attention (needs_retry)" in text
     assert "active_task: T-101 | running/needs_retry" in text
     assert "active_task_lanes: lanes E2/R1 | exec done=1, running=1 | review waiting_on_dependencies=1 | review_verdict retry=1" in text
+    assert "active_task_requests: execution=2 review=1 linked=3 parallel=yes" in text
     assert "active_task_rerun: execution=L2 review=R1" in text
 
 

@@ -295,6 +295,16 @@ def _latest_task_snapshot(entry: Dict[str, Any]) -> Dict[str, Any]:
     manual_exec = list(lane_targets.get("manual_followup_execution_lane_ids") or [])
     manual_review = list(lane_targets.get("manual_followup_review_lane_ids") or [])
     result = best_task.get("result") if isinstance(best_task.get("result"), dict) else {}
+    phase2_request_ids = result.get("phase2_request_ids") if isinstance(result.get("phase2_request_ids"), dict) else {}
+    linked_request_ids = result.get("linked_request_ids") if isinstance(result.get("linked_request_ids"), list) else []
+
+    def _request_bucket_count(value: Any) -> int:
+        if isinstance(value, list):
+            return len([str(item).strip() for item in value if str(item).strip()])
+        if isinstance(value, str):
+            return 1 if value.strip() else 0
+        return 0
+
     requested_roles = [str(x).strip() for x in (result.get("requested_roles") or []) if str(x).strip()]
     executed_roles = [str(x).strip() for x in (result.get("executed_roles") or []) if str(x).strip()]
     dropped_roles = [str(x).strip() for x in (result.get("dropped_roles") or []) if str(x).strip()]
@@ -319,6 +329,10 @@ def _latest_task_snapshot(entry: Dict[str, Any]) -> Dict[str, Any]:
         "dropped_roles": dropped_roles,
         "added_roles": added_roles,
         "role_mismatch": bool(result.get("role_mismatch", False)),
+        "phase2_execution_request_count": _request_bucket_count(phase2_request_ids.get("execution")),
+        "phase2_review_request_count": _request_bucket_count(phase2_request_ids.get("review")),
+        "linked_request_count": len([str(item).strip() for item in linked_request_ids if str(item).strip()]),
+        "phase2_parallelized": bool(result.get("phase2_parallelized", False)),
     }
 
 
@@ -736,6 +750,18 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
                 )
             )
         lines.append("  active_task_lanes: " + " | ".join(lane_parts))
+        exec_request_count = int(latest_task.get("phase2_execution_request_count", 0) or 0)
+        review_request_count = int(latest_task.get("phase2_review_request_count", 0) or 0)
+        linked_request_count = int(latest_task.get("linked_request_count", 0) or 0)
+        if exec_request_count or review_request_count or linked_request_count or bool(latest_task.get("phase2_parallelized", False)):
+            lines.append(
+                "  active_task_requests: execution={execution} review={review} linked={linked} parallel={parallel}".format(
+                    execution=exec_request_count,
+                    review=review_request_count,
+                    linked=linked_request_count,
+                    parallel="yes" if bool(latest_task.get("phase2_parallelized", False)) else "no",
+                )
+            )
         rerun_exec = list(latest_task.get("rerun_execution_lane_ids") or [])
         rerun_review = list(latest_task.get("rerun_review_lane_ids") or [])
         manual_exec = list(latest_task.get("manual_followup_execution_lane_ids") or [])
