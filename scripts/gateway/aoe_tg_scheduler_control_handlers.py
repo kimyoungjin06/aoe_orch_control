@@ -58,6 +58,37 @@ def _next_rate_limited_task_snapshot(manager_state: Dict[str, Any]) -> Dict[str,
     return best_row
 
 
+def _next_rate_limited_retry_at(manager_state: Dict[str, Any], *, now: Optional[datetime] = None) -> str:
+    projects = manager_state.get("projects") if isinstance(manager_state, dict) else {}
+    if not isinstance(projects, dict):
+        return ""
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    best_dt: Optional[datetime] = None
+    best_text = ""
+    for entry in projects.values():
+        if not isinstance(entry, dict):
+            continue
+        tasks = entry.get("tasks")
+        if not isinstance(tasks, dict):
+            continue
+        for task in tasks.values():
+            if not isinstance(task, dict):
+                continue
+            rate_limit = task.get("rate_limit") if isinstance(task.get("rate_limit"), dict) else {}
+            if str(rate_limit.get("mode", "")).strip().lower() != "blocked":
+                continue
+            retry_at = str(rate_limit.get("retry_at", "")).strip()
+            parsed = _parse_iso_datetime(retry_at)
+            if parsed is None or parsed <= current.astimezone(timezone.utc):
+                continue
+            if best_dt is None or parsed < best_dt:
+                best_dt = parsed
+                best_text = retry_at
+    return best_text
+
+
 def _rate_limited_capacity_summary(manager_state: Dict[str, Any]) -> Dict[str, str]:
     projects = manager_state.get("projects") if isinstance(manager_state, dict) else {}
     if not isinstance(projects, dict):
@@ -212,6 +243,56 @@ def _provider_capacity_memory_lines(memory_state: Dict[str, Any]) -> List[str]:
         level = str(last.get("policy_level", "")).strip() or "-"
         lines.append(f"- capacity_override_last: {action} @ {at} ({level})")
     return lines
+
+
+def _prune_provider_capacity_state(memory_state: Dict[str, Any], *, now: Optional[datetime] = None) -> Dict[str, Any]:
+    state = dict(memory_state) if isinstance(memory_state, dict) else {}
+    providers = state.get("providers") if isinstance(state.get("providers"), dict) else {}
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    kept: Dict[str, Any] = {}
+    for name, row in providers.items():
+        if not isinstance(row, dict):
+            continue
+        retry_at = _parse_iso_datetime(row.get("next_retry_at") or row.get("last_retry_at"))
+        if retry_at is not None and retry_at <= current.astimezone(timezone.utc):
+            continue
+        kept[str(name)] = row
+    state["providers"] = kept
+    history = state.get("override_history") if isinstance(state.get("override_history"), list) else []
+    if history:
+        state["override_history"] = [row for row in history if isinstance(row, dict)][-10:]
+    return state
+
+
+def _capacity_recovery_action(
+    auto_state: Dict[str, Any],
+    provider_state: Dict[str, Any],
+    manager_state: Dict[str, Any],
+    *,
+    now: Optional[datetime] = None,
+) -> Dict[str, str]:
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    if bool(auto_state.get("enabled", False)):
+        return {}
+    history = provider_state.get("override_history") if isinstance(provider_state.get("override_history"), list) else []
+    last = history[-1] if history and isinstance(history[-1], dict) else {}
+    if str(last.get("action", "")).strip() != "/auto off":
+        return {}
+    retry_at = _next_rate_limited_retry_at(manager_state)
+    retry_dt = _parse_iso_datetime(retry_at)
+    if retry_dt is not None and retry_dt > current.astimezone(timezone.utc):
+        return {
+            "action": "/auto recover force",
+            "reason": f"operator override can resume auto before provider retry_at ({retry_at})",
+        }
+    return {
+        "action": "/auto recover",
+        "reason": "capacity cooldown has cleared; resume the auto scheduler",
+    }
 
 
 def _handle_focus_command(
@@ -657,7 +738,41 @@ def _handle_offdesk_command(
             send(str(exc).strip(), context="offdesk-review blocked", with_menu=True)
             return True
         if not targets:
-            send("offdesk review\n- no orch projects registered", context="offdesk-review empty", with_menu=True)
+            capacity_summary = _rate_limited_capacity_summary(manager_state)
+            capacity_policy = _provider_capacity_policy(capacity_summary)
+            recovery_action = _capacity_recovery_action(auto_state, provider_state, manager_state)
+            lines = ["offdesk review", "- no orch projects registered"]
+            if capacity_summary:
+                lines.append(
+                    "- provider_capacity: tasks={tasks} projects={projects} providers={providers}".format(
+                        tasks=capacity_summary.get("task_count", "0"),
+                        projects=capacity_summary.get("project_count", "0"),
+                        providers=capacity_summary.get("provider_summary", "-"),
+                    )
+                )
+            if capacity_policy:
+                lines.append(
+                    "- capacity_policy: {level} | {reason}".format(
+                        level=capacity_policy.get("level", "-"),
+                        reason=capacity_policy.get("reason", "-"),
+                    )
+                )
+                lines.append(f"- capacity_operator_action: {capacity_policy.get('operator_action', '-')}")
+            if recovery_action:
+                lines.append(f"- capacity_recovery_action: {recovery_action.get('action', '-')}")
+                lines.append(f"- capacity_recovery_reason: {recovery_action.get('reason', '-')}")
+            lines.extend(_provider_capacity_memory_lines(provider_state))
+            send(
+                "\n".join(lines).strip(),
+                context="offdesk-review empty",
+                with_menu=True,
+                reply_markup=offdesk_review_reply_markup(
+                    [],
+                    clean=True,
+                    capacity_operator_action=str(capacity_policy.get("operator_action", "")).strip() if capacity_policy else "",
+                    capacity_recovery_action=str(recovery_action.get("action", "")).strip() if recovery_action else "",
+                ),
+            )
             return True
 
         reports = [offdesk_prepare_project_report(manager_state, key, entry) for key, entry in targets]
@@ -665,6 +780,7 @@ def _handle_offdesk_command(
         flagged = [row for row in reports if str(row.get("status", "")).strip().lower() in {"warn", "blocked"}]
         capacity_summary = _rate_limited_capacity_summary_for_reports(reports)
         capacity_policy = _provider_capacity_policy(capacity_summary)
+        recovery_action = _capacity_recovery_action(auto_state, provider_state, manager_state)
         lines = [
             "offdesk review",
             f"- reviewed: {len(reports)}",
@@ -686,6 +802,9 @@ def _handle_offdesk_command(
                 )
             )
             lines.append(f"- capacity_operator_action: {capacity_policy.get('operator_action', '-')}")
+        if recovery_action:
+            lines.append(f"- capacity_recovery_action: {recovery_action.get('action', '-')}")
+            lines.append(f"- capacity_recovery_reason: {recovery_action.get('reason', '-')}")
         lines.extend(_provider_capacity_memory_lines(provider_state))
         if not flagged:
             lines.extend(["- status: clean", "", "next:", "- /offdesk on", "- /auto status"])
@@ -693,7 +812,11 @@ def _handle_offdesk_command(
                 "\n".join(lines).strip(),
                 context="offdesk-review clean",
                 with_menu=True,
-                reply_markup=offdesk_review_reply_markup([], clean=True),
+                reply_markup=offdesk_review_reply_markup(
+                    [],
+                    clean=True,
+                    capacity_recovery_action=str(recovery_action.get("action", "")).strip() if recovery_action else "",
+                ),
             )
             return True
 
@@ -775,6 +898,7 @@ def _handle_offdesk_command(
                 flagged,
                 clean=False,
                 capacity_operator_action=str(capacity_policy.get("operator_action", "")).strip() if capacity_policy else "",
+                capacity_recovery_action=str(recovery_action.get("action", "")).strip() if recovery_action else "",
             ),
         )
         return True
@@ -976,8 +1100,8 @@ def _handle_auto_command(
     sub = (tokens[0].lower() if tokens else "status").strip()
     if sub in {"", "show"}:
         sub = "status"
-    if sub not in {"status", "on", "off", "start", "stop"}:
-        raise RuntimeError("usage: /auto [on|off|status]")
+    if sub not in {"status", "on", "off", "start", "stop", "recover"}:
+        raise RuntimeError("usage: /auto [on|off|status|recover]")
 
     command = None
     for tok in tokens[1:]:
@@ -1064,6 +1188,7 @@ def _handle_auto_command(
     status_level = status_report_level(tokens, current_report_level)
 
     if sub == "status":
+        recovery_action = _capacity_recovery_action(current, provider_state, manager_state)
         chat_ref = str(current.get("chat_id", "")).strip() or "-"
         eff_force = bool(current.get("force", False))
         eff_command = str(current.get("command", "next")).strip().lower() or "next"
@@ -1127,6 +1252,9 @@ def _handle_auto_command(
                 )
             )
             lines.append(f"- capacity_operator_action: {capacity_policy.get('operator_action', '-')}")
+        if recovery_action:
+            lines.append(f"- capacity_recovery_action: {recovery_action.get('action', '-')}")
+            lines.append(f"- capacity_recovery_reason: {recovery_action.get('reason', '-')}")
         lines.extend(_provider_capacity_memory_lines(provider_state))
         if next_retry_target:
             lines.append(
@@ -1168,6 +1296,7 @@ def _handle_auto_command(
                 "- /auto on fanout recent replace-sync",
                 "- /auto on fanout recent since 3h",
                 "- /auto off",
+                "- /auto recover",
                 "- /auto on force",
                 "- /auto on maxfail=3",
                 "- /auto on <interval_sec> <idle_sec>",
@@ -1215,6 +1344,81 @@ def _handle_auto_command(
             f"- tmux: {'stopped' if ok else 'stop_failed'}\n"
             f"- detail: {out or '-'}",
             context="auto-off",
+            with_menu=True,
+        )
+        return True
+
+    if sub == "recover":
+        force_recover = force
+        retry_at = _next_rate_limited_retry_at(manager_state)
+        retry_dt = _parse_iso_datetime(retry_at)
+        now_dt = _parse_iso_datetime(now_iso()) or datetime.now(timezone.utc)
+        if now_dt.tzinfo is None:
+            now_dt = now_dt.replace(tzinfo=timezone.utc)
+        if retry_dt is not None and retry_dt > now_dt.astimezone(timezone.utc) and not force_recover:
+            send(
+                "auto recovery blocked\n"
+                f"- next_retry_at: {retry_at}\n"
+                "- reason: provider capacity is still blocked\n"
+                "next:\n"
+                "- /auto status\n"
+                "- /auto recover force\n"
+                "- wait until retry_at, then /auto recover",
+                context="auto-recover-blocked",
+                with_menu=True,
+            )
+            return True
+
+        effective_command = str(current.get("command", "next")).strip().lower() or "next"
+        if effective_command not in {"next", "fanout"}:
+            effective_command = "next"
+        if focus_row and effective_command == "fanout":
+            effective_command = "next"
+
+        provider_state = _prune_provider_capacity_state(provider_state, now=now_dt)
+        override_history = provider_state.get("override_history") if isinstance(provider_state.get("override_history"), list) else []
+        override_entry = {
+            "at": now_iso(),
+            "action": "/auto recover" + (" force" if force_recover else ""),
+            "source": "operator",
+            "policy_level": "manual",
+            "policy_reason": "resume auto after provider capacity interruption",
+            "providers": str(_rate_limited_capacity_summary(manager_state).get("provider_summary", "")).strip(),
+        }
+        override_history = [row for row in override_history if isinstance(row, dict)][-9:] + [override_entry]
+        provider_state["override_history"] = override_history
+
+        current["enabled"] = True
+        current["chat_id"] = str(current.get("chat_id", "")).strip() or str(chat_id)
+        current["command"] = effective_command
+        current["recovered_at"] = now_iso()
+        current.pop("stopped_at", None)
+        current.pop("next_retry_at", None)
+        current.pop("stuck_candidate", None)
+        current.pop("stuck_count", None)
+        current.pop("fail_count", None)
+        current.pop("fail_candidate", None)
+        current.pop("fail_reason", None)
+
+        if not args.dry_run:
+            save_auto_state(path, current)
+            save_provider_capacity_state(provider_state_path, provider_state)
+        if args.dry_run:
+            ok, out = True, "dry-run: skipped tmux auto recover"
+        else:
+            ok, out = tmux_auto_command(args, "on")
+        send(
+            "auto scheduler recovered\n"
+            "- enabled: yes\n"
+            f"- command: {effective_command}\n"
+            f"- force: {'yes' if force_recover else 'no'}\n"
+            f"- tmux: {'started' if ok else 'start_failed'}\n"
+            f"- detail: {out or '-'}\n"
+            "next:\n"
+            "- /auto status\n"
+            "- /queue\n"
+            "- /offdesk review",
+            context="auto-recover",
             with_menu=True,
         )
         return True

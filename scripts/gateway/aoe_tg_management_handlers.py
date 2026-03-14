@@ -148,11 +148,13 @@ def _offdesk_review_reply_markup(
     *,
     clean: bool = False,
     capacity_operator_action: str = "",
+    capacity_recovery_action: str = "",
 ) -> Dict[str, Any]:
     return offdesk_flow_mod.offdesk_review_reply_markup(
         flagged,
         clean=clean,
         capacity_operator_action=capacity_operator_action,
+        capacity_recovery_action=capacity_recovery_action,
     )
 
 
@@ -644,10 +646,11 @@ def handle_management_command(
             offdesk_prepare_targets=_offdesk_prepare_targets,
             offdesk_prepare_project_report=_offdesk_prepare_project_report,
             sort_offdesk_reports=_sort_offdesk_reports,
-            offdesk_review_reply_markup=lambda flagged, clean=False, capacity_operator_action="": _offdesk_review_reply_markup(
+            offdesk_review_reply_markup=lambda flagged, clean=False, capacity_operator_action="", capacity_recovery_action="": _offdesk_review_reply_markup(
                 flagged,
                 clean=clean,
                 capacity_operator_action=capacity_operator_action,
+                capacity_recovery_action=capacity_recovery_action,
             ),
             offdesk_prepare_reply_markup=lambda reports, blocked_count=0, clean=False: _offdesk_prepare_reply_markup(
                 reports, blocked_count=blocked_count, clean=clean

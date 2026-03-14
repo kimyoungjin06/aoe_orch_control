@@ -179,8 +179,9 @@ def _management_control_kwargs(
         sort_offdesk_reports=mgmt_handlers._sort_offdesk_reports,
         offdesk_prepare_targets=mgmt_handlers._offdesk_prepare_targets,
         offdesk_prepare_project_report=mgmt_handlers._offdesk_prepare_project_report,
-        offdesk_review_reply_markup=lambda flagged, clean=False, capacity_operator_action="": mgmt_handlers._offdesk_review_reply_markup(
+        offdesk_review_reply_markup=lambda flagged, clean=False, capacity_operator_action="", capacity_recovery_action="": mgmt_handlers._offdesk_review_reply_markup(
             flagged, clean=clean, capacity_operator_action=capacity_operator_action
+            , capacity_recovery_action=capacity_recovery_action
         ),
         offdesk_prepare_reply_markup=lambda reports, blocked_count=0, clean=False: mgmt_handlers._offdesk_prepare_reply_markup(
             reports, blocked_count=blocked_count, clean=clean
@@ -2291,6 +2292,153 @@ def test_auto_off_records_provider_capacity_override_history(tmp_path: Path, mon
     assert last["action"] == "/auto off"
     assert last["policy_level"] == "critical"
     assert last["providers"] == "claude=2, codex=1"
+
+
+def test_auto_status_shows_capacity_recovery_action_when_auto_is_disabled_after_override(tmp_path: Path) -> None:
+    team_dir = tmp_path / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (team_dir / "auto_scheduler.json").write_text(
+        json.dumps(
+            {
+                "enabled": False,
+                "chat_id": "939062873",
+                "command": "next",
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (team_dir / "provider_capacity.json").write_text(
+        json.dumps(
+            {
+                "updated_at": "2026-03-14T03:30:00+09:00",
+                "providers": {},
+                "override_history": [
+                    {
+                        "at": "2026-03-14T03:00:00+09:00",
+                        "action": "/auto off",
+                        "policy_level": "critical",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    state = gw.default_manager_state(tmp_path, team_dir)
+
+    text = _call_management_status(tmp_path=tmp_path, manager_state=state, cmd="auto", rest="status")
+
+    assert "- capacity_recovery_action: /auto recover" in text
+    assert "- capacity_recovery_reason: capacity cooldown has cleared; resume the auto scheduler" in text
+
+
+def test_auto_recover_reenables_scheduler_and_records_override_history(tmp_path: Path, monkeypatch) -> None:
+    team_dir = tmp_path / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    auto_state_path = team_dir / "auto_scheduler.json"
+    auto_state_path.write_text(
+        json.dumps(
+            {
+                "enabled": False,
+                "chat_id": "939062873",
+                "command": "next",
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    provider_state_path = team_dir / mgmt_handlers.PROVIDER_CAPACITY_STATE_FILENAME
+    provider_state_path.write_text(
+        json.dumps(
+            {
+                "updated_at": "2026-03-14T03:30:00+09:00",
+                "providers": {
+                    "claude": {
+                        "blocked_count": 1,
+                        "project_count": 1,
+                        "cooldown_level": "cooldown",
+                        "next_retry_at": "2026-03-14T03:00:00+09:00",
+                    }
+                },
+                "override_history": [
+                    {
+                        "at": "2026-03-14T02:50:00+09:00",
+                        "action": "/auto off",
+                        "policy_level": "critical",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    manager_state = gw.default_manager_state(tmp_path, team_dir)
+    sent: list[tuple[str, dict | None]] = []
+    kwargs = _management_control_kwargs(tmp_path=tmp_path, manager_state=manager_state, cmd="auto", rest="recover", sent=sent)
+    kwargs["args"].dry_run = False
+    kwargs["tmux_auto_command"] = lambda args, action: (True, "started")
+    monkeypatch.setattr(mgmt_handlers, "_now_iso", lambda: "2026-03-14T03:31:00+09:00")
+    kwargs["now_iso"] = mgmt_handlers._now_iso
+
+    ok = scheduler_control.handle_scheduler_control_command(**kwargs)
+
+    assert ok is True
+    auto_state = mgmt_handlers._load_auto_state(auto_state_path)
+    provider_state = mgmt_handlers._load_provider_capacity_state(provider_state_path)
+    assert auto_state["enabled"] is True
+    assert auto_state["command"] == "next"
+    assert auto_state["recovered_at"] == "2026-03-14T03:31:00+09:00"
+    history = provider_state.get("override_history")
+    assert isinstance(history, list) and history
+    assert history[-1]["action"] == "/auto recover"
+    assert "providers" not in provider_state or provider_state.get("providers") == {}
+    assert sent
+    assert "auto scheduler recovered" in sent[-1][0]
+
+
+def test_offdesk_review_clean_keyboard_includes_auto_recover_when_available(tmp_path: Path) -> None:
+    state = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+    team_dir = tmp_path / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (team_dir / "provider_capacity.json").write_text(
+        json.dumps(
+            {
+                "updated_at": "2026-03-14T03:30:00+09:00",
+                "providers": {},
+                "override_history": [
+                    {
+                        "at": "2026-03-14T03:00:00+09:00",
+                        "action": "/auto off",
+                        "policy_level": "critical",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    body, markup = _call_management_status_with_markup(
+        tmp_path=tmp_path,
+        manager_state=state,
+        cmd="offdesk",
+        rest="review all",
+    )
+
+    assert "- capacity_recovery_action: /auto recover" in body
+    buttons = _button_texts(markup)
+    assert "/auto recover" in buttons
 
 
 def _write_tf_exec_map(team_dir: Path, req_id: str, *, mode: str, workdir: Path, run_dir: Path) -> None:
