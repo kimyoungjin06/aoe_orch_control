@@ -141,6 +141,13 @@ def test_orch_roles_module_matches_gateway_exports(tmp_path: Path) -> None:
         available_roles=["Codex-Dev", "Codex-Reviewer"],
         team_dir=team_dir,
     )
+    assert gw.classify_dispatch_role_preset(
+        "최근 결과 문서를 바탕으로 보고/정리 작업 3개를 작성 관점에서 정리해줘.",
+        selected_roles=["Codex-Writer", "Claude-Writer", "Codex-Reviewer", "Claude-Reviewer"],
+    ) == orch_roles.classify_dispatch_role_preset(
+        "최근 결과 문서를 바탕으로 보고/정리 작업 3개를 작성 관점에서 정리해줘.",
+        selected_roles=["Codex-Writer", "Claude-Writer", "Codex-Reviewer", "Claude-Reviewer"],
+    )
     assert gw.available_worker_roles([]) == orch_roles.available_worker_roles([])
 
 

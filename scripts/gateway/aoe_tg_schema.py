@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from aoe_tg_orch_contract import normalize_phase2_execution_plan, normalize_phase2_team_spec
+from aoe_tg_orch_roles import classify_dispatch_role_preset, normalize_role_preset
 
 
 def _trim_text(raw: Any, limit: int) -> str:
@@ -55,6 +56,7 @@ def normalize_task_plan_payload(
     user_prompt: str,
     workers: List[str],
     max_subtasks: int,
+    meta_overrides: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     role_map = {str(r).strip().lower(): str(r).strip() for r in (workers or []) if str(r).strip()}
     worker_list = list(role_map.values()) or ["Worker"]
@@ -68,6 +70,8 @@ def normalize_task_plan_payload(
             raw_subtasks = parsed.get("subtasks") or []
         if isinstance(parsed.get("meta"), dict):
             meta_in = dict(parsed.get("meta") or {})
+    if isinstance(meta_overrides, dict):
+        meta_in.update({str(key): value for key, value in meta_overrides.items()})
 
     normalized: List[Dict[str, Any]] = []
     for i, row in enumerate(raw_subtasks, start=1):
@@ -131,12 +135,19 @@ def normalize_task_plan_payload(
     if not worker_roles:
         worker_roles = worker_list[:]
 
+    phase1_role_preset = normalize_role_preset(
+        meta_in.get("phase1_role_preset") or classify_dispatch_role_preset(user_prompt, selected_roles=worker_roles)
+    )
+    phase2_team_preset = normalize_role_preset(meta_in.get("phase2_team_preset") or phase1_role_preset)
+
     plan_payload = {
         "summary": summary[:240],
         "subtasks": normalized,
         "meta": {
             "max_subtasks": limit,
             "worker_roles": worker_roles,
+            "phase1_role_preset": phase1_role_preset,
+            "phase2_team_preset": phase2_team_preset,
         },
     }
 

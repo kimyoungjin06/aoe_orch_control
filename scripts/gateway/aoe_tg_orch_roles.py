@@ -66,6 +66,8 @@ ROLE_ORDER = {
     "Claude-Reviewer": 51,
 }
 
+ROLE_PRESET_KEYS = {"general", "review", "writer", "analysis", "build", "data", "mixed"}
+
 
 def parse_roles_csv(raw: Optional[str]) -> List[str]:
     if not raw:
@@ -347,6 +349,68 @@ def _build_prompt_role_preset(
             prompt_lower=prompt_lower,
         )
     return roles
+
+
+def normalize_role_preset(raw: Optional[str]) -> str:
+    token = str(raw or "").strip().lower()
+    return token if token in ROLE_PRESET_KEYS else "general"
+
+
+def _role_work_presets(roles: List[str]) -> List[str]:
+    presets: List[str] = []
+    for role in dedupe_roles(canonicalize_roles(roles)):
+        if role in {"Codex-Writer", "Claude-Writer"} and "writer" not in presets:
+            presets.append("writer")
+        elif role in {"Codex-Analyst", "Claude-Analyst"} and "analysis" not in presets:
+            presets.append("analysis")
+        elif role == "Codex-Dev" and "build" not in presets:
+            presets.append("build")
+        elif role == "DataEngineer" and "data" not in presets:
+            presets.append("data")
+    return presets
+
+
+def classify_dispatch_role_preset(
+    prompt: str,
+    *,
+    selected_roles: Optional[List[str]] = None,
+) -> str:
+    current_roles = dedupe_roles(canonicalize_roles(selected_roles or []))
+    role_presets = _role_work_presets(current_roles)
+    if len(role_presets) >= 2:
+        return "mixed"
+    if len(role_presets) == 1:
+        return role_presets[0]
+    if current_roles and all(
+        "review" in str(role).lower() or "critic" in str(role).lower() or "verif" in str(role).lower()
+        for role in current_roles
+    ):
+        return "review"
+
+    prompt_lower = str(prompt or "").strip().lower()
+    has_data_signal = _has_any(prompt_lower, DATA_SIGNAL_KEYS)
+    has_build_signal = _has_any(prompt_lower, BUILD_SIGNAL_KEYS)
+    has_doc_signal = _has_any(prompt_lower, DOC_SIGNAL_KEYS)
+    has_analysis_signal = _has_any(prompt_lower, ANALYSIS_SIGNAL_KEYS)
+    has_review_signal = _has_any(prompt_lower, REVIEW_SIGNAL_KEYS)
+
+    work_hits = [
+        label
+        for label, enabled in (
+            ("data", has_data_signal),
+            ("build", has_build_signal),
+            ("writer", has_doc_signal),
+            ("analysis", has_analysis_signal),
+        )
+        if enabled
+    ]
+    if len(work_hits) >= 2:
+        return "mixed"
+    if len(work_hits) == 1:
+        return work_hits[0]
+    if has_review_signal:
+        return "review"
+    return "general"
 
 
 def choose_auto_dispatch_roles(

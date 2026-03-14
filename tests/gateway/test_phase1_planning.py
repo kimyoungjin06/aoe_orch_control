@@ -384,6 +384,31 @@ def test_normalize_task_plan_payload_derives_phase2_team_spec() -> None:
     assert [row["role"] for row in execution_plan["review_lanes"]] == ["Codex-Reviewer"]
     assert execution_plan["parallel_workers"] is True
     assert execution_plan["readonly"] is True
+    assert plan["meta"]["phase1_role_preset"] == "mixed"
+    assert plan["meta"]["phase2_team_preset"] == "mixed"
+
+
+def test_normalize_task_plan_payload_preserves_explicit_role_preset_overrides() -> None:
+    plan = gw.normalize_task_plan_payload(
+        {
+            "summary": "reporting",
+            "subtasks": [
+                {"id": "S1", "title": "Draft", "goal": "write report", "owner_role": "Codex-Writer", "acceptance": ["done"]},
+            ],
+        },
+        user_prompt="결과를 요약하고 보고서를 작성해라",
+        workers=["Codex-Writer", "Claude-Writer", "Codex-Reviewer", "Claude-Reviewer"],
+        max_subtasks=3,
+        meta_overrides={
+            "worker_roles": ["Codex-Writer", "Claude-Writer", "Codex-Reviewer", "Claude-Reviewer"],
+            "phase1_role_preset": "writer",
+            "phase2_team_preset": "writer",
+        },
+    )
+
+    assert plan["meta"]["worker_roles"] == ["Codex-Writer", "Claude-Writer", "Codex-Reviewer", "Claude-Reviewer"]
+    assert plan["meta"]["phase1_role_preset"] == "writer"
+    assert plan["meta"]["phase2_team_preset"] == "writer"
 
 
 def test_build_planned_dispatch_prompt_includes_phase2_team_lanes() -> None:

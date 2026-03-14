@@ -53,6 +53,7 @@ from aoe_tg_plan_pipeline import (
 from aoe_tg_orch_contract import attach_phase2_team_spec
 from aoe_tg_orch_contract import derive_tf_phase, derive_tf_phase_reason, normalize_tf_phase
 from aoe_tg_orch_contract import normalize_phase2_execution_plan, normalize_phase2_team_spec
+from aoe_tg_orch_roles import classify_dispatch_role_preset
 from aoe_tg_task_state import apply_exec_critic_lifecycle
 
 
@@ -705,6 +706,8 @@ def _provision_planning_task(
     phase1_mode: str = "",
     phase1_rounds: int = 0,
     phase1_providers: Optional[List[str]] = None,
+    phase1_role_preset: str = "",
+    phase2_team_preset: str = "",
 ) -> tuple[str, Dict[str, Any]]:
     request_id = str(create_request_id() or "").strip()
     task = ensure_task_record(
@@ -733,6 +736,10 @@ def _provision_planning_task(
     task["phase1_current_phase"] = "planner"
     task["phase1_current_detail"] = "phase1 planning queued"
     task["phase1_candidate_roles"] = [str(item).strip() for item in (selected_roles or []) if str(item).strip()]
+    if phase1_role_preset:
+        task["phase1_role_preset"] = str(phase1_role_preset).strip()
+    if phase2_team_preset:
+        task["phase2_team_preset"] = str(phase2_team_preset).strip()
     task["updated_at"] = now_iso()
     entry["last_request_id"] = request_id
     entry["updated_at"] = now_iso()
@@ -1223,6 +1230,8 @@ def _apply_plan_and_lineage(
     phase1_mode: str = "",
     phase1_rounds: int = 0,
     phase1_providers: Optional[List[str]] = None,
+    phase1_role_preset: str = "",
+    phase2_team_preset: str = "",
     critic_has_blockers: Callable[[Dict[str, Any]], bool],
     lifecycle_set_stage: Callable[..., None],
     run_control_mode: str,
@@ -1241,6 +1250,8 @@ def _apply_plan_and_lineage(
         phase1_mode=phase1_mode,
         phase1_rounds=phase1_rounds,
         phase1_providers=phase1_providers,
+        phase1_role_preset=phase1_role_preset,
+        phase2_team_preset=phase2_team_preset,
         critic_has_blockers=critic_has_blockers,
         lifecycle_set_stage=lifecycle_set_stage,
         run_control_mode=run_control_mode,
@@ -1568,6 +1579,7 @@ def handle_run_or_unknown_command(
         if str(token).strip()
     ]
     selected_dispatch_roles = parse_roles_csv(dispatch_roles)
+    selected_role_preset = classify_dispatch_role_preset(prompt, selected_roles=selected_dispatch_roles)
     provisional_req_id = ""
     provisional_task: Optional[Dict[str, Any]] = None
     if dispatch_mode and planning_requested and (not args.dry_run):
@@ -1588,6 +1600,8 @@ def handle_run_or_unknown_command(
             phase1_mode=configured_phase1_mode,
             phase1_rounds=configured_phase1_rounds,
             phase1_providers=configured_phase1_providers,
+            phase1_role_preset=selected_role_preset,
+            phase2_team_preset=selected_role_preset,
         )
         save_manager_state(args.manager_state_file, manager_state)
 
@@ -1894,6 +1908,12 @@ def handle_run_or_unknown_command(
                     dispatch_metadata["phase1_providers"] = [
                         str(row).strip() for row in plan_phase1_providers if str(row).strip()
                     ]
+                plan_phase1_role_preset = str(current_plan_meta.get("phase1_role_preset", "")).strip().lower()
+                if plan_phase1_role_preset:
+                    dispatch_metadata["phase1_role_preset"] = plan_phase1_role_preset
+                plan_phase2_team_preset = str(current_plan_meta.get("phase2_team_preset", "")).strip().lower()
+                if plan_phase2_team_preset:
+                    dispatch_metadata["phase2_team_preset"] = plan_phase2_team_preset
             if provisional_req_id:
                 dispatch_metadata["request_id"] = provisional_req_id
 
@@ -2009,6 +2029,8 @@ def handle_run_or_unknown_command(
                 phase1_mode=phase1_mode,
                 phase1_rounds=phase1_rounds,
                 phase1_providers=phase1_providers,
+                phase1_role_preset=str(plan_meta.phase1_role_preset or selected_role_preset),
+                phase2_team_preset=str(plan_meta.phase2_team_preset or selected_role_preset),
                 critic_has_blockers=critic_has_blockers,
                 lifecycle_set_stage=lifecycle_set_stage,
                 run_control_mode=local_run_control_mode,

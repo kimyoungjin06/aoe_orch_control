@@ -206,6 +206,8 @@ def run_phase1_ensemble_planning(
     args: Any,
     user_prompt: str,
     available_roles: List[str],
+    selected_roles: Optional[List[str]] = None,
+    role_preset: str = "",
     normalize_task_plan_payload: Callable[..., Dict[str, Any]],
     parse_json_object_from_text: Callable[[str], Optional[Dict[str, Any]]],
     run_provider_execs: Dict[str, Callable[[str, int], str]],
@@ -289,6 +291,11 @@ def run_phase1_ensemble_planning(
                     user_prompt=user_prompt,
                     workers=workers,
                     max_subtasks=max_subtasks,
+                    meta_overrides={
+                        "worker_roles": list(selected_roles or []),
+                        "phase1_role_preset": role_preset,
+                        "phase2_team_preset": role_preset,
+                    },
                 )
             except Exception as exc:
                 return {

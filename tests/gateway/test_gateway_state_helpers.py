@@ -1005,6 +1005,8 @@ def test_task_lifecycle_summary_includes_phase1_planning_metadata() -> None:
             "phase1_rounds": 3,
             "phase1_providers": ["codex", "claude"],
             "phase1_candidate_roles": ["Codex-Analyst", "Claude-Analyst", "Codex-Reviewer"],
+            "phase1_role_preset": "analysis",
+            "phase2_team_preset": "analysis",
             "phase1_current_phase": "planner",
             "phase1_current_round": 1,
             "phase1_current_total_rounds": 3,
@@ -1016,6 +1018,7 @@ def test_task_lifecycle_summary_includes_phase1_planning_metadata() -> None:
     assert "phase1: ensemble rounds=3 providers=codex, claude" in summary
     assert "phase1_progress: planner 1/3 provider=codex" in summary
     assert "phase1_candidate_roles: Codex-Analyst, Claude-Analyst, Codex-Reviewer" in summary
+    assert "team_preset: phase1=analysis phase2=analysis" in summary
 
 
 def test_task_lifecycle_summary_omits_empty_phase1_actor_placeholder() -> None:
