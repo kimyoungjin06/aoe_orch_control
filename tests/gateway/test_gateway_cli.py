@@ -956,6 +956,85 @@ def test_fanout_does_not_treat_blocked_rows_as_busy_when_open_todo_exists(tmp_pa
 
 
 @pytest.mark.smoke
+def test_fanout_limit_prioritizes_ready_project_over_rate_limited_capacity_heavy_project(tmp_path: Path) -> None:
+    state = _base_state(chat_id="test", session_patch={"default_mode": "direct"})
+    projects = state.get("projects") or {}
+    assert isinstance(projects, dict)
+    default = projects.get("default") or {}
+    assert isinstance(default, dict)
+    _seed_ready_project_runtime(default, tmp_path=tmp_path, slug="default")
+    default["project_alias"] = "O1"
+    default["todos"] = [
+        {
+            "id": "TODO-001",
+            "summary": "parked current",
+            "priority": "P1",
+            "status": "running",
+            "created_at": "2026-02-24T00:00:00+0000",
+        },
+        {
+            "id": "TODO-002",
+            "summary": "capacity heavy follow-up",
+            "priority": "P1",
+            "status": "open",
+            "created_at": "2026-02-24T00:00:01+0000",
+        },
+    ]
+    default["tasks"] = {
+        "req-001": {
+            "request_id": "req-001",
+            "todo_id": "TODO-001",
+            "status": "running",
+            "tf_phase": "rate_limited",
+            "rate_limit": {
+                "mode": "blocked",
+                "limited_providers": ["codex", "claude"],
+                "retry_after_sec": 180,
+                "retry_at": "2999-01-01T00:00:00+00:00",
+            },
+        }
+    }
+
+    projects["proj2"] = {
+        "name": "proj2",
+        "display_name": "proj2",
+        "project_alias": "O2",
+        "project_root": "",
+        "team_dir": "",
+        "overview": "",
+        "last_request_id": "",
+        "tasks": {},
+        "task_alias_index": {},
+        "task_seq": 0,
+        "todos": [
+            {
+                "id": "TODO-001",
+                "summary": "ready project todo",
+                "priority": "P1",
+                "status": "open",
+                "created_at": "2026-02-24T00:00:00+0000",
+            }
+        ],
+        "todo_seq": 1,
+        "created_at": "2026-02-24T00:00:00+0000",
+        "updated_at": "2026-02-24T00:00:00+0000",
+    }
+    proj2 = projects["proj2"]
+    assert isinstance(proj2, dict)
+    _seed_ready_project_runtime(proj2, tmp_path=tmp_path, slug="proj2")
+
+    state_file = tmp_path / "manager_state.json"
+    state_file.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    out = _run_gateway(
+        simulate_text="/fanout 1",
+        extra_args=["--manager-state-file", str(state_file)],
+    )
+    assert "fanout finished" in out
+    assert "[DRY-RUN] orch=proj2" in out
+    assert "[DRY-RUN] orch=default" not in out
+
+
+@pytest.mark.smoke
 def test_next_skips_paused_projects(tmp_path: Path) -> None:
     state = _base_state(chat_id="test", session_patch={"default_mode": "direct"})
     projects = state.get("projects") or {}
