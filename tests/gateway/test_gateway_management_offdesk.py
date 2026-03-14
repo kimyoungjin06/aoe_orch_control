@@ -1029,11 +1029,30 @@ def test_auto_status_shows_next_retry_at_when_rate_limited_work_is_waiting(tmp_p
             },
         }
     }
+    state["projects"]["o2"] = {
+        "project_alias": "O2",
+        "display_name": "Second",
+        "tasks": {
+            "req-301": {
+                "request_id": "req-301",
+                "label": "T-301",
+                "status": "running",
+                "rate_limit": {
+                    "mode": "blocked",
+                    "limited_providers": ["claude"],
+                    "retry_after_sec": 120,
+                    "retry_at": "2026-03-14T03:25:00+09:00",
+                },
+                "result": {},
+            }
+        },
+    }
 
     text = _call_management_status(tmp_path=tmp_path, manager_state=state, cmd="auto", rest="status")
 
     assert "- last_reason: no_runnable_open_todo" in text
     assert "- next_retry_at: 2026-03-14T03:10:00+09:00" in text
+    assert "- provider_capacity: tasks=2 projects=2 providers=claude=2, codex=1" in text
     assert "- next_retry_target: O1 T-201 providers=codex,claude degraded=claude_rate_limit->codex" in text
 
 
