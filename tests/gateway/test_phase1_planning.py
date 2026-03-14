@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import threading
 import time
@@ -222,6 +223,66 @@ def test_phase1_ensemble_blocks_when_all_providers_are_rate_limited() -> None:
     assert result["rate_limit"]["retry_after_sec"] == 180
     assert "retry_at" in result["rate_limit"]
     assert str(result["rate_limit"]["retry_at"]).strip()
+
+
+def test_phase1_ensemble_uses_proactive_cooldown_fallback_from_provider_memory(tmp_path: Path) -> None:
+    team_dir = tmp_path / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (team_dir / "provider_capacity.json").write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "claude": {
+                        "blocked_count": 1,
+                        "project_count": 1,
+                        "cooldown_level": "cooldown",
+                        "next_retry_at": "2099-03-14T03:10:00+09:00",
+                    }
+                }
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    calls: list[str] = []
+
+    def _codex(prompt: str, timeout_sec: int) -> str:
+        calls.append("codex")
+        if "critic이다" in prompt:
+            return '{"approved": true, "issues": [], "recommendations": []}'
+        return '{"summary":"plan from codex","subtasks":[{"id":"S1","title":"Draft","goal":"Write the plan","owner_role":"Codex-Writer","acceptance":["has a concise plan"]}]}'
+
+    def _claude(prompt: str, timeout_sec: int) -> str:
+        calls.append("claude")
+        raise AssertionError("claude should not be called while cooldown memory is active")
+
+    args = SimpleNamespace(
+        team_dir=team_dir,
+        plan_phase1_providers="claude,codex",
+        plan_phase1_rounds=3,
+        plan_max_subtasks=3,
+        orch_command_timeout_sec=120,
+        plan_block_on_critic=True,
+    )
+
+    result = ensemble_mod.run_phase1_ensemble_planning(
+        args=args,
+        user_prompt="Prepare a stable execution plan",
+        available_roles=["Codex-Writer", "Codex-Reviewer"],
+        normalize_task_plan_payload=gw.normalize_task_plan_payload,
+        parse_json_object_from_text=gw.parse_json_object_from_text,
+        run_provider_execs={"codex": _codex, "claude": _claude},
+        plan_roles_from_subtasks=gw.plan_roles_from_subtasks,
+        report_progress=None,
+    )
+
+    assert result["plan_gate_blocked"] is False
+    assert result["plan_data"]["summary"] == "plan from codex"
+    assert calls.count("claude") == 0
+    assert calls.count("codex") >= 2
+    assert result["rate_limit"]["degraded_by"] == ["claude_rate_limit->codex"]
 
 
 def test_resolve_dispatch_mode_defaults_to_tf_dispatch_when_not_forced_direct() -> None:

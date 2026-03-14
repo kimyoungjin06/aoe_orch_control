@@ -245,6 +245,58 @@ run_claude_fallback_for_codex_limit() {
   fi
 }
 
+provider_cooldown_fallback() {
+  local provider="${1:-}"
+  TEAM_DIR="$TEAM_DIR" PROVIDER="$provider" python3 - <<'PY'
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
+provider = str(os.environ.get("PROVIDER", "")).strip().lower()
+fallbacks = {"claude": "codex", "codex": "claude"}
+fallback = fallbacks.get(provider, "")
+if not fallback:
+    print("\t\t")
+    raise SystemExit(0)
+
+path = Path(os.environ.get("TEAM_DIR", ".")).expanduser().resolve() / "provider_capacity.json"
+try:
+    data = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    data = {}
+providers = data.get("providers") if isinstance(data, dict) else {}
+if not isinstance(providers, dict):
+    print("\t\t")
+    raise SystemExit(0)
+
+def parse_iso(raw):
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+now = datetime.now(timezone.utc)
+prow = providers.get(provider) if isinstance(providers.get(provider), dict) else {}
+frow = providers.get(fallback) if isinstance(providers.get(fallback), dict) else {}
+pretry = parse_iso(prow.get("next_retry_at") or prow.get("last_retry_at"))
+fretry = parse_iso(frow.get("next_retry_at") or frow.get("last_retry_at"))
+if pretry is None or pretry <= now:
+    print("\t\t")
+    raise SystemExit(0)
+if fretry is not None and fretry > now:
+    print("\t\t")
+    raise SystemExit(0)
+print(f"{fallback}\t{str(prow.get('next_retry_at', '')).strip()}\t{str(prow.get('cooldown_level', '')).strip()}")
+PY
+}
+
 extract_request_id() {
   local env_rid="${AOE_REQUEST_ID:-}"
   local body="${AOE_MSG_BODY:-}"
@@ -448,6 +500,20 @@ runtime_meta="$(worker_runtime_meta || true)"
 WORKER_PROVIDER="$(sed -n '1p' <<<"$runtime_meta" | tr -d '\r')"
 WORKER_LAUNCH="$(sed -n '2p' <<<"$runtime_meta" | tr -d '\r')"
 WORKER_PROVIDER_KEY="$(printf '%s' "${WORKER_PROVIDER:-codex}" | tr '[:upper:]' '[:lower:]')"
+COOLDOWN_FALLBACK_PROVIDER=""
+COOLDOWN_FALLBACK_RETRY_AT=""
+COOLDOWN_FALLBACK_LEVEL=""
+if [[ "$WORKER_PROVIDER_KEY" == "claude" || "$WORKER_PROVIDER_KEY" == "codex" ]]; then
+  cooldown_meta="$(provider_cooldown_fallback "$WORKER_PROVIDER_KEY" || true)"
+  COOLDOWN_FALLBACK_PROVIDER="$(sed -n '1p' <<<"$cooldown_meta" | awk -F'\t' '{print $1}' | tr -d '\r')"
+  COOLDOWN_FALLBACK_RETRY_AT="$(sed -n '1p' <<<"$cooldown_meta" | awk -F'\t' '{print $2}' | tr -d '\r')"
+  COOLDOWN_FALLBACK_LEVEL="$(sed -n '1p' <<<"$cooldown_meta" | awk -F'\t' '{print $3}' | tr -d '\r')"
+  if [[ -n "$COOLDOWN_FALLBACK_PROVIDER" ]]; then
+    echo "[WARN] provider_cooldown provider=${WORKER_PROVIDER_KEY} fallback=${COOLDOWN_FALLBACK_PROVIDER} retry_at=${COOLDOWN_FALLBACK_RETRY_AT:-"-"} level=${COOLDOWN_FALLBACK_LEVEL:-"-"} role=${ROLE}" >>"$LOG_FILE"
+    WORKER_PROVIDER_KEY="$COOLDOWN_FALLBACK_PROVIDER"
+    WORKER_LAUNCH="$COOLDOWN_FALLBACK_PROVIDER"
+  fi
+fi
 
 # Never use an unquoted heredoc here: USER_REQ can contain backticks/$(...) from Telegram,
 # which would trigger command substitution during prompt generation.

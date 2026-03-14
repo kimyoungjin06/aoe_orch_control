@@ -18,6 +18,8 @@ from aoe_tg_provider_fallback import (
     extract_retry_after_sec,
     fallback_provider_for,
     is_rate_limit_error,
+    load_provider_capacity_state,
+    proactive_fallback_provider,
 )
 from aoe_tg_schema import default_plan_critic_payload, normalize_plan_critic_payload, plan_critic_primary_issue
 
@@ -166,7 +168,22 @@ def _run_provider_with_rate_limit_fallback(
     round_no: int,
     rounds: int,
     report_progress: Optional[Callable[..., None]],
+    provider_capacity_state: Optional[Dict[str, Any]] = None,
 ) -> tuple[str, str, bool]:
+    proactive_fallback = proactive_fallback_provider(
+        provider,
+        memory_state=provider_capacity_state or {},
+        available_providers=run_provider_execs.keys(),
+    )
+    if proactive_fallback and callable(run_provider_execs.get(proactive_fallback)):
+        if callable(report_progress):
+            report_progress(
+                phase=phase,
+                detail=f"phase1 round {round_no}/{rounds} provider={provider} cooldown fallback={proactive_fallback}",
+                attempt=round_no,
+                total=rounds,
+            )
+        return run_provider_execs[proactive_fallback](prompt, timeout_sec), proactive_fallback, True
     try:
         return run_provider_execs[provider](prompt, timeout_sec), provider, False
     except Exception as exc:
@@ -232,6 +249,7 @@ def run_phase1_ensemble_planning(
     plan_replans: List[Dict[str, Any]] = []
     degraded_by: List[str] = []
     retry_after_sec = 60
+    provider_capacity_state = load_provider_capacity_state(getattr(args, "team_dir", ""))
 
     for round_no in range(1, rounds + 1):
         def _run_planner_provider(provider: str) -> Dict[str, Any]:
@@ -263,6 +281,7 @@ def run_phase1_ensemble_planning(
                     round_no=round_no,
                     rounds=rounds,
                     report_progress=report_progress,
+                    provider_capacity_state=provider_capacity_state,
                 )
                 parsed_plan = parse_json_object_from_text(raw_plan)
                 plan = normalize_task_plan_payload(
@@ -316,6 +335,7 @@ def run_phase1_ensemble_planning(
                         round_no=round_no,
                         rounds=rounds,
                         report_progress=report_progress,
+                        provider_capacity_state=provider_capacity_state,
                     )
                     parsed_critic = parse_json_object_from_text(raw_critic)
                     normalized = normalize_plan_critic_payload(parsed_critic, max_items=5)

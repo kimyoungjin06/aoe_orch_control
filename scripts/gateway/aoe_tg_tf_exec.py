@@ -635,9 +635,15 @@ def degraded_by_from_worker_sessions(worker_sessions: Any) -> List[str]:
         text = _tail_text(str(row.get("log_file", "")).strip())
         if not text:
             continue
-        if "provider_rate_limit provider=claude fallback=codex" in text and "claude_rate_limit->codex" not in tokens:
+        if (
+            "provider_rate_limit provider=claude fallback=codex" in text
+            or "provider_cooldown provider=claude fallback=codex" in text
+        ) and "claude_rate_limit->codex" not in tokens:
             tokens.append("claude_rate_limit->codex")
-        if "provider_rate_limit provider=codex fallback=claude" in text and "codex_rate_limit->claude" not in tokens:
+        if (
+            "provider_rate_limit provider=codex fallback=claude" in text
+            or "provider_cooldown provider=codex fallback=claude" in text
+        ) and "codex_rate_limit->claude" not in tokens:
             tokens.append("codex_rate_limit->claude")
     return tokens
 
