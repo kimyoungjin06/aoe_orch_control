@@ -1035,6 +1035,129 @@ def test_fanout_limit_prioritizes_ready_project_over_rate_limited_capacity_heavy
 
 
 @pytest.mark.smoke
+def test_fanout_limit_penalizes_repeat_heavy_project_during_recovery_grace(tmp_path: Path) -> None:
+    state = _base_state(chat_id="test", session_patch={"default_mode": "direct"})
+    projects = state.get("projects") or {}
+    assert isinstance(projects, dict)
+    default = projects.get("default") or {}
+    assert isinstance(default, dict)
+    _seed_ready_project_runtime(default, tmp_path=tmp_path, slug="default")
+    default["project_alias"] = "O1"
+    default["todos"] = [
+        {
+            "id": "TODO-001",
+            "summary": "repeat-heavy recovery candidate",
+            "priority": "P1",
+            "status": "open",
+            "created_at": "2026-02-24T00:00:00+0000",
+        }
+    ]
+    default["tasks"] = {
+        "req-001": {
+            "request_id": "req-001",
+            "todo_id": "TODO-001",
+            "status": "running",
+            "tf_phase": "rate_limited",
+            "rate_limit": {
+                "mode": "blocked",
+                "limited_providers": ["claude"],
+                "retry_after_sec": 180,
+                "retry_at": "2000-01-01T00:00:00+00:00",
+            },
+        }
+    }
+
+    projects["proj2"] = {
+        "name": "proj2",
+        "display_name": "proj2",
+        "project_alias": "O2",
+        "project_root": "",
+        "team_dir": "",
+        "overview": "",
+        "last_request_id": "",
+        "tasks": {
+            "req-010": {
+                "request_id": "req-010",
+                "todo_id": "TODO-010",
+                "status": "running",
+                "tf_phase": "rate_limited",
+                "rate_limit": {
+                    "mode": "blocked",
+                    "limited_providers": ["claude"],
+                    "retry_after_sec": 180,
+                    "retry_at": "2000-01-01T00:00:00+00:00",
+                },
+            }
+        },
+        "task_alias_index": {},
+        "task_seq": 0,
+        "todos": [
+            {
+                "id": "TODO-010",
+                "summary": "fresh recovery candidate",
+                "priority": "P1",
+                "status": "open",
+                "created_at": "2026-02-24T00:00:00+0000",
+            }
+        ],
+        "todo_seq": 1,
+        "created_at": "2026-02-24T00:00:00+0000",
+        "updated_at": "2026-02-24T00:00:00+0000",
+    }
+    proj2 = projects["proj2"]
+    assert isinstance(proj2, dict)
+    _seed_ready_project_runtime(proj2, tmp_path=tmp_path, slug="proj2")
+
+    state_file = tmp_path / "manager_state.json"
+    state_file.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    global_team_dir = tmp_path / ".aoe-team"
+    global_team_dir.mkdir(parents=True, exist_ok=True)
+    (global_team_dir / "auto_scheduler.json").write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "chat_id": "test",
+                "command": "fanout",
+                "recovery_grace_until": "2999-01-01T00:00:00+00:00",
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (global_team_dir / "provider_capacity.json").write_text(
+        json.dumps(
+            {
+                "updated_at": "2026-03-14T03:30:00+09:00",
+                "recovery_repeat_history": [
+                    {"at": "2026-03-14T03:10:00+09:00", "summary": "O1", "aliases": ["O1"]},
+                    {"at": "2026-03-14T03:20:00+09:00", "summary": "O1", "aliases": ["O1"]},
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    out = _run_gateway(
+        simulate_text="/fanout 1",
+        extra_args=[
+            "--manager-state-file",
+            str(state_file),
+            "--team-dir",
+            str(global_team_dir),
+        ],
+    )
+    assert "fanout finished" in out
+    assert "[DRY-RUN] orch=proj2" in out
+    assert "[DRY-RUN] orch=default" not in out
+
+
+@pytest.mark.smoke
 def test_next_skips_paused_projects(tmp_path: Path) -> None:
     state = _base_state(chat_id="test", session_patch={"default_mode": "direct"})
     projects = state.get("projects") or {}
