@@ -308,6 +308,8 @@ def emit_planning_progress(
     send: Callable[..., bool],
     log_event: Callable[..., None],
     emit_chat: bool,
+    request_id: str = "",
+    task: Optional[Dict[str, Any]] = None,
     detail: str = "",
     attempt: int = 0,
     total: int = 0,
@@ -323,6 +325,8 @@ def emit_planning_progress(
     log_event(
         event=f"planning_{phase_token}",
         project=key,
+        request_id=str(request_id or "").strip(),
+        task=task if isinstance(task, dict) else None,
         stage="planning",
         status=log_status,
         detail=f"{detail_text}{suffix}".strip(),

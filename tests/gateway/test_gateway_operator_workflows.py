@@ -2209,12 +2209,23 @@ def test_handle_run_or_unknown_command_materializes_provisional_task_before_plan
     assert task["tf_phase"] == "blocked"
     assert task["tf_phase_reason"] == "missing acceptance"
     assert task["status"] == "failed"
+    assert task["phase1_mode"] == "ensemble"
+    assert task["phase1_rounds"] == 3
+    assert task["phase1_providers"] == ["codex", "claude"]
+    assert task["phase1_current_phase"] == "planner"
+    assert task["phase1_current_round"] == 1
+    assert task["phase1_current_total_rounds"] == 3
+    assert task["phase1_current_provider"] == "codex"
+    assert task["phase1_candidate_roles"] == ["Codex-Dev"]
     assert task["plan_gate_reason"] == "missing acceptance"
     assert task["stages"]["planning"] == "failed"
     assert task["stages"]["close"] == "failed"
     assert manager_state["projects"]["twinpaper"]["last_request_id"] == "REQ-PLAN"
     assert sent[-1][0] == "planning-gate"
-    assert any(evt.get("event") == "planning_planner" for evt in logged)
+    planning_evt = next(evt for evt in logged if evt.get("event") == "planning_planner")
+    assert planning_evt["project"] == "twinpaper"
+    assert planning_evt["request_id"] == "REQ-PLAN"
+    assert planning_evt["task_short_id"] == task["short_id"]
     assert saved
 
 

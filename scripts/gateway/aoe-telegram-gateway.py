@@ -78,6 +78,7 @@ from aoe_tg_gateway_events import (
 )
 import aoe_tg_gateway_state as gateway_state_mod
 import aoe_tg_gateway_aux as gateway_aux_mod
+from aoe_tg_role_aliases import canonicalize_role_name
 import aoe_tg_gateway_batch_ops as gateway_batch_ops_mod
 import aoe_tg_cli as cli_mod
 import aoe_tg_room_runtime as room_runtime_mod
