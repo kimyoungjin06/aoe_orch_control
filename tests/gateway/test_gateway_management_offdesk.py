@@ -2703,6 +2703,7 @@ def test_offdesk_review_surfaces_provider_capacity_for_rate_limited_task(tmp_pat
     )
 
     assert "offdesk review" in body
+    assert "- provider_capacity: tasks=1 projects=1 providers=claude=1, codex=1" in body
     assert "task:rate_limited" in body
     assert "capacity:codex,claude" in body
     assert "first: /task T-001 | active task is waiting for provider capacity until 2026-03-14T01:23:00+09:00" in body

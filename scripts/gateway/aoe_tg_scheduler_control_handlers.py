@@ -99,6 +99,36 @@ def _rate_limited_capacity_summary(manager_state: Dict[str, Any]) -> Dict[str, s
     }
 
 
+def _rate_limited_capacity_summary_for_reports(reports: List[Dict[str, Any]]) -> Dict[str, str]:
+    project_aliases: set[str] = set()
+    provider_counts: Dict[str, int] = {}
+    task_count = 0
+    for row in reports:
+        if not isinstance(row, dict):
+            continue
+        rate_limit = row.get("active_task_rate_limit") if isinstance(row.get("active_task_rate_limit"), dict) else {}
+        if str(rate_limit.get("mode", "")).strip().lower() != "blocked":
+            continue
+        task_count += 1
+        alias = str(row.get("alias", "")).strip().upper()
+        if alias:
+            project_aliases.add(alias)
+        for raw_provider in rate_limit.get("limited_providers") or []:
+            provider = str(raw_provider or "").strip().lower()
+            if not provider:
+                continue
+            provider_counts[provider] = int(provider_counts.get(provider, 0)) + 1
+    if task_count <= 0:
+        return {}
+    ordered = sorted(provider_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    provider_summary = ", ".join(f"{provider}={count}" for provider, count in ordered) or "-"
+    return {
+        "task_count": str(task_count),
+        "project_count": str(len(project_aliases)),
+        "provider_summary": provider_summary,
+    }
+
+
 def _handle_focus_command(
     *,
     args: Any,
@@ -543,11 +573,20 @@ def _handle_offdesk_command(
         reports = [offdesk_prepare_project_report(manager_state, key, entry) for key, entry in targets]
         reports = sort_offdesk_reports(reports)
         flagged = [row for row in reports if str(row.get("status", "")).strip().lower() in {"warn", "blocked"}]
+        capacity_summary = _rate_limited_capacity_summary_for_reports(reports)
         lines = [
             "offdesk review",
             f"- reviewed: {len(reports)}",
             f"- flagged: {len(flagged)}",
         ]
+        if capacity_summary:
+            lines.append(
+                "- provider_capacity: tasks={tasks} projects={projects} providers={providers}".format(
+                    tasks=capacity_summary.get("task_count", "0"),
+                    projects=capacity_summary.get("project_count", "0"),
+                    providers=capacity_summary.get("provider_summary", "-"),
+                )
+            )
         if not flagged:
             lines.extend(["- status: clean", "", "next:", "- /offdesk on", "- /auto status"])
             send(
