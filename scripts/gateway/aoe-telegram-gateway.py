@@ -2906,8 +2906,14 @@ def _drain_peek_next_todo(
     chat_id: str,
     *,
     force: bool,
+    recovery_grace_until: Any = None,
 ) -> tuple[str, str, str]:
-    return gateway_batch_ops_mod.drain_peek_next_todo(manager_state, chat_id, force=force)
+    return gateway_batch_ops_mod.drain_peek_next_todo(
+        manager_state,
+        chat_id,
+        force=force,
+        recovery_grace_until=recovery_grace_until,
+    )
 
 
 def handle_drain_command(

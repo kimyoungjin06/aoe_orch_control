@@ -193,9 +193,11 @@ worker runtime 권한 정책:
 - `/next [force]`: (global) 다음 실행 가능한 todo를 선택해 dispatch 실행
 - `/fanout [N] [force]`: (global) **프로젝트별로 1개씩** `/todo next`를 실행(순차 wave). 기본은 all(상한 50).
 - `/drain [N] [force]`: `/next` 반복 실행(블로킹)
-- `/auto [on|off|status] [fanout|next] [recent|no-recent] [since 12h] [maxfail=3]`: tmux 백그라운드 스케줄러로 `/next` 또는 `/fanout`을 주기 실행(논블로킹)
+- `/auto [on|off|status|recover] [fanout|next] [recent|no-recent] [since 12h] [maxfail=3]`: tmux 백그라운드 스케줄러로 `/next` 또는 `/fanout`을 주기 실행(논블로킹)
   - 상태 뷰: `/auto status short` 또는 `/auto status long`
   - 예: `/auto on` (기본: next), `/auto on fanout`
+  - provider capacity override 후 재개: `/auto recover`
+  - cooldown이 아직 안 풀렸더라도 운영자가 강제로 재개하려면: `/auto recover force`
   - off-desk 권장: `/auto on fanout recent since 12h maxfail=3`
   - full-scope prune까지 원하면: `/auto on fanout recent replace-sync`
   - `recent`(idle prefetch): 큐가 비었을 때(=실행 가능한 open todo가 없을 때) 한 번씩 다음을 실행해 큐를 시드(seed)한 뒤 스케줄링을 계속한다. (best-effort, rate-limited)

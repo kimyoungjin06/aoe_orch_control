@@ -61,6 +61,10 @@
 `/offdesk on`
 `/auto on fanout recent`  # (manual equivalent)
 `/auto status`
+provider capacity override 후 재개:
+`/auto recover`
+강제 재개:
+`/auto recover force`
 긴급 정지:
 `/panic`
 3. Logs (tmux pane capture):
@@ -277,7 +281,9 @@
 - `/orch resume <O#|name>` : 프로젝트 일시정지 해제
 - `/fanout [N] [force]` : (Mother-Orch) **프로젝트별로 1개씩** `/todo next`를 실행(순차 wave)
 - `/drain [N] [force]` : (Mother-Orch) `/next`를 N회 반복 실행(기본 10회, 최대 50회)
-- `/auto [on|off|status]` : (Mother-Orch) tmux 백그라운드 스케줄러로 `/next`(또는 `fanout`)를 주기적으로 실행(게이트웨이 polling을 블록하지 않음)
+- `/auto [on|off|status|recover]` : (Mother-Orch) tmux 백그라운드 스케줄러로 `/next`(또는 `fanout`)를 주기적으로 실행(게이트웨이 polling을 블록하지 않음)
+- `/auto recover` : provider capacity 때문에 운영자가 `/auto off`로 멈춘 뒤, cooldown이 지난 auto scheduler를 다시 켬
+- `/auto recover force` : `retry_at` 이전이라도 운영자가 강제로 auto scheduler를 재개
 - `/auto on fanout recent` : (off-desk 권장) idle 상태에서 `/sync recent all quiet`를 1회 실행해 큐를 시드(seed)한 뒤, `/fanout` 스케줄링을 계속
 - `/offdesk [on|off|status]` : off-desk 프리셋(입력 최소화). on은 `report=short` + `routing=off` + `room=global` + `auto=fanout recent`를 한 번에 적용
 - `/panic [status]` : (긴급) auto/offdesk 즉시 중지 + pending/confirm 정리 + routing off

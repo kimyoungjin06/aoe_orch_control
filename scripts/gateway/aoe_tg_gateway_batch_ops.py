@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from aoe_tg_ops_policy import build_batch_finish_message, format_ops_skip_detail, new_ops_skip_counters
@@ -11,6 +13,8 @@ from aoe_tg_project_runtime import project_hidden_from_ops, project_runtime_issu
 from aoe_tg_queue_engine import project_capacity_snapshot
 from aoe_tg_queue_engine import drain_peek_next_todo as queue_drain_peek_next_todo
 from aoe_tg_ops_policy import project_queue_snapshot
+
+_AUTO_STATE_FILENAME = "auto_scheduler.json"
 
 
 def parse_drain_args(rest: str) -> Tuple[int, bool]:
@@ -46,8 +50,33 @@ def drain_peek_next_todo(
     chat_id: str,
     *,
     force: bool,
+    recovery_grace_until: Any = None,
 ) -> Tuple[str, str, str]:
-    return queue_drain_peek_next_todo(manager_state, chat_id, force=force)
+    return queue_drain_peek_next_todo(
+        manager_state,
+        chat_id,
+        force=force,
+        recovery_grace_until=recovery_grace_until,
+    )
+
+
+def _auto_state_path(args: argparse.Namespace) -> Path:
+    return Path(str(getattr(args, "team_dir", "."))).expanduser().resolve() / _AUTO_STATE_FILENAME
+
+
+def _load_auto_state(path: Path) -> Dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _auto_recovery_grace_until(args: argparse.Namespace) -> str:
+    state = _load_auto_state(_auto_state_path(args))
+    if not bool(state.get("enabled", False)):
+        return ""
+    return str(state.get("recovery_grace_until", "")).strip()
 
 
 def handle_drain_command(
@@ -198,15 +227,20 @@ def handle_fanout_command(
         return
 
     deps["ensure_project_aliases"](manager_state)
+    recovery_grace_until = _auto_recovery_grace_until(args)
 
     def _proj_sort_key(k: str) -> Tuple[int, str, int, int, int, str]:
         entry = projects.get(k) if isinstance(projects.get(k), dict) else {}
         alias = deps["normalize_project_alias"](str((entry or {}).get("project_alias", ""))) or "O?"
-        capacity = project_capacity_snapshot(entry if isinstance(entry, dict) else {})
+        capacity = project_capacity_snapshot(
+            entry if isinstance(entry, dict) else {},
+            recovery_grace_until=recovery_grace_until,
+        )
         return (
             int(capacity.get("penalty_rank", 0) or 0),
             str(capacity.get("next_retry_at", "") or "9999-12-31T23:59:59+00:00"),
             int(capacity.get("active_count", 0) or 0),
+            int(capacity.get("recent_recovered_count", 0) or 0),
             int(capacity.get("provider_count", 0) or 0),
             deps["extract_project_alias_index"](alias),
             str(k),

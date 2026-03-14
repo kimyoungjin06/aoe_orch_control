@@ -948,12 +948,17 @@ def offdesk_review_reply_markup(
     *,
     clean: bool = False,
     capacity_operator_action: str = "",
+    capacity_recovery_action: str = "",
 ) -> Dict[str, Any]:
     keyboard: List[List[Dict[str, str]]] = []
     if clean:
+        top: List[Dict[str, str]] = [{"text": "/offdesk on"}, {"text": "/auto status"}]
+        recovery = str(capacity_recovery_action or "").strip()
+        if recovery:
+            top.insert(0, {"text": recovery})
         keyboard.extend(
             [
-                [{"text": "/offdesk on"}, {"text": "/auto status"}],
+                top[:3],
                 [{"text": "/offdesk prepare"}, {"text": "/map"}, {"text": "/help"}],
             ]
         )
@@ -965,9 +970,15 @@ def offdesk_review_reply_markup(
         }
 
     override_action = str(capacity_operator_action or "").strip()
+    recovery_action = str(capacity_recovery_action or "").strip()
+    if recovery_action:
+        row = [{"text": recovery_action}]
+        if recovery_action != "/auto status":
+            row.append({"text": "/auto status"})
+        keyboard.append(row[:3])
     if override_action:
         row = [{"text": override_action}]
-        if override_action != "/auto status":
+        if override_action != "/auto status" and all(str(btn.get("text", "")).strip() != "/auto status" for btn in row):
             row.append({"text": "/auto status"})
         keyboard.append(row[:3])
 
