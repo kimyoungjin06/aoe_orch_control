@@ -2670,8 +2670,10 @@ def test_offdesk_review_surfaces_provider_capacity_for_rate_limited_task(tmp_pat
     assert "capacity:codex,claude" in body
     assert "first: /task T-001 | active task is waiting for provider capacity until 2026-03-14T01:23:00+09:00" in body
     assert "provider_capacity: providers=codex,claude retry_at=2026-03-14T01:23:00+09:00 degraded=claude_rate_limit->codex" in body
+    assert "do: /task T-001, /auto status" in body
     buttons = _button_texts(markup)
     assert "/task T-001" in buttons
+    assert "/auto status" in buttons
 
 
 def test_next_resumes_parked_rate_limited_todo_after_retry_at(tmp_path: Path) -> None:

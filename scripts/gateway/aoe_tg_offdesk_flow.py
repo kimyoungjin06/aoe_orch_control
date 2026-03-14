@@ -918,6 +918,9 @@ def offdesk_review_reply_markup(flagged: List[Dict[str, Any]], *, clean: bool = 
         priority_action = str(row.get("priority_action", "")).strip()
         if priority_action:
             primary.append({"text": priority_action})
+        active_rate_limit = row.get("active_task_rate_limit") if isinstance(row.get("active_task_rate_limit"), dict) else {}
+        if active_rate_limit:
+            primary.append({"text": "/auto status"})
         if bool(row.get("syncback_pending", False)):
             primary.append({"text": f"/todo {alias} syncback preview"})
         if int(row.get("proposals", 0) or 0) > 0:
