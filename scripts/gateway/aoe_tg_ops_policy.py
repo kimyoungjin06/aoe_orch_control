@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from aoe_tg_provider_fallback import rate_limit_retry_active
 from aoe_tg_project_runtime import project_hidden_from_ops, project_runtime_issue
 
 
@@ -130,29 +131,117 @@ def sorted_open_todos(todos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return rows
 
 
+def sorted_resumable_todos(entry: Dict[str, Any]) -> List[Dict[str, Any]]:
+    todos = todo_rows(entry)
+    rows: List[Dict[str, Any]] = []
+    for row in todos:
+        if not isinstance(row, dict):
+            continue
+        status = str(row.get("status", "open")).strip().lower() or "open"
+        if status != "running":
+            continue
+        todo_id = str(row.get("id", "")).strip()
+        if not todo_id:
+            continue
+        if linked_task_blocks_todo(entry, todo_id):
+            continue
+        if not linked_tasks_for_todo(entry, todo_id):
+            continue
+        rows.append(row)
+    rows.sort(
+        key=lambda r: (
+            priority_rank(r.get("priority", "P2")),
+            str(r.get("updated_at", "")),
+            str(r.get("created_at", "")),
+            str(r.get("id", "")),
+        )
+    )
+    return rows
+
+
+def linked_tasks_for_todo(entry: Dict[str, Any], todo_id: str) -> List[Dict[str, Any]]:
+    token = str(todo_id or "").strip()
+    if not token:
+        return []
+    tasks = entry.get("tasks") if isinstance(entry, dict) else None
+    if not isinstance(tasks, dict):
+        return []
+    return [
+        task
+        for task in tasks.values()
+        if isinstance(task, dict) and str(task.get("todo_id", "")).strip() == token
+    ]
+
+
+def linked_task_blocks_todo(entry: Dict[str, Any], todo_id: str) -> bool:
+    for task in linked_tasks_for_todo(entry, todo_id):
+        status = str(task.get("status", "")).strip().lower()
+        if status not in {"pending", "running"}:
+            continue
+        tf_phase = str(task.get("tf_phase", "")).strip().lower()
+        rate_limit = task.get("rate_limit") if isinstance(task.get("rate_limit"), dict) else {}
+        if tf_phase == "rate_limited" or str(rate_limit.get("mode", "")).strip().lower() == "blocked":
+            if rate_limit_retry_active(rate_limit):
+                return True
+            continue
+        return True
+    return False
+
+
+def linked_task_blocks_project(entry: Dict[str, Any], todo_id: str) -> bool:
+    tasks = linked_tasks_for_todo(entry, todo_id)
+    if not tasks:
+        return True
+    for task in tasks:
+        status = str(task.get("status", "")).strip().lower()
+        if status not in {"pending", "running"}:
+            continue
+        tf_phase = str(task.get("tf_phase", "")).strip().lower()
+        rate_limit = task.get("rate_limit") if isinstance(task.get("rate_limit"), dict) else {}
+        if tf_phase == "rate_limited" or str(rate_limit.get("mode", "")).strip().lower() == "blocked":
+            continue
+        return True
+    return False
+
+
 def project_queue_snapshot(entry: Dict[str, Any]) -> Dict[str, Any]:
     todos = todo_rows(entry)
     running_count = 0
     blocked_count = 0
+    parked_count = 0
     for row in todos:
         status = str(row.get("status", "open")).strip().lower() or "open"
         if status == "running":
-            running_count += 1
+            todo_id = str(row.get("id", "")).strip()
+            if todo_id and linked_tasks_for_todo(entry, todo_id):
+                if linked_task_blocks_project(entry, todo_id):
+                    running_count += 1
+                else:
+                    parked_count += 1
+            else:
+                running_count += 1
         elif status == "blocked":
             blocked_count += 1
     open_rows = sorted_open_todos(todos)
+    resume_rows = sorted_resumable_todos(entry)
     best_open = open_rows[0] if open_rows else None
+    best_resume = resume_rows[0] if resume_rows else None
     pending = entry.get("pending_todo") if isinstance(entry, dict) else None
     pending_id = str(pending.get("todo_id", "")).strip() if isinstance(pending, dict) else ""
     return {
         "todos": todos,
         "open_rows": open_rows,
+        "resume_rows": resume_rows,
         "best_open": best_open,
+        "best_resume": best_resume,
         "open_count": len(open_rows),
+        "resume_count": len(resume_rows),
         "running_count": running_count,
+        "parked_count": parked_count,
         "blocked_count": blocked_count,
         "pending_id": pending_id,
         "has_running": running_count > 0,
+        "has_parked": parked_count > 0,
         "has_blocked": blocked_count > 0,
         "has_pending": bool(pending_id),
     }

@@ -18,8 +18,9 @@ import json
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 
 DEFAULT_INTERVAL_SEC = 2.0
@@ -50,6 +51,61 @@ def _save_json(path: Path, data: Dict[str, Any]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp, path)
+
+
+def _parse_iso_dt(raw: Any) -> Optional[datetime]:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    normalized = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _next_rate_limited_retry_at(state: Dict[str, Any], *, now: Optional[datetime] = None) -> str:
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    projects = state.get("projects") if isinstance(state, dict) else {}
+    best: Optional[datetime] = None
+    if not isinstance(projects, dict):
+        return ""
+    for entry in projects.values():
+        if not isinstance(entry, dict):
+            continue
+        tasks = entry.get("tasks")
+        if not isinstance(tasks, dict):
+            continue
+        for task in tasks.values():
+            if not isinstance(task, dict):
+                continue
+            rate_limit = task.get("rate_limit") if isinstance(task.get("rate_limit"), dict) else {}
+            if str(rate_limit.get("mode", "")).strip().lower() != "blocked":
+                continue
+            retry_at = _parse_iso_dt(rate_limit.get("retry_at"))
+            if retry_at is None or retry_at <= current:
+                continue
+            if best is None or retry_at < best:
+                best = retry_at
+    return best.isoformat() if isinstance(best, datetime) else ""
+
+
+def _adjust_idle_for_retry_at(idle_sec: float, retry_at: str, *, now: Optional[datetime] = None) -> float:
+    parsed = _parse_iso_dt(retry_at)
+    if parsed is None:
+        return float(idle_sec)
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    remaining = (parsed - current.astimezone(timezone.utc)).total_seconds()
+    if remaining <= 0:
+        return 1.0
+    return max(1.0, min(float(idle_sec), remaining))
 
 
 def _auto_enabled(auto_state: Dict[str, Any]) -> bool:
@@ -442,18 +498,30 @@ def main() -> int:
 
             if not project_key or not todo_id:
                 last_idle_reason = reason or "idle"
+                next_retry_at = ""
+                try:
+                    state = gw.load_manager_state(gw_args.manager_state_file, gw_args.project_root, gw_args.team_dir)
+                    next_retry_at = _next_rate_limited_retry_at(state)
+                except Exception:
+                    next_retry_at = ""
+                sleep_sec = _adjust_idle_for_retry_at(idle_sec, next_retry_at) if next_retry_at else idle_sec
                 if args0.verbose:
-                    print(f"[AUTO] idle: reason={last_idle_reason} sleep={idle_sec}s", flush=True)
+                    retry_hint = f" next_retry_at={next_retry_at}" if next_retry_at else ""
+                    print(f"[AUTO] idle: reason={last_idle_reason}{retry_hint} sleep={sleep_sec}s", flush=True)
                 # write last reason for status visibility (best-effort)
                 try:
                     auto_state["last_reason"] = last_idle_reason
                     auto_state["last_checked_at"] = _now_iso()
+                    if next_retry_at:
+                        auto_state["next_retry_at"] = next_retry_at
+                    else:
+                        auto_state.pop("next_retry_at", None)
                     _save_json(auto_state_path, auto_state)
                 except Exception:
                     pass
                 if args0.once:
                     return 0
-                time.sleep(idle_sec)
+                time.sleep(sleep_sec)
                 continue
 
         if args0.verbose:

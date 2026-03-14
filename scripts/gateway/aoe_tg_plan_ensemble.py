@@ -13,6 +13,12 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 from typing import Any, Callable, Dict, List, Optional
 
+from aoe_tg_provider_fallback import (
+    build_rate_limit_snapshot,
+    extract_retry_after_sec,
+    fallback_provider_for,
+    is_rate_limit_error,
+)
 from aoe_tg_schema import default_plan_critic_payload, normalize_plan_critic_payload, plan_critic_primary_issue
 
 
@@ -58,7 +64,7 @@ def _planner_prompt(
         f"- subtasks는 1~{max(1, int(max_subtasks))}개\n"
         "- 각 subtask는 겹치지 않는 산출물과 검증 기준을 가져야 한다\n"
         "- 실행팀이 병렬로 일할 수 있도록 독립 가능한 단위로 분해한다\n"
-        "- Reviewer/critic이 최종 검증할 수 있도록 acceptance를 구체적으로 쓴다\n"
+        "- Codex-Reviewer/critic이 최종 검증할 수 있도록 acceptance를 구체적으로 쓴다\n"
         "- 계획이 덜 완성됐으면 범위를 줄이고, ambiguity를 드러내라\n"
         f"{feedback}\n"
         f"사용자 요청:\n{user_prompt.strip()}\n"
@@ -150,6 +156,34 @@ def _run_parallel_calls(
     return [ordered[p] for p in providers if p in ordered]
 
 
+def _run_provider_with_rate_limit_fallback(
+    *,
+    provider: str,
+    run_provider_execs: Dict[str, Callable[[str, int], str]],
+    prompt: str,
+    timeout_sec: int,
+    phase: str,
+    round_no: int,
+    rounds: int,
+    report_progress: Optional[Callable[..., None]],
+) -> tuple[str, str, bool]:
+    try:
+        return run_provider_execs[provider](prompt, timeout_sec), provider, False
+    except Exception as exc:
+        detail = _trim_text(exc, 240)
+        fallback = fallback_provider_for(provider)
+        if fallback and fallback != provider and callable(run_provider_execs.get(fallback)) and is_rate_limit_error(detail):
+            if callable(report_progress):
+                report_progress(
+                    phase=phase,
+                    detail=f"phase1 round {round_no}/{rounds} provider={provider} rate_limited fallback={fallback}",
+                    attempt=round_no,
+                    total=rounds,
+                )
+            return run_provider_execs[fallback](prompt, timeout_sec), fallback, True
+        raise
+
+
 def run_phase1_ensemble_planning(
     *,
     args: Any,
@@ -161,7 +195,7 @@ def run_phase1_ensemble_planning(
     plan_roles_from_subtasks: Callable[[Optional[Dict[str, Any]]], List[str]],
     report_progress: Optional[Callable[..., None]] = None,
 ) -> Dict[str, Any]:
-    workers = [str(r).strip() for r in (available_roles or []) if str(r).strip()] or ["Reviewer"]
+    workers = [str(r).strip() for r in (available_roles or []) if str(r).strip()] or ["Codex-Reviewer"]
     providers_csv = str(getattr(args, "plan_phase1_providers", "codex,claude") or "codex,claude")
     preferred = []
     for token in providers_csv.split(","):
@@ -196,9 +230,13 @@ def run_phase1_ensemble_planning(
     best_roles: List[str] = []
     shared_feedback = ""
     plan_replans: List[Dict[str, Any]] = []
+    degraded_by: List[str] = []
+    retry_after_sec = 60
 
     for round_no in range(1, rounds + 1):
         def _run_planner_provider(provider: str) -> Dict[str, Any]:
+            executed_provider = provider
+            used_fallback = False
             if callable(report_progress):
                 report_progress(
                     phase="planner",
@@ -216,7 +254,16 @@ def run_phase1_ensemble_planning(
                 shared_feedback=shared_feedback,
             )
             try:
-                raw_plan = run_provider_execs[provider](planner_prompt, planner_timeout)
+                raw_plan, executed_provider, used_fallback = _run_provider_with_rate_limit_fallback(
+                    provider=provider,
+                    run_provider_execs=run_provider_execs,
+                    prompt=planner_prompt,
+                    timeout_sec=planner_timeout,
+                    phase="planner",
+                    round_no=round_no,
+                    rounds=rounds,
+                    report_progress=report_progress,
+                )
                 parsed_plan = parse_json_object_from_text(raw_plan)
                 plan = normalize_task_plan_payload(
                     parsed_plan,
@@ -227,6 +274,8 @@ def run_phase1_ensemble_planning(
             except Exception as exc:
                 return {
                     "provider": provider,
+                    "executed_provider": executed_provider,
+                    "rate_limit_fallback": used_fallback,
                     "plan": None,
                     "critic": {
                         "approved": False,
@@ -238,7 +287,10 @@ def run_phase1_ensemble_planning(
             issues: List[str] = []
             recommendations: List[str] = []
             approvals: List[bool] = []
+
             def _run_critic_provider(critic_provider: str) -> Dict[str, Any]:
+                executed_critic_provider = critic_provider
+                used_fallback = False
                 if callable(report_progress):
                     report_progress(
                         phase="critic",
@@ -255,9 +307,23 @@ def run_phase1_ensemble_planning(
                     total_rounds=rounds,
                 )
                 try:
-                    raw_critic = run_provider_execs[critic_provider](critic_prompt, critic_timeout)
+                    raw_critic, executed_critic_provider, used_fallback = _run_provider_with_rate_limit_fallback(
+                        provider=critic_provider,
+                        run_provider_execs=run_provider_execs,
+                        prompt=critic_prompt,
+                        timeout_sec=critic_timeout,
+                        phase="critic",
+                        round_no=round_no,
+                        rounds=rounds,
+                        report_progress=report_progress,
+                    )
                     parsed_critic = parse_json_object_from_text(raw_critic)
-                    return normalize_plan_critic_payload(parsed_critic, max_items=5)
+                    normalized = normalize_plan_critic_payload(parsed_critic, max_items=5)
+                    if used_fallback:
+                        normalized = dict(normalized)
+                        normalized["executed_provider"] = executed_critic_provider
+                        normalized["rate_limit_fallback"] = True
+                    return normalized
                 except Exception as exc:
                     return {
                         "approved": False,
@@ -278,14 +344,32 @@ def run_phase1_ensemble_planning(
             }
             return {
                 "provider": provider,
+                "executed_provider": executed_provider,
+                "rate_limit_fallback": used_fallback,
                 "plan": plan,
                 "critic": aggregate_critic,
             }
 
         round_candidates = _run_parallel_calls(providers, _run_planner_provider)
+        for row in round_candidates:
+            if bool(row.get("rate_limit_fallback")):
+                origin = str(row.get("provider", "")).strip().lower()
+                executed = str(row.get("executed_provider", "")).strip().lower()
+                token = f"{origin}_rate_limit->{executed}"
+                if origin and executed and token not in degraded_by:
+                    degraded_by.append(token)
 
         viable = [row for row in round_candidates if isinstance(row.get("plan"), dict)]
         if not viable:
+            limited: List[str] = []
+            for row in round_candidates:
+                critic = row.get("critic") if isinstance(row.get("critic"), dict) else {}
+                issues = [str(item).strip() for item in (critic.get("issues") or []) if str(item).strip()]
+                if issues and all(is_rate_limit_error(item) for item in issues):
+                    provider = str(row.get("provider", "")).strip().lower()
+                    if provider and provider not in limited:
+                        limited.append(provider)
+                    retry_after_sec = max(retry_after_sec, max(extract_retry_after_sec(item) for item in issues))
             return {
                 "plan_data": None,
                 "plan_critic": default_plan_critic_payload(),
@@ -293,10 +377,23 @@ def run_phase1_ensemble_planning(
                 "plan_replans": plan_replans,
                 "plan_error": f"phase1 round {round_no}: no valid planner output",
                 "plan_gate_blocked": True,
-                "plan_gate_reason": f"phase1 round {round_no}: no valid planner output",
+                "plan_gate_reason": (
+                    f"phase1 providers rate limited: {', '.join(limited)}"
+                    if limited
+                    else f"phase1 round {round_no}: no valid planner output"
+                ),
                 "phase1_rounds": round_no,
                 "phase1_mode": "ensemble",
                 "phase1_providers": providers,
+                "rate_limit": (
+                    build_rate_limit_snapshot(
+                        mode="blocked",
+                        limited_providers=limited,
+                        retry_after_sec=retry_after_sec,
+                    )
+                    if limited
+                    else {}
+                ),
             }
 
         scored = sorted(
@@ -332,4 +429,14 @@ def run_phase1_ensemble_planning(
         "phase1_rounds": rounds,
         "phase1_mode": "ensemble",
         "phase1_providers": providers,
+        "rate_limit": (
+            build_rate_limit_snapshot(
+                mode="degraded",
+                limited_providers=[token.split("_rate_limit->", 1)[0] for token in degraded_by],
+                degraded_by=degraded_by,
+                retry_after_sec=retry_after_sec,
+            )
+            if degraded_by
+            else {}
+        ),
     }

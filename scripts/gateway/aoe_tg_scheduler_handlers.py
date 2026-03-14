@@ -1974,6 +1974,7 @@ def handle_scheduler_command(
 
     key = str(candidate.get("project_key", "")).strip()
     todo = candidate.get("todo") if isinstance(candidate.get("todo"), dict) else {}
+    selection_kind = str(candidate.get("selection_kind", "")).strip().lower()
 
     # Resolve entry via get_context to ensure target exists and uses normalized key.
     key, entry, _p_args = get_context(key)
@@ -2008,7 +2009,7 @@ def handle_scheduler_command(
     if len(summary_preview) > 220:
         summary_preview = summary_preview[:217] + "..."
     lines = [
-        "next selected (global)",
+        "next resumed (global)" if selection_kind == "resume" else "next selected (global)",
         f"- orch: {key} ({alias})",
         f"- id: {todo_id}",
         f"- priority: {pr}",

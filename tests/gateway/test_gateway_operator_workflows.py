@@ -1451,7 +1451,7 @@ def test_enforce_dispatch_policies_verifier_gate_setup_adds_project_quick_action
         entry={"project_alias": "O2"},
         selected_roles=["Codex-Dev"],
         available_roles=["Codex-Dev"],
-        verifier_candidates=["Reviewer"],
+        verifier_candidates=["Codex-Reviewer"],
         plan_gate_blocked=False,
         plan_gate_reason="",
         plan_replans=[],
@@ -1484,12 +1484,12 @@ def test_enforce_dispatch_policies_planning_gate_adds_project_quick_actions() ->
         key="twinpaper",
         entry={"project_alias": "O2"},
         selected_roles=["Codex-Dev"],
-        available_roles=["Codex-Dev", "Reviewer"],
-        verifier_candidates=["Reviewer"],
+        available_roles=["Codex-Dev", "Codex-Reviewer"],
+        verifier_candidates=["Codex-Reviewer"],
         plan_gate_blocked=True,
         plan_gate_reason="critic unresolved after auto-replan",
         plan_replans=[{"attempt": 1}],
-        ensure_verifier_roles=lambda **kwargs: (["Codex-Dev"], ["Reviewer"], False, ["Reviewer"]),
+        ensure_verifier_roles=lambda **kwargs: (["Codex-Dev"], ["Codex-Reviewer"], False, ["Codex-Reviewer"]),
         dispatch_roles="Codex-Dev",
         send=lambda body, **kwargs: sent.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
     )
@@ -1532,9 +1532,9 @@ def test_run_guards_module_matches_run_guard_exports() -> None:
         key="twinpaper",
         dispatch_mode=True,
         prompt="implement feature",
-        dispatch_roles="Reviewer",
+        dispatch_roles="Codex-Reviewer",
         require_verifier=True,
-        verifier_roles=["Reviewer"],
+        verifier_roles=["Codex-Reviewer"],
         verifier_added=False,
         run_control_mode="retry",
         run_source_request_id="REQ-1",
@@ -1552,9 +1552,9 @@ def test_run_guards_module_matches_run_guard_exports() -> None:
         key="twinpaper",
         dispatch_mode=True,
         prompt="implement feature",
-        dispatch_roles="Reviewer",
+        dispatch_roles="Codex-Reviewer",
         require_verifier=True,
-        verifier_roles=["Reviewer"],
+        verifier_roles=["Codex-Reviewer"],
         verifier_added=False,
         run_control_mode="retry",
         run_source_request_id="REQ-1",
@@ -1617,12 +1617,12 @@ def test_run_guards_module_matches_run_guard_exports() -> None:
         key="twinpaper",
         entry={"project_alias": "O2"},
         selected_roles=["Codex-Dev"],
-        available_roles=["Codex-Dev", "Reviewer"],
-        verifier_candidates=["Reviewer"],
+        available_roles=["Codex-Dev", "Codex-Reviewer"],
+        verifier_candidates=["Codex-Reviewer"],
         plan_gate_blocked=True,
         plan_gate_reason="critic unresolved after auto-replan",
         plan_replans=[{"attempt": 1}],
-        ensure_verifier_roles=lambda **kwargs: (["Codex-Dev"], ["Reviewer"], False, ["Reviewer"]),
+        ensure_verifier_roles=lambda **kwargs: (["Codex-Dev"], ["Codex-Reviewer"], False, ["Codex-Reviewer"]),
         dispatch_roles="Codex-Dev",
         send=lambda body, **kwargs: policy_sent_run.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
     )
@@ -1632,12 +1632,12 @@ def test_run_guards_module_matches_run_guard_exports() -> None:
         key="twinpaper",
         entry={"project_alias": "O2"},
         selected_roles=["Codex-Dev"],
-        available_roles=["Codex-Dev", "Reviewer"],
-        verifier_candidates=["Reviewer"],
+        available_roles=["Codex-Dev", "Codex-Reviewer"],
+        verifier_candidates=["Codex-Reviewer"],
         plan_gate_blocked=True,
         plan_gate_reason="critic unresolved after auto-replan",
         plan_replans=[{"attempt": 1}],
-        ensure_verifier_roles=lambda **kwargs: (["Codex-Dev"], ["Reviewer"], False, ["Reviewer"]),
+        ensure_verifier_roles=lambda **kwargs: (["Codex-Dev"], ["Codex-Reviewer"], False, ["Codex-Reviewer"]),
         dispatch_roles="Codex-Dev",
         send=lambda body, **kwargs: policy_sent_mod.append((kwargs.get("context", ""), body, kwargs.get("reply_markup"))) or True,
     )
@@ -1729,7 +1729,7 @@ def test_send_dispatch_result_adds_project_quick_actions_for_confirmed_synth() -
         entry={"project_alias": "O2"},
         p_args=argparse.Namespace(),
         prompt="dangerous but approved",
-        state={"complete": True, "replies": [{"role": "Reviewer", "text": "ok"}]},
+        state={"complete": True, "replies": [{"role": "Codex-Reviewer", "text": "ok"}]},
         req_id="REQ-1",
         task=None,
         run_control_mode="normal",
@@ -1902,7 +1902,7 @@ def test_exec_results_module_matches_run_response_exports() -> None:
         entry=entry,
         p_args=argparse.Namespace(),
         prompt="dangerous but approved",
-        state={"complete": True, "replies": [{"role": "Reviewer", "text": "ok"}]},
+        state={"complete": True, "replies": [{"role": "Codex-Reviewer", "text": "ok"}]},
         req_id="REQ-1",
         task=None,
         run_control_mode="normal",
@@ -2135,7 +2135,7 @@ def test_handle_run_or_unknown_command_materializes_provisional_task_before_plan
         planning=run_handlers.RunPlanningDeps(
             choose_auto_dispatch_roles=lambda *args, **kwargs: ["Codex-Dev"],
             resolve_verifier_candidates=lambda text: [],
-            load_orchestrator_roles=lambda team_dir: ["Codex-Dev", "Reviewer"],
+            load_orchestrator_roles=lambda team_dir: ["Codex-Dev", "Codex-Reviewer"],
             parse_roles_csv=lambda csv: [token for token in str(csv or "").split(",") if token],
             ensure_verifier_roles=lambda **kwargs: (kwargs.get("selected_roles", []), [], False, []),
             available_worker_roles=lambda roles: roles,
@@ -2479,7 +2479,7 @@ def test_handle_run_or_unknown_command_no_wait_detaches_after_provisional_task(
         planning=run_handlers.RunPlanningDeps(
             choose_auto_dispatch_roles=lambda *args, **kwargs: ["Codex-Dev"],
             resolve_verifier_candidates=lambda text: [],
-            load_orchestrator_roles=lambda team_dir: ["Codex-Dev", "Reviewer"],
+            load_orchestrator_roles=lambda team_dir: ["Codex-Dev", "Codex-Reviewer"],
             parse_roles_csv=lambda csv: [token for token in str(csv or "").split(",") if token],
             ensure_verifier_roles=lambda **kwargs: (kwargs.get("selected_roles", []), [], False, []),
             available_worker_roles=lambda roles: roles,
@@ -2574,12 +2574,12 @@ def test_filter_phase2_retry_scope_limits_plan_to_target_lanes() -> None:
                 ],
                 "review_mode": "parallel",
                 "review_groups": [
-                    {"group_id": "R1", "role": "Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": True},
-                    {"group_id": "R2", "role": "Reviewer", "kind": "verifier", "depends_on": ["L2"], "parallel": True},
+                    {"group_id": "R1", "role": "Codex-Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": True},
+                    {"group_id": "R2", "role": "Codex-Reviewer", "kind": "verifier", "depends_on": ["L2"], "parallel": True},
                 ],
-                "team_roles": ["Codex-Dev", "Codex-Writer", "Reviewer"],
-                "critic_role": "Reviewer",
-                "integration_role": "Reviewer",
+                "team_roles": ["Codex-Dev", "Codex-Writer", "Codex-Reviewer"],
+                "critic_role": "Codex-Reviewer",
+                "integration_role": "Codex-Reviewer",
             },
             "phase2_execution_plan": {
                 "execution_mode": "parallel",
@@ -2589,8 +2589,8 @@ def test_filter_phase2_retry_scope_limits_plan_to_target_lanes() -> None:
                 ],
                 "review_mode": "parallel",
                 "review_lanes": [
-                    {"lane_id": "R1", "role": "Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": True},
-                    {"lane_id": "R2", "role": "Reviewer", "kind": "verifier", "depends_on": ["L2"], "parallel": True},
+                    {"lane_id": "R1", "role": "Codex-Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": True},
+                    {"lane_id": "R2", "role": "Codex-Reviewer", "kind": "verifier", "depends_on": ["L2"], "parallel": True},
                 ],
                 "parallel_workers": True,
                 "parallel_reviews": True,
@@ -2617,7 +2617,7 @@ def test_filter_phase2_retry_scope_limits_plan_to_target_lanes() -> None:
     assert [row["lane_id"] for row in exec_plan["execution_lanes"]] == ["L2"]
     assert [row["lane_id"] for row in exec_plan["review_lanes"]] == ["R2"]
     assert [row["id"] for row in filtered["subtasks"]] == ["S2"]
-    assert scope["planned_roles"] == ["Codex-Writer", "Reviewer"]
+    assert scope["planned_roles"] == ["Codex-Writer", "Codex-Reviewer"]
 
 
 def test_filter_phase2_retry_scope_honors_operator_selected_lane_subset() -> None:
@@ -2636,12 +2636,12 @@ def test_filter_phase2_retry_scope_honors_operator_selected_lane_subset() -> Non
                 ],
                 "review_mode": "parallel",
                 "review_groups": [
-                    {"group_id": "R1", "role": "Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": True},
-                    {"group_id": "R2", "role": "Reviewer", "kind": "verifier", "depends_on": ["L2"], "parallel": True},
+                    {"group_id": "R1", "role": "Codex-Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": True},
+                    {"group_id": "R2", "role": "Codex-Reviewer", "kind": "verifier", "depends_on": ["L2"], "parallel": True},
                 ],
-                "team_roles": ["Codex-Dev", "Codex-Writer", "Reviewer"],
-                "critic_role": "Reviewer",
-                "integration_role": "Reviewer",
+                "team_roles": ["Codex-Dev", "Codex-Writer", "Codex-Reviewer"],
+                "critic_role": "Codex-Reviewer",
+                "integration_role": "Codex-Reviewer",
             },
             "phase2_execution_plan": {
                 "execution_mode": "parallel",
@@ -2651,8 +2651,8 @@ def test_filter_phase2_retry_scope_honors_operator_selected_lane_subset() -> Non
                 ],
                 "review_mode": "parallel",
                 "review_lanes": [
-                    {"lane_id": "R1", "role": "Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": True},
-                    {"lane_id": "R2", "role": "Reviewer", "kind": "verifier", "depends_on": ["L2"], "parallel": True},
+                    {"lane_id": "R1", "role": "Codex-Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": True},
+                    {"lane_id": "R2", "role": "Codex-Reviewer", "kind": "verifier", "depends_on": ["L2"], "parallel": True},
                 ],
                 "parallel_workers": True,
                 "parallel_reviews": True,
@@ -2711,15 +2711,15 @@ def test_handle_run_or_unknown_command_retry_filters_phase2_dispatch_to_target_l
         return {
             "request_id": req_id,
             "complete": True,
-            "roles": ["Codex-Dev", "Codex-Writer", "Reviewer"],
+            "roles": ["Codex-Dev", "Codex-Writer", "Codex-Reviewer"],
             "role_states": [
                 {"role": "Codex-Dev", "status": "done"},
                 {"role": "Codex-Writer", "status": "done"},
-                {"role": "Reviewer", "status": "done"},
+                {"role": "Codex-Reviewer", "status": "done"},
             ],
-            "replies": [{"role": "Reviewer", "text": "done"}],
+            "replies": [{"role": "Codex-Reviewer", "text": "done"}],
             "counts": {"assignments": 1, "replies": 1},
-            "done_roles": ["Codex-Dev", "Codex-Writer", "Reviewer"],
+            "done_roles": ["Codex-Dev", "Codex-Writer", "Codex-Reviewer"],
             "failed_roles": [],
             "pending_roles": [],
         }
@@ -2751,12 +2751,12 @@ def test_handle_run_or_unknown_command_retry_filters_phase2_dispatch_to_target_l
                 ],
                 "review_mode": "parallel",
                 "review_groups": [
-                    {"group_id": "R1", "role": "Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": True},
-                    {"group_id": "R2", "role": "Reviewer", "kind": "verifier", "depends_on": ["L2"], "parallel": True},
+                    {"group_id": "R1", "role": "Codex-Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": True},
+                    {"group_id": "R2", "role": "Codex-Reviewer", "kind": "verifier", "depends_on": ["L2"], "parallel": True},
                 ],
-                "team_roles": ["Codex-Dev", "Codex-Writer", "Reviewer"],
-                "critic_role": "Reviewer",
-                "integration_role": "Reviewer",
+                "team_roles": ["Codex-Dev", "Codex-Writer", "Codex-Reviewer"],
+                "critic_role": "Codex-Reviewer",
+                "integration_role": "Codex-Reviewer",
             },
             "phase2_execution_plan": {
                 "execution_mode": "parallel",
@@ -2766,8 +2766,8 @@ def test_handle_run_or_unknown_command_retry_filters_phase2_dispatch_to_target_l
                 ],
                 "review_mode": "parallel",
                 "review_lanes": [
-                    {"lane_id": "R1", "role": "Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": True},
-                    {"lane_id": "R2", "role": "Reviewer", "kind": "verifier", "depends_on": ["L2"], "parallel": True},
+                    {"lane_id": "R1", "role": "Codex-Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": True},
+                    {"lane_id": "R2", "role": "Codex-Reviewer", "kind": "verifier", "depends_on": ["L2"], "parallel": True},
                 ],
                 "parallel_workers": True,
                 "parallel_reviews": True,
@@ -2825,9 +2825,9 @@ def test_handle_run_or_unknown_command_retry_filters_phase2_dispatch_to_target_l
             save_manager_state=lambda *args, **kwargs: None,
         ),
         planning=run_handlers.RunPlanningDeps(
-            choose_auto_dispatch_roles=lambda *args, **kwargs: ["Codex-Dev", "Codex-Writer", "Reviewer"],
+            choose_auto_dispatch_roles=lambda *args, **kwargs: ["Codex-Dev", "Codex-Writer", "Codex-Reviewer"],
             resolve_verifier_candidates=lambda text: [],
-            load_orchestrator_roles=lambda team_dir: ["Codex-Dev", "Codex-Writer", "Reviewer"],
+            load_orchestrator_roles=lambda team_dir: ["Codex-Dev", "Codex-Writer", "Codex-Reviewer"],
             parse_roles_csv=lambda csv: [token for token in str(csv or "").split(",") if token],
             ensure_verifier_roles=lambda **kwargs: (kwargs.get("selected_roles", []), [], False, []),
             available_worker_roles=lambda roles: roles,
@@ -2836,12 +2836,12 @@ def test_handle_run_or_unknown_command_retry_filters_phase2_dispatch_to_target_l
             critique_task_execution_plan=lambda **kwargs: {"approved": True, "issues": [], "recommendations": []},
             critic_has_blockers=lambda critic: False,
             repair_task_execution_plan=lambda **kwargs: {},
-            plan_roles_from_subtasks=lambda payload: ["Codex-Dev", "Codex-Writer", "Reviewer"],
+            plan_roles_from_subtasks=lambda payload: ["Codex-Dev", "Codex-Writer", "Codex-Reviewer"],
             build_planned_dispatch_prompt=lambda prompt, plan_data, plan_critic: prompt,
             phase1_ensemble_planning=lambda *args, **kwargs: {
                 "plan_data": copy.deepcopy(plan_payload),
                 "plan_critic": {"approved": True, "issues": [], "recommendations": []},
-                "plan_roles": ["Codex-Dev", "Codex-Writer", "Reviewer"],
+                "plan_roles": ["Codex-Dev", "Codex-Writer", "Codex-Reviewer"],
                 "plan_replans": [{"attempt": 1}, {"attempt": 2}, {"attempt": 3}],
                 "plan_error": "",
                 "plan_gate_blocked": False,
@@ -2858,7 +2858,7 @@ def test_handle_run_or_unknown_command_retry_filters_phase2_dispatch_to_target_l
                 argparse.Namespace(
                     project_root=project_root,
                     team_dir=team_dir,
-                    roles="Codex-Dev,Codex-Writer,Reviewer",
+                    roles="Codex-Dev,Codex-Writer,Codex-Reviewer",
                     priority="P2",
                     orch_timeout_sec=120,
                     no_wait=False,
@@ -2949,6 +2949,74 @@ def test_todo_next_blocks_unready_project(tmp_path: Path) -> None:
     assert sent
     assert "todo next blocked: project runtime is not ready" in sent[-1]
     assert "/orch status O2" in sent[-1]
+
+
+def test_todo_next_resumes_rate_limited_todo_after_retry_at(tmp_path: Path) -> None:
+    team_dir = tmp_path / "TwinPaper" / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (team_dir / "orchestrator.json").write_text("{}", encoding="utf-8")
+    manager_state = {
+        "projects": {
+            "twinpaper": {
+                "name": "twinpaper",
+                "display_name": "TwinPaper",
+                "project_alias": "O2",
+                "project_root": str(tmp_path / "TwinPaper"),
+                "team_dir": str(team_dir),
+                "todos": [
+                    {
+                        "id": "TODO-001",
+                        "summary": "resume me",
+                        "priority": "P1",
+                        "status": "running",
+                        "updated_at": "2026-03-14T00:00:00+0900",
+                    },
+                    {
+                        "id": "TODO-002",
+                        "summary": "leave later",
+                        "priority": "P2",
+                        "status": "open",
+                    },
+                ],
+                "tasks": {
+                    "r1": {
+                        "request_id": "r1",
+                        "todo_id": "TODO-001",
+                        "status": "running",
+                        "tf_phase": "rate_limited",
+                        "rate_limit": {
+                            "mode": "blocked",
+                            "limited_providers": ["codex", "claude"],
+                            "retry_after_sec": 180,
+                            "retry_at": "2000-01-01T00:00:00+00:00",
+                        },
+                    }
+                },
+                "todo_seq": 2,
+            }
+        }
+    }
+    sent: list[str] = []
+
+    result = todo_handlers.handle_todo_command(
+        cmd="todo",
+        args=argparse.Namespace(dry_run=False, manager_state_file=tmp_path / "state.json"),
+        manager_state=manager_state,
+        chat_id="939062873",
+        chat_role="admin",
+        orch_target="twinpaper",
+        rest="next",
+        send=lambda body, **kwargs: sent.append(body) or True,
+        get_context=lambda target: ("twinpaper", manager_state["projects"]["twinpaper"], argparse.Namespace(project_root=tmp_path / "TwinPaper", team_dir=team_dir)),
+        save_manager_state=lambda *args, **kwargs: None,
+        now_iso=lambda: "2026-03-14T01:00:00+0900",
+    )
+
+    assert result["terminal"] is False
+    assert result["run_prompt"] == "resume me"
+    assert manager_state["projects"]["twinpaper"]["pending_todo"]["todo_id"] == "TODO-001"
+    assert sent
+    assert "todo next resumed" in sent[-1]
 
 
 def test_todo_with_explicit_other_project_under_focus_returns_operator_message(tmp_path: Path) -> None:
@@ -3334,7 +3402,7 @@ def test_exec_pipeline_module_matches_run_dispatch_sync_and_proposal_capture() -
         p_args=argparse.Namespace(),
         dispatch_prompt="dispatch prompt",
         chat_id="939062873",
-        dispatch_roles="Reviewer",
+        dispatch_roles="Codex-Reviewer",
         run_priority_override=None,
         run_timeout_override=None,
         run_no_wait_override=None,
@@ -3343,7 +3411,7 @@ def test_exec_pipeline_module_matches_run_dispatch_sync_and_proposal_capture() -
         entry=entry_a,
         manager_state=manager_state_a,
         prompt="original prompt",
-        selected_roles=["Reviewer"],
+        selected_roles=["Codex-Reviewer"],
         verifier_roles=[],
         require_verifier=False,
         verifier_candidates=[],
@@ -3357,7 +3425,7 @@ def test_exec_pipeline_module_matches_run_dispatch_sync_and_proposal_capture() -
         p_args=argparse.Namespace(),
         dispatch_prompt="dispatch prompt",
         chat_id="939062873",
-        dispatch_roles="Reviewer",
+        dispatch_roles="Codex-Reviewer",
         run_priority_override=None,
         run_timeout_override=None,
         run_no_wait_override=None,
@@ -3366,7 +3434,7 @@ def test_exec_pipeline_module_matches_run_dispatch_sync_and_proposal_capture() -
         entry=entry_b,
         manager_state=manager_state_b,
         prompt="original prompt",
-        selected_roles=["Reviewer"],
+        selected_roles=["Codex-Reviewer"],
         verifier_roles=[],
         require_verifier=False,
         verifier_candidates=[],
@@ -3765,7 +3833,7 @@ def test_resolve_retry_replan_transition_rejects_invalid_lane_selector() -> None
             "REQ-123": {
                 "request_id": "REQ-123",
                 "prompt": "retry target",
-                "roles": ["Codex-Dev", "Reviewer"],
+                "roles": ["Codex-Dev", "Codex-Reviewer"],
                 "exec_critic": {
                     "verdict": "retry",
                     "action": "retry",
@@ -3817,7 +3885,7 @@ def test_resolve_retry_replan_transition_preserves_selected_lane_targets() -> No
             "REQ-123": {
                 "request_id": "REQ-123",
                 "prompt": "retry target",
-                "roles": ["Codex-Dev", "Reviewer"],
+                "roles": ["Codex-Dev", "Codex-Reviewer"],
                 "exec_critic": {
                     "verdict": "retry",
                     "action": "retry",

@@ -270,7 +270,7 @@ def test_compute_dispatch_plan_reports_progress_sequence() -> None:
         run_control_mode="normal",
         run_source_task=None,
         selected_roles=[],
-        available_roles=["DataEngineer", "Reviewer"],
+        available_roles=["DataEngineer", "Codex-Reviewer"],
         available_worker_roles=lambda roles: roles,
         normalize_task_plan_payload=lambda parsed, **_kwargs: parsed,
         build_task_execution_plan=_build,
@@ -293,8 +293,8 @@ def test_plan_pipeline_module_matches_run_planning_exports() -> None:
 
     def _choose_roles(user_prompt: str, **_kwargs):
         if "analyze" in user_prompt.lower():
-            return ["Analyst", "Reviewer"]
-        return ["Reviewer"]
+            return ["Analyst", "Codex-Reviewer"]
+        return ["Codex-Reviewer"]
 
     run_mode = run_handlers._resolve_dispatch_mode_and_roles(
         run_force_mode=None,
@@ -303,7 +303,7 @@ def test_plan_pipeline_module_matches_run_planning_exports() -> None:
         auto_dispatch_enabled=True,
         prompt="analyze this change",
         choose_auto_dispatch_roles=_choose_roles,
-        available_roles=["Analyst", "Reviewer"],
+        available_roles=["Analyst", "Codex-Reviewer"],
         team_dir=ROOT,
     )
     module_mode = plan_pipeline.resolve_dispatch_mode_and_roles(
@@ -313,7 +313,7 @@ def test_plan_pipeline_module_matches_run_planning_exports() -> None:
         auto_dispatch_enabled=True,
         prompt="analyze this change",
         choose_auto_dispatch_roles=_choose_roles,
-        available_roles=["Analyst", "Reviewer"],
+        available_roles=["Analyst", "Codex-Reviewer"],
         team_dir=ROOT,
     )
     assert run_mode == module_mode
@@ -389,7 +389,7 @@ def test_plan_pipeline_module_matches_run_compute_and_lineage_helpers() -> None:
         run_control_mode="normal",
         run_source_task=None,
         selected_roles=[],
-        available_roles=["DataEngineer", "Reviewer"],
+        available_roles=["DataEngineer", "Codex-Reviewer"],
         available_worker_roles=lambda roles: roles,
         normalize_task_plan_payload=lambda parsed, **_kwargs: parsed,
         build_task_execution_plan=_build,
@@ -409,7 +409,7 @@ def test_plan_pipeline_module_matches_run_compute_and_lineage_helpers() -> None:
         run_control_mode="normal",
         run_source_task=None,
         selected_roles=[],
-        available_roles=["DataEngineer", "Reviewer"],
+        available_roles=["DataEngineer", "Codex-Reviewer"],
         available_worker_roles=lambda roles: roles,
         normalize_task_plan_payload=lambda parsed, **_kwargs: parsed,
         build_task_execution_plan=_build,
@@ -662,7 +662,7 @@ def test_orch_responses_module_matches_gateway_wrappers() -> None:
         return "ok"
 
     args = argparse.Namespace(orch_command_timeout_sec=120)
-    state = {"replies": [{"role": "Reviewer", "body": "need one more validation step"}]}
+    state = {"replies": [{"role": "Codex-Reviewer", "body": "need one more validation step"}]}
     task = {"todo_id": "TODO-001", "plan": {"summary": "release prep", "subtasks": [{"title": "draft"}]}}
 
     original = gw.run_codex_exec
@@ -784,7 +784,7 @@ def test_sync_task_lifecycle_attaches_exec_context_and_updates_tf_exec_map(tmp_p
     }
     request_data = {
         "request_id": req_id,
-        "role_states": [{"role": "Reviewer", "status": "done"}],
+        "role_states": [{"role": "Codex-Reviewer", "status": "done"}],
         "counts": {"assignments": 1, "replies": 1},
         "complete": True,
     }
@@ -794,10 +794,10 @@ def test_sync_task_lifecycle_attaches_exec_context_and_updates_tf_exec_map(tmp_p
         request_data=request_data,
         prompt="Validate output",
         mode="dispatch",
-        selected_roles=["Reviewer"],
+        selected_roles=["Codex-Reviewer"],
         verifier_roles=[],
         require_verifier=False,
-        verifier_candidates=["Reviewer"],
+        verifier_candidates=["Codex-Reviewer"],
     )
     assert isinstance(task, dict)
 
@@ -893,7 +893,7 @@ def test_sanitize_task_record_normalizes_nested_schema_fields() -> None:
             "prompt": "do work",
             "plan": {
                 "summary": " messy ",
-                "subtasks": [{"goal": "collect data", "role": "Reviewer"}],
+                "subtasks": [{"goal": "collect data", "role": "Codex-Reviewer"}],
             },
             "plan_critic": {"approved": False, "issues": ["  missing acceptance  "], "recommendations": [" add checks "]},
             "plan_replans": [{"attempt": "2", "critic": "bad", "subtasks": "3"}],
@@ -904,7 +904,7 @@ def test_sanitize_task_record_normalizes_nested_schema_fields() -> None:
     )
 
     assert task["plan"]["summary"] == "messy"
-    assert task["plan"]["subtasks"][0]["owner_role"] == "Reviewer"
+    assert task["plan"]["subtasks"][0]["owner_role"] == "Codex-Reviewer"
     assert task["plan_critic"]["issues"] == ["missing acceptance"]
     assert task["plan_replans"] == [{"attempt": 2, "critic": "unknown", "subtasks": 3}]
     assert task["plan_gate_reason"] == "missing acceptance"
@@ -925,7 +925,7 @@ def test_plan_critic_primary_issue_and_lifecycle_summary_use_schema_reason() -> 
             "status": "failed",
             "mode": "dispatch",
             "roles": ["Codex-Dev"],
-            "verifier_roles": ["Reviewer"],
+            "verifier_roles": ["Codex-Reviewer"],
             "stages": {"planning": "failed"},
             "plan": {
                 "summary": "demo plan",
@@ -938,11 +938,11 @@ def test_plan_critic_primary_issue_and_lifecycle_summary_use_schema_reason() -> 
                         ],
                         "review_mode": "single",
                         "review_groups": [
-                            {"group_id": "R1", "role": "Reviewer", "kind": "verifier", "scope": "phase2_outputs", "depends_on": ["E1"]}
+                            {"group_id": "R1", "role": "Codex-Reviewer", "kind": "verifier", "scope": "phase2_outputs", "depends_on": ["E1"]}
                         ],
-                        "team_roles": ["Codex-Dev", "Reviewer"],
-                        "critic_role": "Reviewer",
-                        "integration_role": "Reviewer",
+                        "team_roles": ["Codex-Dev", "Codex-Reviewer"],
+                        "critic_role": "Codex-Reviewer",
+                        "integration_role": "Codex-Reviewer",
                     },
                     "phase2_execution_plan": {
                         "execution_mode": "single",
@@ -951,7 +951,7 @@ def test_plan_critic_primary_issue_and_lifecycle_summary_use_schema_reason() -> 
                         ],
                         "review_mode": "single",
                         "review_lanes": [
-                            {"lane_id": "R1", "role": "Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": False}
+                            {"lane_id": "R1", "role": "Codex-Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": False}
                         ],
                         "parallel_workers": False,
                         "parallel_reviews": False,
@@ -981,7 +981,7 @@ def test_plan_critic_primary_issue_and_lifecycle_summary_use_schema_reason() -> 
     assert "phase2_exec_plan: single workers_parallel=no reviews_parallel=no readonly=yes" in summary
     assert "- exec L1 [Codex-Dev/serial]" in summary
     assert "-> S1" in summary
-    assert "- critic R1 [Reviewer/verifier/serial]" in summary
+    assert "- critic R1 [Codex-Reviewer/verifier/serial]" in summary
     assert "after L1" in summary
     assert "exec_critic: retry (action=replan)" in summary
     assert "exec_attempts: 2/3" in summary
@@ -1004,7 +1004,7 @@ def test_task_lifecycle_summary_includes_phase1_planning_metadata() -> None:
             "phase1_mode": "ensemble",
             "phase1_rounds": 3,
             "phase1_providers": ["codex", "claude"],
-            "phase1_candidate_roles": ["Codex-Analyst", "Claude-Analyst", "Reviewer"],
+            "phase1_candidate_roles": ["Codex-Analyst", "Claude-Analyst", "Codex-Reviewer"],
             "phase1_current_phase": "planner",
             "phase1_current_round": 1,
             "phase1_current_total_rounds": 3,
@@ -1015,7 +1015,7 @@ def test_task_lifecycle_summary_includes_phase1_planning_metadata() -> None:
 
     assert "phase1: ensemble rounds=3 providers=codex, claude" in summary
     assert "phase1_progress: planner 1/3 provider=codex" in summary
-    assert "phase1_candidate_roles: Codex-Analyst, Claude-Analyst, Reviewer" in summary
+    assert "phase1_candidate_roles: Codex-Analyst, Claude-Analyst, Codex-Reviewer" in summary
 
 
 def test_blocked_state_helpers_clear_and_promote_manual_followup() -> None:
@@ -1119,7 +1119,7 @@ def test_apply_exec_critic_lifecycle_overlays_review_lane_verdicts() -> None:
         "plan": {"meta": {}},
         "lane_states": {
             "execution": [{"lane_id": "L1", "role": "Codex-Dev", "status": "done"}],
-            "review": [{"lane_id": "R1", "role": "Reviewer", "kind": "verifier", "status": "done", "depends_on": ["L1"]}],
+            "review": [{"lane_id": "R1", "role": "Codex-Reviewer", "kind": "verifier", "status": "done", "depends_on": ["L1"]}],
             "summary": {
                 "execution": {"done": 1},
                 "review": {"done": 1},
@@ -1143,7 +1143,7 @@ def test_apply_exec_critic_lifecycle_overlays_review_lane_verdicts() -> None:
     assert task["exec_critic"]["rerun_review_lane_ids"] == ["R1"]
     summary = gw.summarize_task_lifecycle("Demo", task)
     assert "phase2_lane_state: exec done=1 | review done=1 | review_verdict retry=1" in summary
-    assert "- critic R1 [Reviewer/verifier/serial] [done] -> retry/replan after L1" in summary
+    assert "- critic R1 [Codex-Reviewer/verifier/serial] [done] -> retry/replan after L1" in summary
     assert "exec_rerun_targets: execution=L1 review=R1" in summary
 
 
@@ -1165,7 +1165,7 @@ def test_apply_exec_critic_lifecycle_marks_manual_followup_lane_targets() -> Non
                 {"lane_id": "L1", "role": "Codex-Dev", "status": "done"},
                 {"lane_id": "L2", "role": "Codex-Writer", "status": "done"},
             ],
-            "review": [{"lane_id": "R1", "role": "Reviewer", "kind": "verifier", "status": "done", "depends_on": ["L1", "L2"]}],
+            "review": [{"lane_id": "R1", "role": "Codex-Reviewer", "kind": "verifier", "status": "done", "depends_on": ["L1", "L2"]}],
             "summary": {
                 "execution": {"done": 2},
                 "review": {"done": 1},
@@ -1207,8 +1207,8 @@ def test_task_view_module_matches_gateway_lifecycle_summary() -> None:
         "alias": "demo-task",
         "status": "running",
         "mode": "dispatch",
-        "roles": ["Codex-Dev", "Reviewer"],
-        "verifier_roles": ["Reviewer"],
+        "roles": ["Codex-Dev", "Codex-Reviewer"],
+        "verifier_roles": ["Codex-Reviewer"],
         "stages": {"planning": "done", "execution": "running"},
         "context": {
             "project_key": "demo_proj",
@@ -1239,14 +1239,14 @@ def test_task_state_module_matches_gateway_alias_and_monitor_helpers() -> None:
                 "prompt": "collect data and write memo",
                 "status": "running",
                 "stage": "execution",
-                "roles": ["Codex-Dev", "Reviewer"],
+                "roles": ["Codex-Dev", "Codex-Reviewer"],
                 "plan": {
                     "meta": {
                         "phase2_execution_plan": {
                             "execution_mode": "single",
                             "execution_lanes": [{"lane_id": "L1", "role": "Codex-Dev"}],
                             "review_mode": "single",
-                            "review_lanes": [{"lane_id": "R1", "role": "Reviewer"}],
+                            "review_lanes": [{"lane_id": "R1", "role": "Codex-Reviewer"}],
                         }
                     }
                 },
@@ -1322,7 +1322,7 @@ def test_task_state_snapshot_and_sync_match_gateway() -> None:
         "request_id": "REQ-301",
         "role_states": [
             {"role": "Codex-Dev", "status": "done"},
-            {"role": "Reviewer", "status": "pending"},
+            {"role": "Codex-Reviewer", "status": "pending"},
         ],
         "counts": {"assignments": 2, "replies": 1},
         "complete": False,
@@ -1339,20 +1339,20 @@ def test_task_state_snapshot_and_sync_match_gateway() -> None:
         request_data=request_data,
         prompt="Validate output",
         mode="dispatch",
-        selected_roles=["Codex-Dev", "Reviewer"],
-        verifier_roles=["Reviewer"],
+        selected_roles=["Codex-Dev", "Codex-Reviewer"],
+        verifier_roles=["Codex-Reviewer"],
         require_verifier=True,
-        verifier_candidates=["Reviewer"],
+        verifier_candidates=["Codex-Reviewer"],
     )
     task_b = task_state.sync_task_lifecycle(
         entry_b,
         request_data,
         prompt="Validate output",
         mode="dispatch",
-        selected_roles=["Codex-Dev", "Reviewer"],
-        verifier_roles=["Reviewer"],
+        selected_roles=["Codex-Dev", "Codex-Reviewer"],
+        verifier_roles=["Codex-Reviewer"],
         require_verifier=True,
-        verifier_candidates=["Reviewer"],
+        verifier_candidates=["Codex-Reviewer"],
         dedupe_roles=gw.dedupe_roles,
         ensure_task_record=gw.ensure_task_record,
         lifecycle_set_stage=gw.lifecycle_set_stage,
@@ -1372,11 +1372,11 @@ def test_task_state_snapshot_and_sync_match_gateway() -> None:
 def test_task_state_sync_records_role_mismatch_and_task_summary_surfaces_it() -> None:
     request_data = {
         "request_id": "REQ-ROLE-1",
-        "requested_roles": ["Codex-Writer", "Reviewer"],
-        "executed_roles": ["Codex-Analyst", "Reviewer"],
+        "requested_roles": ["Codex-Writer", "Codex-Reviewer"],
+        "executed_roles": ["Codex-Analyst", "Codex-Reviewer"],
         "role_states": [
             {"role": "Codex-Analyst", "status": "done"},
-            {"role": "Reviewer", "status": "done"},
+            {"role": "Codex-Reviewer", "status": "done"},
         ],
         "counts": {"assignments": 2, "replies": 2},
         "complete": True,
@@ -1388,10 +1388,10 @@ def test_task_state_sync_records_role_mismatch_and_task_summary_surfaces_it() ->
         request_data,
         prompt="Write the handoff note",
         mode="dispatch",
-        selected_roles=["Codex-Writer", "Reviewer"],
-        verifier_roles=["Reviewer"],
+        selected_roles=["Codex-Writer", "Codex-Reviewer"],
+        verifier_roles=["Codex-Reviewer"],
         require_verifier=True,
-        verifier_candidates=["Reviewer"],
+        verifier_candidates=["Codex-Reviewer"],
         dedupe_roles=gw.dedupe_roles,
         ensure_task_record=gw.ensure_task_record,
         lifecycle_set_stage=gw.lifecycle_set_stage,
@@ -1405,8 +1405,8 @@ def test_task_state_sync_records_role_mismatch_and_task_summary_surfaces_it() ->
     assert task["result"]["added_roles"] == ["Codex-Analyst"]
 
     summary = gw.summarize_task_lifecycle("Demo", task)
-    assert "requested_roles: Codex-Writer, Reviewer" in summary
-    assert "executed_roles: Codex-Analyst, Reviewer" in summary
+    assert "requested_roles: Codex-Writer, Codex-Reviewer" in summary
+    assert "executed_roles: Codex-Analyst, Codex-Reviewer" in summary
     assert "role_mismatch: dropped=Codex-Writer added=Codex-Analyst" in summary
 
 
@@ -1418,10 +1418,10 @@ def test_task_monitor_surfaces_role_mismatch_targets() -> None:
                 "prompt": "Write summary",
                 "status": "running",
                 "stage": "execution",
-                "roles": ["Codex-Writer", "Reviewer"],
+                "roles": ["Codex-Writer", "Codex-Reviewer"],
                 "result": {
-                    "requested_roles": ["Codex-Writer", "Reviewer"],
-                    "executed_roles": ["Codex-Analyst", "Reviewer"],
+                    "requested_roles": ["Codex-Writer", "Codex-Reviewer"],
+                    "executed_roles": ["Codex-Analyst", "Codex-Reviewer"],
                     "dropped_roles": ["Codex-Writer"],
                     "added_roles": ["Codex-Analyst"],
                     "role_mismatch": True,
@@ -1454,7 +1454,7 @@ def test_task_state_sync_derives_lane_states_and_review_waits_on_dependencies() 
         "role_states": [
             {"role": "Codex-Dev", "status": "done"},
             {"role": "Codex-Writer", "status": "running"},
-            {"role": "Reviewer", "status": "pending"},
+            {"role": "Codex-Reviewer", "status": "pending"},
         ],
         "counts": {"assignments": 3, "replies": 1},
         "complete": False,
@@ -1474,7 +1474,7 @@ def test_task_state_sync_derives_lane_states_and_review_waits_on_dependencies() 
                 ],
                 "review_mode": "single",
                 "review_lanes": [
-                    {"lane_id": "R1", "role": "Reviewer", "kind": "verifier", "depends_on": ["L1", "L2"], "parallel": False}
+                    {"lane_id": "R1", "role": "Codex-Reviewer", "kind": "verifier", "depends_on": ["L1", "L2"], "parallel": False}
                 ],
                 "parallel_workers": True,
                 "parallel_reviews": False,
@@ -1489,8 +1489,8 @@ def test_task_state_sync_derives_lane_states_and_review_waits_on_dependencies() 
         request_id="REQ-302",
         prompt="Parallelize implementation and reporting",
         mode="dispatch",
-        roles=["Codex-Dev", "Codex-Writer", "Reviewer"],
-        verifier_roles=["Reviewer"],
+        roles=["Codex-Dev", "Codex-Writer", "Codex-Reviewer"],
+        verifier_roles=["Codex-Reviewer"],
         require_verifier=True,
     )
     task["plan"] = copy.deepcopy(plan)
@@ -1500,10 +1500,10 @@ def test_task_state_sync_derives_lane_states_and_review_waits_on_dependencies() 
         request_data,
         prompt="Parallelize implementation and reporting",
         mode="dispatch",
-        selected_roles=["Codex-Dev", "Codex-Writer", "Reviewer"],
-        verifier_roles=["Reviewer"],
+        selected_roles=["Codex-Dev", "Codex-Writer", "Codex-Reviewer"],
+        verifier_roles=["Codex-Reviewer"],
         require_verifier=True,
-        verifier_candidates=["Reviewer"],
+        verifier_candidates=["Codex-Reviewer"],
         dedupe_roles=gw.dedupe_roles,
         ensure_task_record=gw.ensure_task_record,
         lifecycle_set_stage=gw.lifecycle_set_stage,
@@ -1526,7 +1526,7 @@ def test_task_state_sync_derives_lane_states_and_review_waits_on_dependencies() 
     assert "phase2_lane_state: exec done=1, running=1 | review waiting_on_dependencies=1" in summary
     assert "- exec L1 [Codex-Dev/parallel] [done] -> S1" in summary
     assert "- exec L2 [Codex-Writer/parallel] [running] -> S2" in summary
-    assert "- critic R1 [Reviewer/verifier/serial] [waiting_on_dependencies] after L1, L2" in summary
+    assert "- critic R1 [Codex-Reviewer/verifier/serial] [waiting_on_dependencies] after L1, L2" in summary
 
 
 def test_task_state_sync_records_phase2_review_trigger_metadata() -> None:
@@ -1534,7 +1534,7 @@ def test_task_state_sync_records_phase2_review_trigger_metadata() -> None:
         "request_id": "REQ-303",
         "role_states": [
             {"role": "Codex-Dev", "status": "done"},
-            {"role": "Reviewer", "status": "done"},
+            {"role": "Codex-Reviewer", "status": "done"},
         ],
         "counts": {"assignments": 2, "replies": 2},
         "complete": True,
@@ -1549,7 +1549,7 @@ def test_task_state_sync_records_phase2_review_trigger_metadata() -> None:
                 "execution_mode": "single",
                 "execution_lanes": [{"lane_id": "L1", "role": "Codex-Dev", "subtask_ids": ["S1"], "parallel": False}],
                 "review_mode": "single",
-                "review_lanes": [{"lane_id": "R1", "role": "Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": False}],
+                "review_lanes": [{"lane_id": "R1", "role": "Codex-Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": False}],
                 "parallel_workers": False,
                 "parallel_reviews": False,
                 "readonly": True,
@@ -1562,8 +1562,8 @@ def test_task_state_sync_records_phase2_review_trigger_metadata() -> None:
         request_id="REQ-303",
         prompt="Implement and verify",
         mode="dispatch",
-        roles=["Codex-Dev", "Reviewer"],
-        verifier_roles=["Reviewer"],
+        roles=["Codex-Dev", "Codex-Reviewer"],
+        verifier_roles=["Codex-Reviewer"],
         require_verifier=True,
     )
     task["plan"] = copy.deepcopy(plan)
@@ -1573,10 +1573,10 @@ def test_task_state_sync_records_phase2_review_trigger_metadata() -> None:
         request_data,
         prompt="Implement and verify",
         mode="dispatch",
-        selected_roles=["Codex-Dev", "Reviewer"],
-        verifier_roles=["Reviewer"],
+        selected_roles=["Codex-Dev", "Codex-Reviewer"],
+        verifier_roles=["Codex-Reviewer"],
         require_verifier=True,
-        verifier_candidates=["Reviewer"],
+        verifier_candidates=["Codex-Reviewer"],
         dedupe_roles=gw.dedupe_roles,
         ensure_task_record=gw.ensure_task_record,
         lifecycle_set_stage=gw.lifecycle_set_stage,
@@ -1599,7 +1599,7 @@ def test_task_state_sync_prefers_gateway_request_id_and_keeps_parallel_phase2_re
         "role_states": [
             {"role": "Codex-Dev", "status": "done"},
             {"role": "Codex-Writer", "status": "done"},
-            {"role": "Reviewer", "status": "done"},
+            {"role": "Codex-Reviewer", "status": "done"},
             {"role": "Claude-Reviewer", "status": "done"},
         ],
         "counts": {"assignments": 4, "replies": 4},
@@ -1616,10 +1616,10 @@ def test_task_state_sync_prefers_gateway_request_id_and_keeps_parallel_phase2_re
         request_data,
         prompt="Implement and review in parallel",
         mode="dispatch",
-        selected_roles=["Codex-Dev", "Codex-Writer", "Reviewer", "Claude-Reviewer"],
-        verifier_roles=["Reviewer", "Claude-Reviewer"],
+        selected_roles=["Codex-Dev", "Codex-Writer", "Codex-Reviewer", "Claude-Reviewer"],
+        verifier_roles=["Codex-Reviewer", "Claude-Reviewer"],
         require_verifier=True,
-        verifier_candidates=["Reviewer", "Claude-Reviewer"],
+        verifier_candidates=["Codex-Reviewer", "Claude-Reviewer"],
         dedupe_roles=gw.dedupe_roles,
         ensure_task_record=gw.ensure_task_record,
         lifecycle_set_stage=gw.lifecycle_set_stage,
@@ -1647,8 +1647,8 @@ def test_derive_lane_states_prefers_lane_specific_status_for_same_role_rows() ->
                         {"lane_id": "L2", "role": "Codex-Analyst"},
                     ],
                     "review_lanes": [
-                        {"lane_id": "R1", "role": "Reviewer", "depends_on": ["L1"]},
-                        {"lane_id": "R2", "role": "Reviewer", "depends_on": ["L2"]},
+                        {"lane_id": "R1", "role": "Codex-Reviewer", "depends_on": ["L1"]},
+                        {"lane_id": "R2", "role": "Codex-Reviewer", "depends_on": ["L2"]},
                     ],
                 }
             }
@@ -1658,11 +1658,11 @@ def test_derive_lane_states_prefers_lane_specific_status_for_same_role_rows() ->
         "rows": [
             {"role": "Codex-Analyst", "status": "done", "lane_id": "L1", "phase2_stage": "execution"},
             {"role": "Codex-Analyst", "status": "running", "lane_id": "L2", "phase2_stage": "execution"},
-            {"role": "Reviewer", "status": "pending", "lane_id": "R1", "phase2_stage": "review"},
-            {"role": "Reviewer", "status": "pending", "lane_id": "R2", "phase2_stage": "review"},
+            {"role": "Codex-Reviewer", "status": "pending", "lane_id": "R1", "phase2_stage": "review"},
+            {"role": "Codex-Reviewer", "status": "pending", "lane_id": "R2", "phase2_stage": "review"},
         ],
         "complete": False,
-        "pending_roles": ["Codex-Analyst", "Reviewer"],
+        "pending_roles": ["Codex-Analyst", "Codex-Reviewer"],
         "done_roles": [],
         "failed_roles": [],
     }
@@ -1684,10 +1684,10 @@ def test_task_monitor_includes_lane_state_summary() -> None:
                 "prompt": "collect data and write memo",
                 "status": "running",
                 "stage": "execution",
-                "roles": ["Codex-Dev", "Reviewer"],
+                "roles": ["Codex-Dev", "Codex-Reviewer"],
                 "lane_states": {
                     "execution": [{"lane_id": "L1", "role": "Codex-Dev", "status": "running"}],
-                    "review": [{"lane_id": "R1", "role": "Reviewer", "status": "waiting_on_dependencies", "depends_on": ["L1"]}],
+                    "review": [{"lane_id": "R1", "role": "Codex-Reviewer", "status": "waiting_on_dependencies", "depends_on": ["L1"]}],
                     "summary": {
                         "execution": {"running": 1},
                         "review": {"waiting_on_dependencies": 1},
@@ -1699,7 +1699,7 @@ def test_task_monitor_includes_lane_state_summary() -> None:
                             "execution_mode": "single",
                             "execution_lanes": [{"lane_id": "L1", "role": "Codex-Dev"}],
                             "review_mode": "single",
-                            "review_lanes": [{"lane_id": "R1", "role": "Reviewer"}],
+                            "review_lanes": [{"lane_id": "R1", "role": "Codex-Reviewer"}],
                         }
                     }
                 },
@@ -1731,10 +1731,10 @@ def test_task_monitor_includes_review_verdict_summary() -> None:
                 "prompt": "collect data and write memo",
                 "status": "running",
                 "stage": "integration",
-                "roles": ["Codex-Dev", "Reviewer"],
+                "roles": ["Codex-Dev", "Codex-Reviewer"],
                 "lane_states": {
                     "execution": [{"lane_id": "L1", "role": "Codex-Dev", "status": "done"}],
-                    "review": [{"lane_id": "R1", "role": "Reviewer", "status": "done", "verdict": "retry", "action": "replan", "depends_on": ["L1"]}],
+                    "review": [{"lane_id": "R1", "role": "Codex-Reviewer", "status": "done", "verdict": "retry", "action": "replan", "depends_on": ["L1"]}],
                     "summary": {
                         "execution": {"done": 1},
                         "review": {"done": 1},
@@ -1747,7 +1747,7 @@ def test_task_monitor_includes_review_verdict_summary() -> None:
                             "execution_mode": "single",
                             "execution_lanes": [{"lane_id": "L1", "role": "Codex-Dev"}],
                             "review_mode": "single",
-                            "review_lanes": [{"lane_id": "R1", "role": "Reviewer"}],
+                            "review_lanes": [{"lane_id": "R1", "role": "Codex-Reviewer"}],
                         }
                     }
                 },
@@ -1779,7 +1779,7 @@ def test_task_monitor_includes_lane_rerun_and_followup_targets() -> None:
                 "prompt": "collect data and write memo",
                 "status": "running",
                 "stage": "integration",
-                "roles": ["Codex-Dev", "Reviewer"],
+                "roles": ["Codex-Dev", "Codex-Reviewer"],
                 "exec_critic": {
                     "verdict": "retry",
                     "action": "retry",
@@ -1797,7 +1797,7 @@ def test_task_monitor_includes_lane_rerun_and_followup_targets() -> None:
                 },
                 "lane_states": {
                     "execution": [{"lane_id": "L1", "role": "Codex-Dev", "status": "done"}],
-                    "review": [{"lane_id": "R1", "role": "Reviewer", "status": "done", "verdict": "retry", "action": "replan", "depends_on": ["L2"]}],
+                    "review": [{"lane_id": "R1", "role": "Codex-Reviewer", "status": "done", "verdict": "retry", "action": "replan", "depends_on": ["L2"]}],
                     "summary": {
                         "execution": {"done": 1},
                         "review": {"done": 1},
@@ -1810,7 +1810,7 @@ def test_task_monitor_includes_lane_rerun_and_followup_targets() -> None:
                             "execution_mode": "parallel",
                             "execution_lanes": [{"lane_id": "L1", "role": "Codex-Dev"}, {"lane_id": "L2", "role": "Claude-Analyst"}],
                             "review_mode": "single",
-                            "review_lanes": [{"lane_id": "R1", "role": "Reviewer"}],
+                            "review_lanes": [{"lane_id": "R1", "role": "Codex-Reviewer"}],
                         }
                     }
                 },
@@ -1879,11 +1879,25 @@ def test_priority_actions_module_matches_task_and_offdesk_policies() -> None:
         "action": "/task T-002 | gather-latest-docs",
         "reason": "active task is still planning",
     }
+    rate_limited_priority = priority_actions.task_priority_action_snapshot(
+        label="T-003 | blocked-by-capacity",
+        tf_phase="rate_limited",
+        rerun_execution_lane_ids=[],
+        rerun_review_lane_ids=[],
+        manual_followup_execution_lane_ids=[],
+        manual_followup_review_lane_ids=[],
+        rate_limit={"mode": "blocked", "retry_at": "2026-03-14T03:40:00+09:00"},
+    )
+    assert rate_limited_priority == {
+        "action": "/task T-003 | blocked-by-capacity",
+        "reason": "active task is waiting for provider capacity until 2026-03-14T03:40:00+09:00",
+    }
     offdesk_priority = priority_actions.offdesk_priority_action_snapshot(
         alias="O4",
         active_task_label="",
         active_task_tf_phase="queued",
         active_task_targets=None,
+        active_task_rate_limit=None,
         syncback_pending=False,
         followup_count=0,
         proposal_count=0,
@@ -1981,8 +1995,8 @@ def test_task_state_sanitize_task_record_matches_gateway(monkeypatch) -> None:
     raw_task = {
         "mode": "weird",
         "prompt": "  Review the output  ",
-        "roles": ["Codex-Dev", "Reviewer", "Codex-Dev"],
-        "verifier_roles": ["Reviewer", "Reviewer"],
+        "roles": ["Codex-Dev", "Codex-Reviewer", "Codex-Dev"],
+        "verifier_roles": ["Codex-Reviewer", "Codex-Reviewer"],
         "require_verifier": 1,
         "stages": {"planning": "complete", "execution": "active", "garbage": "bad"},
         "stage": "unknown",
@@ -2005,11 +2019,11 @@ def test_task_state_sanitize_task_record_matches_gateway(monkeypatch) -> None:
         "todo_status": "RUNNING",
         "plan": {
             "summary": "demo",
-            "meta": {"worker_roles": ["Reviewer", "Codex-Dev", "Reviewer"]},
-            "subtasks": [{"id": "S1", "title": "check", "owner_role": "Reviewer"}],
+            "meta": {"worker_roles": ["Codex-Reviewer", "Codex-Dev", "Codex-Reviewer"]},
+            "subtasks": [{"id": "S1", "title": "check", "owner_role": "Codex-Reviewer"}],
         },
         "plan_critic": {"approved": False, "issues": ["missing acceptance"]},
-        "plan_roles": ["Reviewer", "Codex-Dev", "Reviewer"],
+        "plan_roles": ["Codex-Reviewer", "Codex-Dev", "Codex-Reviewer"],
         "plan_replans": [{"attempt": "2", "critic": "retry", "subtasks": "3"}],
         "plan_gate_passed": False,
         "exec_critic": {
@@ -2055,7 +2069,7 @@ def test_tf_worker_specs_use_request_scoped_session_and_logs(tmp_path: Path) -> 
         aoe_orch_bin="/usr/bin/aoe-orch",
     )
 
-    specs = gw.tf_worker_specs(args, "REQ-123", ["Reviewer"], startup_timeout_sec=120)
+    specs = gw.tf_worker_specs(args, "REQ-123", ["Codex-Reviewer"], startup_timeout_sec=120)
 
     assert len(specs) == 1
     spec = specs[0]
@@ -2082,7 +2096,7 @@ def test_resolve_dispatch_roles_from_preview_reads_dispatch_plan(monkeypatch) ->
                 "request_id": "REQ-1",
                 "dispatch_plan": [
                     {"role": "DataEngineer", "title": "A"},
-                    {"role": "Reviewer", "title": "B"},
+                    {"role": "Codex-Reviewer", "title": "B"},
                 ],
             }
         )
@@ -2097,15 +2111,15 @@ def test_resolve_dispatch_roles_from_preview_reads_dispatch_plan(monkeypatch) ->
         priority="P2",
         timeout_sec=120,
     )
-    assert roles == ["DataEngineer", "Reviewer"]
+    assert roles == ["DataEngineer", "Codex-Reviewer"]
 
 
 def test_choose_auto_dispatch_roles_prefers_reviewer_for_simple_check(tmp_path: Path) -> None:
     team_dir = tmp_path / ".aoe-team"
-    (team_dir / "agents" / "Reviewer").mkdir(parents=True, exist_ok=True)
+    (team_dir / "agents" / "Codex-Reviewer").mkdir(parents=True, exist_ok=True)
     (team_dir / "agents" / "DataEngineer").mkdir(parents=True, exist_ok=True)
-    (team_dir / "agents" / "Reviewer" / "AGENTS.md").write_text(
-        "# AGENTS.md - Reviewer\n\n## Mission\nFind risks, regressions, and missing tests before merge.\n",
+    (team_dir / "agents" / "Codex-Reviewer" / "AGENTS.md").write_text(
+        "# AGENTS.md - Codex-Reviewer\n\n## Mission\nFind risks, regressions, and missing tests before merge.\n",
         encoding="utf-8",
     )
     (team_dir / "agents" / "DataEngineer" / "AGENTS.md").write_text(
@@ -2115,17 +2129,17 @@ def test_choose_auto_dispatch_roles_prefers_reviewer_for_simple_check(tmp_path: 
 
     roles = gw.choose_auto_dispatch_roles(
         "현재 프로젝트 루트에서 .github가 있는지만 확인하고 한 문장으로 답해줘.",
-        available_roles=["DataEngineer", "Reviewer"],
+        available_roles=["DataEngineer", "Codex-Reviewer"],
         team_dir=team_dir,
     )
 
-    assert roles == ["Reviewer"]
+    assert roles == ["Codex-Reviewer"]
 
 
 def test_choose_auto_dispatch_roles_adds_claude_companion_for_multi_review_request(tmp_path: Path) -> None:
     team_dir = tmp_path / ".aoe-team"
     for role, mission in (
-        ("Reviewer", "Find risks, regressions, and missing tests before merge."),
+        ("Codex-Reviewer", "Find risks, regressions, and missing tests before merge."),
         ("Claude-Reviewer", "Find risks, regressions, and missing tests before merge."),
     ):
         (team_dir / "agents" / role).mkdir(parents=True, exist_ok=True)
@@ -2136,17 +2150,17 @@ def test_choose_auto_dispatch_roles_adds_claude_companion_for_multi_review_reque
 
     roles = gw.choose_auto_dispatch_roles(
         "현재 변경사항을 검토하고 각각 교차검증해서 리스크를 짚어줘.",
-        available_roles=["Reviewer", "Claude-Reviewer"],
+        available_roles=["Codex-Reviewer", "Claude-Reviewer"],
         team_dir=team_dir,
     )
 
-    assert roles == ["Reviewer", "Claude-Reviewer"]
+    assert roles == ["Codex-Reviewer", "Claude-Reviewer"]
 
 
 def test_choose_auto_dispatch_roles_adds_claude_companion_for_explicit_review_role(tmp_path: Path) -> None:
     team_dir = tmp_path / ".aoe-team"
     for role, mission in (
-        ("Reviewer", "Find risks, regressions, and missing tests before merge."),
+        ("Codex-Reviewer", "Find risks, regressions, and missing tests before merge."),
         ("Claude-Reviewer", "Find risks, regressions, and missing tests before merge."),
     ):
         (team_dir / "agents" / role).mkdir(parents=True, exist_ok=True)
@@ -2156,25 +2170,25 @@ def test_choose_auto_dispatch_roles_adds_claude_companion_for_explicit_review_ro
         )
 
     roles = gw.choose_auto_dispatch_roles(
-        "Reviewer가 현재 변경사항을 검토하고 리스크를 짚어줘.",
-        available_roles=["Reviewer", "Claude-Reviewer"],
+        "Codex-Reviewer가 현재 변경사항을 검토하고 리스크를 짚어줘.",
+        available_roles=["Codex-Reviewer", "Claude-Reviewer"],
         team_dir=team_dir,
     )
 
-    assert roles == ["Reviewer", "Claude-Reviewer"]
+    assert roles == ["Codex-Reviewer", "Claude-Reviewer"]
 
 
 def test_choose_auto_dispatch_roles_builds_multi_role_tf_from_prompt_mix(tmp_path: Path) -> None:
     team_dir = tmp_path / ".aoe-team"
     (team_dir / "agents" / "Codex-Dev").mkdir(parents=True, exist_ok=True)
-    (team_dir / "agents" / "Reviewer").mkdir(parents=True, exist_ok=True)
+    (team_dir / "agents" / "Codex-Reviewer").mkdir(parents=True, exist_ok=True)
     (team_dir / "agents" / "Codex-Writer").mkdir(parents=True, exist_ok=True)
     (team_dir / "agents" / "Codex-Dev" / "AGENTS.md").write_text(
         "# AGENTS.md - Codex-Dev\n\n## Mission\nImplement code changes and fix application bugs.\n",
         encoding="utf-8",
     )
-    (team_dir / "agents" / "Reviewer" / "AGENTS.md").write_text(
-        "# AGENTS.md - Reviewer\n\n## Mission\nFind risks, regressions, and missing tests before merge.\n",
+    (team_dir / "agents" / "Codex-Reviewer" / "AGENTS.md").write_text(
+        "# AGENTS.md - Codex-Reviewer\n\n## Mission\nFind risks, regressions, and missing tests before merge.\n",
         encoding="utf-8",
     )
     (team_dir / "agents" / "Codex-Writer" / "AGENTS.md").write_text(
@@ -2184,29 +2198,29 @@ def test_choose_auto_dispatch_roles_builds_multi_role_tf_from_prompt_mix(tmp_pat
 
     roles = gw.choose_auto_dispatch_roles(
         "로그인 버그를 수정하고 회귀 리스크도 같이 검토해줘.",
-        available_roles=["Codex-Dev", "Reviewer", "Codex-Writer"],
+        available_roles=["Codex-Dev", "Codex-Reviewer", "Codex-Writer"],
         team_dir=team_dir,
     )
 
-    assert roles == ["Codex-Dev", "Reviewer"]
+    assert roles == ["Codex-Dev", "Codex-Reviewer"]
 
 
 def test_choose_auto_dispatch_roles_picks_local_analyst_for_analysis_prompt(tmp_path: Path) -> None:
     team_dir = tmp_path / ".aoe-team"
     (team_dir / "agents" / "Codex-Analyst").mkdir(parents=True, exist_ok=True)
-    (team_dir / "agents" / "Reviewer").mkdir(parents=True, exist_ok=True)
+    (team_dir / "agents" / "Codex-Reviewer").mkdir(parents=True, exist_ok=True)
     (team_dir / "agents" / "Codex-Analyst" / "AGENTS.md").write_text(
         "# AGENTS.md - Codex-Analyst\n\n## Mission\nInvestigate project state, compare options, and surface defensible recommendations.\n",
         encoding="utf-8",
     )
-    (team_dir / "agents" / "Reviewer" / "AGENTS.md").write_text(
-        "# AGENTS.md - Reviewer\n\n## Mission\nFind risks, regressions, and missing tests before merge.\n",
+    (team_dir / "agents" / "Codex-Reviewer" / "AGENTS.md").write_text(
+        "# AGENTS.md - Codex-Reviewer\n\n## Mission\nFind risks, regressions, and missing tests before merge.\n",
         encoding="utf-8",
     )
 
     roles = gw.choose_auto_dispatch_roles(
         "현재 구조를 조사하고 두 방식의 트레이드오프를 비교해서 추천안을 정리해줘.",
-        available_roles=["Codex-Analyst", "Reviewer"],
+        available_roles=["Codex-Analyst", "Codex-Reviewer"],
         team_dir=team_dir,
     )
 
@@ -2268,7 +2282,7 @@ def test_choose_auto_dispatch_roles_orders_build_before_review_companions(tmp_pa
     team_dir = tmp_path / ".aoe-team"
     for role, mission in (
         ("Codex-Dev", "Implement code changes and fix application bugs."),
-        ("Reviewer", "Find risks, regressions, and missing tests before merge."),
+        ("Codex-Reviewer", "Find risks, regressions, and missing tests before merge."),
         ("Claude-Reviewer", "Find risks, regressions, and missing tests before merge."),
     ):
         (team_dir / "agents" / role).mkdir(parents=True, exist_ok=True)
@@ -2279,17 +2293,17 @@ def test_choose_auto_dispatch_roles_orders_build_before_review_companions(tmp_pa
 
     roles = gw.choose_auto_dispatch_roles(
         "로그인 버그를 수정하고 회귀 리스크도 같이 검토해줘.",
-        available_roles=["Codex-Dev", "Reviewer", "Claude-Reviewer"],
+        available_roles=["Codex-Dev", "Codex-Reviewer", "Claude-Reviewer"],
         team_dir=team_dir,
     )
 
-    assert roles == ["Codex-Dev", "Reviewer", "Claude-Reviewer"]
+    assert roles == ["Codex-Dev", "Codex-Reviewer", "Claude-Reviewer"]
 
 
 def test_available_worker_roles_uses_expanded_default_pool() -> None:
     assert gw.available_worker_roles([]) == [
         "DataEngineer",
-        "Reviewer",
+        "Codex-Reviewer",
         "Claude-Reviewer",
         "Codex-Dev",
         "Codex-Writer",
@@ -2302,7 +2316,7 @@ def test_available_worker_roles_uses_expanded_default_pool() -> None:
 def test_runtime_seed_default_repair_agents_include_claude_companions() -> None:
     assert runtime_seed.DEFAULT_REPAIR_AGENTS == [
         "DataEngineer:codex",
-        "Reviewer:codex",
+        "Codex-Reviewer:codex",
         "Claude-Reviewer:claude",
         "Codex-Dev:codex",
         "Codex-Writer:codex",
@@ -2326,7 +2340,7 @@ def test_seed_runtime_from_spec_copies_claude_companion_templates(tmp_path: Path
         "overview": "test",
         "coordinator": {"role": "Orchestrator"},
         "agents": [
-            {"role": "Reviewer"},
+            {"role": "Codex-Reviewer"},
             {"role": "Claude-Reviewer"},
             {"role": "Codex-Writer"},
             {"role": "Claude-Writer"},
@@ -2378,7 +2392,7 @@ def test_finalize_tf_exec_meta_marks_failed_roles_and_syncs_run_meta(tmp_path: P
         {
             "request_id": req_id,
             "complete": True,
-            "roles": [{"role": "Reviewer", "status": "failed"}],
+            "roles": [{"role": "Codex-Reviewer", "status": "failed"}],
             "reply_messages": [],
         },
     )
@@ -2405,7 +2419,7 @@ def test_finalize_request_reply_messages_marks_only_unresolved(monkeypatch, tmp_
         lambda _args, _rid: {
             "request_id": "REQ-1",
             "reply_messages": [
-                {"id": "m_sent", "from": "Reviewer", "status": "sent"},
+                {"id": "m_sent", "from": "Codex-Reviewer", "status": "sent"},
                 {"id": "m_done", "from": "DataEngineer", "status": "done"},
             ],
         },
@@ -2422,7 +2436,7 @@ def test_finalize_request_reply_messages_marks_only_unresolved(monkeypatch, tmp_
     result = gw.finalize_request_reply_messages(args, "REQ-1")
 
     assert result["targets"] == 1
-    assert result["done"] == ["Reviewer:m_sent:sent"]
+    assert result["done"] == ["Codex-Reviewer:m_sent:sent"]
     assert "DataEngineer:m_done:done" in result["skipped"]
     assert calls == [("m_sent", "Orchestrator", "gateway integrated reply into final response")]
 
@@ -2453,8 +2467,8 @@ def test_request_state_module_matches_gateway_request_helpers(monkeypatch, tmp_p
         "request_id": "REQ-1",
         "complete": False,
         "counts": {"messages": 1, "assignments": 1, "replies": 0},
-        "roles": [{"role": "Reviewer", "status": "pending", "message_id": "m-1"}],
-        "unresolved_roles": ["Reviewer"],
+        "roles": [{"role": "Codex-Reviewer", "status": "pending", "message_id": "m-1"}],
+        "unresolved_roles": ["Codex-Reviewer"],
     }
 
     assert gw.summarize_request_state(state, task=task) == request_state.summarize_request_state(
@@ -2474,8 +2488,8 @@ def test_request_state_module_matches_gateway_request_helpers(monkeypatch, tmp_p
     reply_state = {
         "request_id": "REQ-1",
         "reply_messages": [
-            {"id": "m-1", "from": "Reviewer", "status": "sent"},
-            {"id": "m-2", "from": "Reviewer", "status": "done"},
+            {"id": "m-1", "from": "Codex-Reviewer", "status": "sent"},
+            {"id": "m-2", "from": "Codex-Reviewer", "status": "done"},
         ],
     }
     done_calls: list[tuple[str, str, str]] = []
@@ -2529,7 +2543,7 @@ def test_tf_exec_module_matches_gateway_exec_helpers(tmp_path: Path, monkeypatch
     args_b._aoe_default_tf_worker_session_prefix = gw.DEFAULT_TF_WORKER_SESSION_PREFIX
     lane_summary = {
         "execution_lanes": [
-            {"lane_id": "L1", "role": "Reviewer", "subtask_ids": ["S1"]},
+            {"lane_id": "L1", "role": "Codex-Reviewer", "subtask_ids": ["S1"]},
         ],
         "review_lanes": [
             {"lane_id": "R1", "role": "QA", "depends_on": ["L1"]},
@@ -2561,15 +2575,15 @@ def test_tf_exec_module_matches_gateway_exec_helpers(tmp_path: Path, monkeypatch
     assert meta_b["phase2_execution_plan"]["execution_mode"] == "parallel"
     assert meta_a["phase1_providers"] == meta_b["phase1_providers"] == ["codex", "claude"]
 
-    specs_a = gw.tf_worker_specs(args_a, "REQ-123", ["Reviewer"], startup_timeout_sec=120, lane_summary=lane_summary)
-    specs_b = tf_exec.tf_worker_specs(args_b, "REQ-123", ["Reviewer"], startup_timeout_sec=120, lane_summary=lane_summary)
+    specs_a = gw.tf_worker_specs(args_a, "REQ-123", ["Codex-Reviewer"], startup_timeout_sec=120, lane_summary=lane_summary)
+    specs_b = tf_exec.tf_worker_specs(args_b, "REQ-123", ["Codex-Reviewer"], startup_timeout_sec=120, lane_summary=lane_summary)
     assert specs_a == specs_b
     assert specs_a[0]["execution_lane_ids"] == ["L1"]
     assert specs_a[0]["review_lane_ids"] == []
 
     class Proc:
         returncode = 0
-        stdout = json.dumps({"request_id": "REQ-1", "dispatch_plan": [{"role": "DataEngineer"}, {"role": "Reviewer"}]})
+        stdout = json.dumps({"request_id": "REQ-1", "dispatch_plan": [{"role": "DataEngineer"}, {"role": "Codex-Reviewer"}]})
         stderr = ""
 
     original_run_command = gw.run_command
@@ -2587,7 +2601,7 @@ def test_tf_exec_module_matches_gateway_exec_helpers(tmp_path: Path, monkeypatch
         )
     finally:
         gw.run_command = original_run_command
-    assert roles_a == roles_b == ["DataEngineer", "Reviewer"]
+    assert roles_a == roles_b == ["DataEngineer", "Codex-Reviewer"]
 
 
 def test_tf_exec_lane_summary_and_role_merge_helpers() -> None:
@@ -2600,7 +2614,7 @@ def test_tf_exec_lane_summary_and_role_merge_helpers() -> None:
             ],
             "review_mode": "single",
             "review_lanes": [
-                {"lane_id": "R1", "role": "Reviewer", "kind": "verifier", "depends_on": ["L1", "L2"], "parallel": False},
+                {"lane_id": "R1", "role": "Codex-Reviewer", "kind": "verifier", "depends_on": ["L1", "L2"], "parallel": False},
             ],
             "parallel_workers": True,
             "parallel_reviews": False,
@@ -2608,12 +2622,12 @@ def test_tf_exec_lane_summary_and_role_merge_helpers() -> None:
         }
     }
     summary = tf_exec.phase2_execution_lane_summary(metadata)
-    merged = tf_exec.merge_worker_roles_with_lane_summary(["Reviewer"], summary)
+    merged = tf_exec.merge_worker_roles_with_lane_summary(["Codex-Reviewer"], summary)
 
     assert summary["execution_roles"] == ["Codex-Dev", "Codex-Writer"]
-    assert summary["review_roles"] == ["Reviewer"]
-    assert summary["planned_roles"] == ["Codex-Dev", "Codex-Writer", "Reviewer"]
-    assert merged == ["Codex-Dev", "Codex-Writer", "Reviewer"]
+    assert summary["review_roles"] == ["Codex-Reviewer"]
+    assert summary["planned_roles"] == ["Codex-Dev", "Codex-Writer", "Codex-Reviewer"]
+    assert merged == ["Codex-Dev", "Codex-Writer", "Codex-Reviewer"]
 
 
 def test_infer_natural_run_mode_treats_direct_as_bias_not_force() -> None:
@@ -2752,9 +2766,9 @@ def test_parse_focus_and_unlock_commands() -> None:
 
 
 def test_parse_add_provider_shortcuts_and_resolve_slash_add_claude() -> None:
-    assert tg_parse.parse_cli_message("aoe add-claude Reviewer") == {
+    assert tg_parse.parse_cli_message("aoe add-claude Codex-Reviewer") == {
         "cmd": "add-role",
-        "role": "Reviewer",
+        "role": "Codex-Reviewer",
         "provider": "claude",
         "launch": "claude",
         "spawn": True,
@@ -2766,9 +2780,9 @@ def test_parse_add_provider_shortcuts_and_resolve_slash_add_claude() -> None:
         "launch": "codex",
         "spawn": False,
     }
-    assert tg_parse.parse_cli_message("aoe add-claude --name ClaudeReviewer --no-spawn") == {
+    assert tg_parse.parse_cli_message("aoe add-claude --name ClaudeCodex-Reviewer --no-spawn") == {
         "cmd": "add-role",
-        "role": "ClaudeReviewer",
+        "role": "ClaudeCodex-Reviewer",
         "provider": "claude",
         "launch": "claude",
         "spawn": False,
@@ -2776,7 +2790,7 @@ def test_parse_add_provider_shortcuts_and_resolve_slash_add_claude() -> None:
 
     manager_state = _empty_state()
     resolved = resolver.resolve_message_command(
-        text="/add-claude --name Reviewer --spawn",
+        text="/add-claude --name Codex-Reviewer --spawn",
         slash_only=False,
         manager_state=manager_state,
         chat_id="939062873",
@@ -2789,7 +2803,7 @@ def test_parse_add_provider_shortcuts_and_resolve_slash_add_claude() -> None:
     )
 
     assert resolved.cmd == "add-role"
-    assert resolved.add_role_name == "Reviewer"
+    assert resolved.add_role_name == "Codex-Reviewer"
     assert resolved.add_role_provider == "claude"
     assert resolved.add_role_launch == "claude"
     assert resolved.add_role_spawn is True
@@ -2943,7 +2957,7 @@ def test_gateway_events_module_matches_gateway_runtime_event_mirroring(tmp_path:
             "kind": "dispatch",
             "status": "success",
             "summary": "resolved role set",
-            "payload": {"roles": ["Reviewer"]},
+            "payload": {"roles": ["Codex-Reviewer"]},
         }
     ]
 
@@ -3162,6 +3176,107 @@ def test_queue_engine_matches_gateway_and_scheduler_next_selection(tmp_path: Pat
     assert gw_pick == ("local", "TODO-002", "candidate")
 
 
+def test_queue_snapshot_treats_future_rate_limited_task_as_parked_not_busy(tmp_path: Path) -> None:
+    state = _empty_state()
+    team = tmp_path / "Local" / ".aoe-team"
+    team.mkdir(parents=True, exist_ok=True)
+    (team / "orchestrator.json").write_text("{}", encoding="utf-8")
+
+    state["projects"]["local"] = {
+        "name": "local",
+        "display_name": "Local",
+        "project_alias": "O3",
+        "project_root": str(tmp_path / "Local"),
+        "team_dir": str(team),
+        "todos": [
+            {"id": "TODO-001", "summary": "rate limited current", "priority": "P1", "status": "running"},
+            {"id": "TODO-002", "summary": "next open", "priority": "P2", "status": "open"},
+        ],
+        "tasks": {
+            "r1": {
+                "request_id": "r1",
+                "todo_id": "TODO-001",
+                "status": "running",
+                "tf_phase": "rate_limited",
+                "rate_limit": {
+                    "mode": "blocked",
+                    "limited_providers": ["codex", "claude"],
+                    "retry_after_sec": 180,
+                    "retry_at": "2999-01-01T00:00:00+00:00",
+                },
+            }
+        },
+    }
+
+    snap = ops_policy.project_queue_snapshot(state["projects"]["local"])
+    queue_pick = queue_engine.pick_global_next_candidate(state["projects"], ignore_busy=False, skip_paused=True)
+
+    assert snap["has_running"] is False
+    assert snap["has_parked"] is True
+    assert queue_pick is not None
+    assert queue_pick["todo"]["id"] == "TODO-002"
+
+
+def test_has_task_linked_to_todo_releases_after_retry_at_passes() -> None:
+    entry = {
+        "tasks": {
+            "r1": {
+                "request_id": "r1",
+                "todo_id": "TODO-001",
+                "status": "running",
+                "tf_phase": "rate_limited",
+                "rate_limit": {
+                    "mode": "blocked",
+                    "limited_providers": ["codex", "claude"],
+                    "retry_after_sec": 180,
+                    "retry_at": "2000-01-01T00:00:00+00:00",
+                },
+            }
+        }
+    }
+
+    assert queue_engine.has_task_linked_to_todo(entry, "TODO-001") is False
+
+
+def test_drain_peek_resumes_pending_todo_after_rate_limit_retry_at_passes(tmp_path: Path) -> None:
+    state = _empty_state()
+    team = tmp_path / "Local" / ".aoe-team"
+    team.mkdir(parents=True, exist_ok=True)
+    (team / "orchestrator.json").write_text("{}", encoding="utf-8")
+
+    state["projects"]["local"] = {
+        "name": "local",
+        "display_name": "Local",
+        "project_alias": "O3",
+        "project_root": str(tmp_path / "Local"),
+        "team_dir": str(team),
+        "todos": [
+            {"id": "TODO-001", "summary": "retry me", "priority": "P1", "status": "running"},
+        ],
+        "pending_todo": {
+            "todo_id": "TODO-001",
+            "chat_id": "939062873",
+            "selected_at": "2026-03-14T01:00:00+09:00",
+        },
+        "tasks": {
+            "r1": {
+                "request_id": "r1",
+                "todo_id": "TODO-001",
+                "status": "running",
+                "tf_phase": "rate_limited",
+                "rate_limit": {
+                    "mode": "blocked",
+                    "limited_providers": ["codex", "claude"],
+                    "retry_after_sec": 180,
+                    "retry_at": "2000-01-01T00:00:00+00:00",
+                },
+            }
+        },
+    }
+
+    assert gateway_batch_ops.drain_peek_next_todo(state, "939062873", force=False) == ("local", "TODO-001", "resume_pending")
+
+
 def test_transport_module_matches_gateway_transport_exports() -> None:
     previous = os.environ.get("AOE_TG_COMMAND_PREFIXES")
     os.environ["AOE_TG_COMMAND_PREFIXES"] = "!/"
@@ -3262,3 +3377,43 @@ def test_runtime_core_matches_gateway_default_project_registration(tmp_path: Pat
     assert saves == [team_dir / "orch_manager_state.json"]
     assert entry["last_sync_at"] == "2026-03-06T12:00:00+0900"
     assert entry["last_sync_mode"] == "scenario"
+
+
+def test_task_lifecycle_and_monitor_show_rate_limit_and_degraded_state() -> None:
+    task = {
+        "request_id": "r_demo",
+        "label": "T-001",
+        "short_id": "T-001",
+        "status": "running",
+        "roles": ["Codex-Writer", "Codex-Reviewer"],
+        "rate_limit": {
+            "mode": "blocked",
+            "limited_providers": ["codex", "claude"],
+            "retry_after_sec": 180,
+            "retry_at": "2026-03-14T01:23:00+09:00",
+        },
+        "result": {
+            "degraded_by": ["claude_rate_limit->codex"],
+            "requested_roles": ["Codex-Writer", "Codex-Reviewer"],
+            "executed_roles": ["Codex-Writer", "Codex-Reviewer"],
+        },
+        "updated_at": "2026-03-14T01:20:00+0900",
+    }
+    entry = {"tasks": {"r_demo": task}}
+
+    lifecycle = task_view.summarize_task_lifecycle("Demo", task)
+    monitor = task_state.summarize_task_monitor(
+        "Demo",
+        entry,
+        limit=5,
+        normalize_task_status=gw.normalize_task_status,
+        dedupe_roles=gw.dedupe_roles,
+        task_display_label=gw.task_display_label,
+        lifecycle_stages=gw.LIFECYCLE_STAGES,
+    )
+
+    assert "tf_phase: rate_limited" in lifecycle
+    assert "rate_limit: mode=blocked providers=codex, claude retry_after=180s retry_at=2026-03-14T01:23:00+09:00" in lifecycle
+    assert "degraded_by: claude_rate_limit->codex" in lifecycle
+    assert "rate_limit providers=codex,claude retry=180s retry_at=2026-03-14T01:23:00+09:00" in monitor
+    assert "degraded=claude_rate_limit->codex" in monitor

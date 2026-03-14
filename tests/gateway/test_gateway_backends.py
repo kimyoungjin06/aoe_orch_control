@@ -2,6 +2,8 @@
 """Gateway backend and integration regression tests."""
 
 from _gateway_test_support import *  # noqa: F401,F403
+
+import subprocess
 def test_tf_backend_normalization_and_labels() -> None:
     assert tf_backend.normalize_tf_backend_name("") == "local"
     assert tf_backend.normalize_tf_backend_name("default") == "local"
@@ -88,7 +90,7 @@ def test_autogen_compare_includes_runtime_event_contract() -> None:
         "id": "demo_case",
         "project_key": "O3",
         "task": "Summarize latest analysis findings and propose next steps",
-        "roles": ["Codex-Analyst", "Reviewer"],
+        "roles": ["Codex-Analyst", "Codex-Reviewer"],
         "retry_budget": 3,
         "approval_required": False,
     }
@@ -132,7 +134,7 @@ def test_local_tf_backend_delegates_to_run_aoe_orch() -> None:
             args=argparse.Namespace(project_root=str(ROOT), team_dir=str(ROOT / ".aoe-team")),
             prompt="review this change",
             chat_id="chat-1",
-            roles_override="Reviewer",
+            roles_override="Codex-Reviewer",
             priority_override="P1",
             timeout_override=30,
             no_wait_override=True,
@@ -153,7 +155,7 @@ def test_local_tf_backend_delegates_to_run_aoe_orch() -> None:
     assert result["request_id"] == "REQ-1"
     assert calls["prompt"] == "review this change"
     assert calls["chat_id"] == "chat-1"
-    assert calls["kwargs"]["roles_override"] == "Reviewer"
+    assert calls["kwargs"]["roles_override"] == "Codex-Reviewer"
     assert calls["kwargs"]["priority_override"] == "P1"
     assert calls["kwargs"]["timeout_override"] == 30
     assert calls["kwargs"]["no_wait_override"] is True
@@ -190,7 +192,7 @@ def test_autogen_backend_reports_availability_and_stays_not_implemented(tmp_path
                 ),
                 prompt="Summarize the canonical backlog and confirm the first next step.",
                 chat_id="chat-1",
-                roles_override="Codex-Analyst,Reviewer",
+                roles_override="Codex-Analyst,Codex-Reviewer",
             ),
             tf_backend.build_tf_backend_deps(
                 default_tf_exec_mode="local",
@@ -211,7 +213,7 @@ def test_autogen_backend_reports_availability_and_stays_not_implemented(tmp_path
         assert all(not errs for errs in tf_event_schema.validate_runtime_events(result["runtime_events"]))
         assert all(not errs for errs in tf_event_schema.validate_followup_proposals(result["followup_proposals"]))
         assert result["replies"][0]["role"] == "Codex-Analyst"
-        assert result["replies"][1]["role"] == "Reviewer"
+        assert result["replies"][1]["role"] == "Codex-Reviewer"
     else:
         assert "not installed" in availability.reason
 
@@ -262,7 +264,7 @@ def test_gateway_run_aoe_orch_executes_real_autogen_backend_when_available(tmp_p
         args,
         "Summarize the canonical Twin backlog and identify the first next focus.",
         "chat-1",
-        roles_override="Codex-Analyst,Reviewer",
+        roles_override="Codex-Analyst,Codex-Reviewer",
     )
 
     assert result["backend"] == "autogen_core"
@@ -332,14 +334,14 @@ def test_gateway_run_aoe_orch_executes_writer_shape_with_real_autogen_backend_wh
         args,
         "Draft a short operator-facing handoff report from the canonical backlog without modifying files.",
         "chat-1",
-        roles_override="Codex-Writer,Reviewer",
+        roles_override="Codex-Writer,Codex-Reviewer",
     )
 
     assert result["backend"] == "autogen_core"
     assert result["complete"] is True
     assert result["replies"][0]["role"] == "Codex-Writer"
     assert "Codex-Writer handoff" in result["replies"][0]["body"]
-    assert "Codex-Writer, Reviewer" in result["replies"][1]["body"]
+    assert "Codex-Writer, Codex-Reviewer" in result["replies"][1]["body"]
     assert result["followup_proposals"]
     assert result["followup_proposals"][0]["kind"] == "handoff"
 
@@ -615,8 +617,8 @@ def test_gateway_run_aoe_orch_uses_local_backend_by_default(tmp_path: Path) -> N
             args,
             "review this",
             "chat-1",
-            roles_override="Reviewer",
-            metadata={"phase2_execution_plan": {"execution_mode": "single", "execution_lanes": [{"lane_id": "L1", "role": "Reviewer"}]}},
+            roles_override="Codex-Reviewer",
+            metadata={"phase2_execution_plan": {"execution_mode": "single", "execution_lanes": [{"lane_id": "L1", "role": "Codex-Reviewer"}]}},
         )
     finally:
         gw.tf_backend_local_mod.local_backend = original_local_backend
@@ -625,7 +627,7 @@ def test_gateway_run_aoe_orch_uses_local_backend_by_default(tmp_path: Path) -> N
     assert result["backend"] == "local"
     assert result["backend_selection_reason"] == "default_local"
     assert calls["request"].prompt == "review this"
-    assert calls["request"].roles_override == "Reviewer"
+    assert calls["request"].roles_override == "Codex-Reviewer"
     assert calls["request"].metadata["phase2_execution_plan"]["execution_mode"] == "single"
     assert calls["deps"].default_tf_exec_map_file == gw.DEFAULT_TF_EXEC_MAP_FILE
 
@@ -724,6 +726,169 @@ def test_run_claude_exec_can_wrap_with_sudo_when_root_mode_enabled(tmp_path: Pat
     assert "claude" in wrapped
 
 
+def test_worker_handler_falls_back_to_codex_when_claude_is_rate_limited(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    team_dir = project_root / ".aoe-team"
+    bin_dir = tmp_path / "bin"
+    project_root.mkdir(parents=True)
+    team_dir.mkdir(parents=True)
+    bin_dir.mkdir(parents=True)
+
+    (team_dir / "orchestrator.json").write_text(
+        json.dumps(
+            {
+                "agents": [
+                    {
+                        "role": "Claude-Writer",
+                        "provider": "claude",
+                        "launch": "claude",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    claude_bin = bin_dir / "claude"
+    claude_bin.write_text(
+        "#!/usr/bin/env bash\n"
+        "echo '429 rate limit exceeded; retry after 60s' >&2\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    claude_bin.chmod(0o755)
+
+    codex_bin = bin_dir / "codex"
+    codex_bin.write_text(
+        "#!/usr/bin/env bash\n"
+        "out=''\n"
+        "while [[ $# -gt 0 ]]; do\n"
+        "  if [[ \"$1\" == '-o' ]]; then out=\"$2\"; shift 2; continue; fi\n"
+        "  shift\n"
+        "done\n"
+        "printf 'fallback ok\\n' > \"$out\"\n",
+        encoding="utf-8",
+    )
+    codex_bin.chmod(0o755)
+
+    env = dict(os.environ)
+    env.update(
+        {
+            "PATH": f"{bin_dir}:{env.get('PATH', '')}",
+            "AOE_WORKER_ACTOR": "Claude-Writer",
+            "AOE_PROJECT_ROOT": str(project_root),
+            "AOE_TEAM_DIR": str(team_dir),
+            "AOE_MSG_TITLE": "writer task",
+            "AOE_MSG_BODY": "User Request:\n정리 문서를 작성해줘.\n",
+            "AOE_CLAUDE_FALLBACK_TO_CODEX": "1",
+        }
+    )
+
+    proc = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "team" / "runtime" / "worker_codex_handler.sh")],
+        text=True,
+        capture_output=True,
+        env=env,
+        cwd=str(project_root),
+    )
+
+    assert proc.returncode == 0
+    assert "fallback ok" in proc.stdout
+    log_path = team_dir / "logs" / "worker_Claude-Writer_.log"
+    logs = "\n".join(path.read_text(encoding="utf-8") for path in (team_dir / "logs").glob("worker_*.log"))
+    assert "provider_rate_limit provider=claude fallback=codex" in logs
+
+
+def test_worker_handler_falls_back_to_claude_when_codex_is_rate_limited(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    team_dir = project_root / ".aoe-team"
+    bin_dir = tmp_path / "bin"
+    project_root.mkdir(parents=True)
+    team_dir.mkdir(parents=True)
+    bin_dir.mkdir(parents=True)
+
+    (team_dir / "orchestrator.json").write_text(
+        json.dumps(
+            {
+                "agents": [
+                    {
+                        "role": "Codex-Writer",
+                        "provider": "codex",
+                        "launch": "codex",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    codex_bin = bin_dir / "codex"
+    codex_bin.write_text(
+        "#!/usr/bin/env bash\n"
+        "echo '429 rate limit exceeded; retry after 120s' >&2\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    codex_bin.chmod(0o755)
+
+    claude_bin = bin_dir / "claude"
+    claude_bin.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf 'fallback via claude\\n'\n",
+        encoding="utf-8",
+    )
+    claude_bin.chmod(0o755)
+
+    env = dict(os.environ)
+    env.update(
+        {
+            "PATH": f"{bin_dir}:{env.get('PATH', '')}",
+            "AOE_WORKER_ACTOR": "Codex-Writer",
+            "AOE_PROJECT_ROOT": str(project_root),
+            "AOE_TEAM_DIR": str(team_dir),
+            "AOE_MSG_TITLE": "writer task",
+            "AOE_MSG_BODY": "User Request:\n정리 문서를 작성해줘.\n",
+            "AOE_CODEX_FALLBACK_TO_CLAUDE": "1",
+        }
+    )
+
+    proc = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "team" / "runtime" / "worker_codex_handler.sh")],
+        text=True,
+        capture_output=True,
+        env=env,
+        cwd=str(project_root),
+    )
+
+    assert proc.returncode == 0
+    assert "fallback via claude" in proc.stdout
+    logs = "\n".join(path.read_text(encoding="utf-8") for path in (team_dir / "logs").glob("worker_*.log"))
+    assert "provider_rate_limit provider=codex fallback=claude" in logs
+
+
+def test_degraded_by_from_worker_sessions_reads_rate_limit_fallback_markers(tmp_path: Path) -> None:
+    log_path = tmp_path / "worker.log"
+    log_path.write_text(
+        "[WARN] provider_rate_limit provider=claude fallback=codex role=Claude-Writer\n"
+        "[WARN] provider_rate_limit provider=codex fallback=claude role=Codex-Writer\n",
+        encoding="utf-8",
+    )
+
+    degraded = tf_exec.degraded_by_from_worker_sessions(
+        {
+            "sessions": [
+                {"log_file": str(log_path)},
+            ]
+        }
+    )
+
+    assert degraded == ["claude_rate_limit->codex", "codex_rate_limit->claude"]
+
+
 def test_local_run_aoe_orch_stages_review_lanes_after_execution(monkeypatch, tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     team_dir = project_root / ".aoe-team"
@@ -771,17 +936,17 @@ def test_local_run_aoe_orch_stages_review_lanes_after_execution(monkeypatch, tmp
                     "reply_messages": [{"id": "REP-EXEC", "from": "Codex-Dev", "status": "sent"}],
                 }
                 return Proc(returncode=0, stdout=json.dumps(payload), stderr="")
-            if roles == "Reviewer":
+            if roles == "Codex-Reviewer":
                 payload = {
                     "request_id": req_id,
                     "complete": True,
                     "counts": {"assignments": 1, "replies": 1},
-                    "roles": [{"role": "Reviewer", "status": "done", "message_id": "MSG-REVIEW"}],
-                    "done_roles": ["Reviewer"],
+                    "roles": [{"role": "Codex-Reviewer", "status": "done", "message_id": "MSG-REVIEW"}],
+                    "done_roles": ["Codex-Reviewer"],
                     "failed_roles": [],
                     "pending_roles": [],
-                    "replies": [{"role": "Reviewer", "body": "review done"}],
-                    "reply_messages": [{"id": "REP-REVIEW", "from": "Reviewer", "status": "sent"}],
+                    "replies": [{"role": "Codex-Reviewer", "body": "review done"}],
+                    "reply_messages": [{"id": "REP-REVIEW", "from": "Codex-Reviewer", "status": "sent"}],
                 }
                 return Proc(returncode=0, stdout=json.dumps(payload), stderr="")
             raise AssertionError(f"unexpected roles {roles}")
@@ -809,13 +974,13 @@ def test_local_run_aoe_orch_stages_review_lanes_after_execution(monkeypatch, tmp
         default_tf_worker_startup_grace_sec=gw.DEFAULT_TF_WORKER_STARTUP_GRACE_SEC,
         now_iso=gw.now_iso,
         run_command=fake_run_command,
-        roles_override="Codex-Dev,Reviewer",
+        roles_override="Codex-Dev,Codex-Reviewer",
         metadata={
             "phase2_execution_plan": {
                 "execution_mode": "single",
                 "execution_lanes": [{"lane_id": "L1", "role": "Codex-Dev", "subtask_ids": ["S1"], "parallel": False}],
                 "review_mode": "single",
-                "review_lanes": [{"lane_id": "R1", "role": "Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": False}],
+                "review_lanes": [{"lane_id": "R1", "role": "Codex-Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": False}],
                 "parallel_workers": False,
                 "parallel_reviews": False,
                 "readonly": True,
@@ -823,12 +988,12 @@ def test_local_run_aoe_orch_stages_review_lanes_after_execution(monkeypatch, tmp
         },
     )
 
-    assert recorded_roles == [("REQ-EXEC", "Codex-Dev"), ("REQ-REVIEW", "Reviewer")]
+    assert recorded_roles == [("REQ-EXEC", "Codex-Dev"), ("REQ-REVIEW", "Codex-Reviewer")]
     assert result["phase2_review_triggered"] is True
     assert result["phase2_request_ids"] == {"execution": "REQ-EXEC", "review": "REQ-REVIEW"}
     assert result["linked_request_ids"] == ["REQ-EXEC", "REQ-REVIEW"]
     assert len(result["replies"]) == 2
-    assert {row["role"] for row in result["role_states"]} == {"Codex-Dev", "Reviewer"}
+    assert {row["role"] for row in result["role_states"]} == {"Codex-Dev", "Codex-Reviewer"}
     assert result["tf_workers"]["execution"]["sessions"][0]["execution_lane_ids"] == ["L1"]
     assert result["tf_workers"]["review"]["sessions"][0]["review_lane_ids"] == ["R1"]
 
@@ -903,7 +1068,7 @@ def test_local_run_aoe_orch_fanouts_parallel_execution_and_review_lanes(monkeypa
         default_tf_worker_startup_grace_sec=gw.DEFAULT_TF_WORKER_STARTUP_GRACE_SEC,
         now_iso=gw.now_iso,
         run_command=fake_run_command,
-        roles_override="Codex-Dev,Codex-Writer,Reviewer,Claude-Reviewer",
+        roles_override="Codex-Dev,Codex-Writer,Codex-Reviewer,Claude-Reviewer",
         metadata={
             "request_id": "REQ-TOP",
             "gateway_request_id": "REQ-TOP",
@@ -915,7 +1080,7 @@ def test_local_run_aoe_orch_fanouts_parallel_execution_and_review_lanes(monkeypa
                 ],
                 "review_mode": "parallel",
                 "review_lanes": [
-                    {"lane_id": "R1", "role": "Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": True},
+                    {"lane_id": "R1", "role": "Codex-Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": True},
                     {"lane_id": "R2", "role": "Claude-Reviewer", "kind": "verifier", "depends_on": ["L2"], "parallel": True},
                 ],
                 "parallel_workers": True,
@@ -932,7 +1097,7 @@ def test_local_run_aoe_orch_fanouts_parallel_execution_and_review_lanes(monkeypa
     assert set(result["linked_request_ids"]) == set(execution_ids + review_ids)
     assert result["request_id"] == "REQ-TOP"
     assert result["gateway_request_id"] == "REQ-TOP"
-    assert {role for _req, role in recorded_roles} == {"Codex-Dev", "Codex-Writer", "Reviewer", "Claude-Reviewer"}
+    assert {role for _req, role in recorded_roles} == {"Codex-Dev", "Codex-Writer", "Codex-Reviewer", "Claude-Reviewer"}
     assert result["tf_workers"]["execution"]["parallel"] is True
     assert len(result["tf_workers"]["execution"]["lanes"]) == 2
     assert result["tf_workers"]["review"]["parallel"] is True
@@ -1005,7 +1170,7 @@ def test_local_run_aoe_orch_preserves_same_role_parallel_lane_role_states(monkey
         default_tf_worker_startup_grace_sec=gw.DEFAULT_TF_WORKER_STARTUP_GRACE_SEC,
         now_iso=gw.now_iso,
         run_command=fake_run_command,
-        roles_override="Codex-Analyst,Reviewer",
+        roles_override="Codex-Analyst,Codex-Reviewer",
         metadata={
             "request_id": "REQ-TOP",
             "gateway_request_id": "REQ-TOP",
@@ -1017,8 +1182,8 @@ def test_local_run_aoe_orch_preserves_same_role_parallel_lane_role_states(monkey
                 ],
                 "review_mode": "parallel",
                 "review_lanes": [
-                    {"lane_id": "R1", "role": "Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": True},
-                    {"lane_id": "R2", "role": "Reviewer", "kind": "verifier", "depends_on": ["L2"], "parallel": True},
+                    {"lane_id": "R1", "role": "Codex-Reviewer", "kind": "verifier", "depends_on": ["L1"], "parallel": True},
+                    {"lane_id": "R2", "role": "Codex-Reviewer", "kind": "verifier", "depends_on": ["L2"], "parallel": True},
                 ],
                 "parallel_workers": True,
                 "parallel_reviews": True,
@@ -1032,8 +1197,8 @@ def test_local_run_aoe_orch_preserves_same_role_parallel_lane_role_states(monkey
     assert sorted((row.get("role"), row.get("lane_id"), row.get("phase2_stage")) for row in role_rows) == [
         ("Codex-Analyst", "L1", "execution"),
         ("Codex-Analyst", "L2", "execution"),
-        ("Reviewer", "R1", "review"),
-        ("Reviewer", "R2", "review"),
+        ("Codex-Reviewer", "R1", "review"),
+        ("Codex-Reviewer", "R2", "review"),
     ]
 
 
@@ -1051,7 +1216,7 @@ def test_send_dispatch_result_finalizes_linked_request_ids() -> None:
             "request_id": "REQ-EXEC",
             "linked_request_ids": ["REQ-EXEC", "REQ-REVIEW"],
             "complete": True,
-            "replies": [{"role": "Reviewer", "body": "done"}],
+            "replies": [{"role": "Codex-Reviewer", "body": "done"}],
         },
         req_id="REQ-EXEC",
         task=None,

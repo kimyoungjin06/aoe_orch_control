@@ -32,6 +32,7 @@ class PlanMeta:
     phase1_mode: str = ""
     phase1_rounds: int = 0
     phase1_providers: List[str] = field(default_factory=list)
+    rate_limit: Dict[str, Any] = field(default_factory=dict)
 
 
 def apply_success_first_prompt_fallbacks(prompt: str) -> tuple[str, List[str]]:
@@ -123,7 +124,7 @@ def resolve_dispatch_mode_and_roles(
     elif run_force_mode == "dispatch":
         dispatch_mode = True
         if not dispatch_roles:
-            dispatch_roles = ",".join(auto_roles) if auto_roles else "Reviewer"
+            dispatch_roles = ",".join(auto_roles) if auto_roles else "Codex-Reviewer"
     elif dispatch_roles:
         dispatch_mode = True
     elif auto_dispatch_enabled and auto_roles:
@@ -131,7 +132,7 @@ def resolve_dispatch_mode_and_roles(
         dispatch_roles = ",".join(auto_roles)
     elif str(prompt or "").strip():
         dispatch_mode = True
-        dispatch_roles = ",".join(auto_roles) if auto_roles else "Reviewer"
+        dispatch_roles = ",".join(auto_roles) if auto_roles else "Codex-Reviewer"
 
     return DispatchModeResult(
         dispatch_mode=dispatch_mode,
@@ -175,6 +176,7 @@ def compute_dispatch_plan(
     phase1_mode = ""
     phase1_rounds = 0
     phase1_providers: List[str] = []
+    rate_limit: Dict[str, Any] = {}
 
     if dispatch_mode and (planning_enabled or reuse_source_plan) and not args.dry_run:
         try:
@@ -209,6 +211,7 @@ def compute_dispatch_plan(
                     phase1_mode = str(ensemble.get("phase1_mode", "ensemble") or "ensemble")
                     phase1_rounds = max(0, int(ensemble.get("phase1_rounds", 0) or 0))
                     phase1_providers = [str(x).strip() for x in (ensemble.get("phase1_providers") or []) if str(x).strip()]
+                    rate_limit = dict(ensemble.get("rate_limit") or {}) if isinstance(ensemble.get("rate_limit"), dict) else {}
                 else:
                     if callable(report_progress):
                         report_progress(phase="planner", detail="building execution plan")
@@ -298,6 +301,7 @@ def compute_dispatch_plan(
         phase1_mode=phase1_mode,
         phase1_rounds=phase1_rounds,
         phase1_providers=phase1_providers,
+        rate_limit=rate_limit,
     )
 
 

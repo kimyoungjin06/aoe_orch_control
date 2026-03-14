@@ -14,6 +14,7 @@ TASK_APPROVAL_MODES = ("policy", "confirm", "none")
 TASK_STATUSES = (
     "queued",
     "planning",
+    "rate_limited",
     "running",
     "critic_review",
     "needs_retry",
@@ -30,7 +31,7 @@ VERDICT_ACTIONS = ("none", "retry", "replan", "escalate", "abort")
 TEAM_EXECUTION_MODES = ("single", "parallel")
 TEAM_REVIEW_MODES = ("skip", "single", "parallel")
 COMPANION_ROLE_MAP = {
-    "Reviewer": "Claude-Reviewer",
+    "Codex-Reviewer": "Claude-Reviewer",
     "Codex-Writer": "Claude-Writer",
     "Codex-Analyst": "Claude-Analyst",
 }
@@ -92,9 +93,13 @@ def derive_tf_phase(task: Any) -> str:
     plan_gate_reason = _trim_text(data.get("plan_gate_reason", ""), 240)
     exec_critic = data.get("exec_critic") if isinstance(data.get("exec_critic"), dict) else {}
     exec_verdict = _normalize_choice(exec_critic.get("verdict"), VERDICT_STATUSES, "")
+    rate_limit = data.get("rate_limit") if isinstance(data.get("rate_limit"), dict) else {}
+    rate_limit_mode = str(rate_limit.get("mode", "")).strip().lower()
 
     if status == "completed":
         return "completed"
+    if rate_limit_mode == "blocked":
+        return "rate_limited"
     if plan_gate_passed is False or plan_gate_reason:
         return "blocked"
     if exec_verdict == "retry":
@@ -131,6 +136,19 @@ def derive_tf_phase_reason(task: Any) -> str:
     exec_critic = data.get("exec_critic") if isinstance(data.get("exec_critic"), dict) else {}
     exec_reason = _trim_text(exec_critic.get("reason", exec_critic.get("fix", "")), 240)
     plan_gate_reason = _trim_text(data.get("plan_gate_reason", ""), 240)
+    rate_limit = data.get("rate_limit") if isinstance(data.get("rate_limit"), dict) else {}
+    if str(rate_limit.get("mode", "")).strip().lower() == "blocked":
+        providers = [str(x).strip() for x in (rate_limit.get("limited_providers") or []) if str(x).strip()]
+        retry_after = int(rate_limit.get("retry_after_sec", 0) or 0)
+        retry_at = str(rate_limit.get("retry_at", "")).strip()
+        parts = []
+        if providers:
+            parts.append("providers=" + ",".join(providers))
+        if retry_after > 0:
+            parts.append(f"retry_after={retry_after}s")
+        if retry_at:
+            parts.append(f"retry_at={retry_at}")
+        return "provider capacity unavailable" + (f" ({' '.join(parts)})" if parts else "")
     if plan_gate_reason:
         return plan_gate_reason
     if exec_reason:
@@ -440,7 +458,7 @@ def _review_roles(
                 inferred.append(role)
         if inferred:
             return _with_companions(inferred)
-        return _with_companions(["Reviewer"])
+        return _with_companions(["Codex-Reviewer"])
     return []
 
 
@@ -560,7 +578,7 @@ def normalize_phase2_team_spec(
         [row.get("role", "") for row in execution_groups] + [row.get("role", "") for row in review_groups],
         limit=16,
     )
-    critic_role = _trim_text(data.get("critic_role", ""), 64) or (review_groups[0]["role"] if review_groups else (team_roles[-1] if team_roles else "Reviewer"))
+    critic_role = _trim_text(data.get("critic_role", ""), 64) or (review_groups[0]["role"] if review_groups else (team_roles[-1] if team_roles else "Codex-Reviewer"))
     integration_role = _trim_text(data.get("integration_role", ""), 64) or (review_groups[0]["role"] if review_groups else (execution_groups[-1]["role"] if execution_groups else critic_role))
 
     return {
@@ -692,7 +710,7 @@ def normalize_tf_plan(
     critic_data = critic_in if isinstance(critic_in, dict) else {}
     critic_role = (
         _trim_text(critic_data.get("role", ""), 64)
-        or ("Reviewer" if "Reviewer" in execution_order else execution_order[-1])
+        or ("Codex-Reviewer" if "Codex-Reviewer" in execution_order else execution_order[-1])
     )
     status = _normalize_choice(data.get("status"), PLAN_STATUSES, "ready")
     blocking_issues = _normalize_text_list(
@@ -719,7 +737,7 @@ def normalize_tf_plan(
     return attach_phase2_team_spec(
         normalized,
         roles=list(spec.get("requested_roles") or []),
-        verifier_roles=["Reviewer"] if normalized["critic"]["required"] else [],
+        verifier_roles=["Codex-Reviewer"] if normalized["critic"]["required"] else [],
         require_verifier=bool(normalized["critic"]["required"]),
     )
 

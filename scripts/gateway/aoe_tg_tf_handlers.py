@@ -24,7 +24,7 @@ class TFRecipe:
     title: str
     prompt_template: str  # legacy: for future LLM-backed recipes
     default_tag: str = "phase-1"
-    roles_csv: str = "Reviewer"
+    roles_csv: str = "Codex-Reviewer"
     priority: str = "P2"
 
 
@@ -33,7 +33,7 @@ _RECIPES: Dict[str, TFRecipe] = {
         id="mod2-proof",
         title="TwinPaper Module02 pipeline proof (read-only, evidence-based)",
         default_tag="phase-1",
-        roles_csv="Reviewer",
+        roles_csv="Codex-Reviewer",
         prompt_template=(
             "목표: TwinPaper Module02(02_golden_set) 파이프라인 상태를 '증거 기반으로' 점검하고, "
             "contract-ci 및 phase1-dedup 산출물의 존재/정상 여부를 요약한다. "

@@ -30,6 +30,7 @@ def task_priority_action_snapshot(
     rerun_review_lane_ids: List[str],
     manual_followup_execution_lane_ids: List[str],
     manual_followup_review_lane_ids: List[str],
+    rate_limit: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, str]:
     safe_label = str(label or "").strip()
     safe_phase = normalize_tf_phase(tf_phase, "queued")
@@ -54,6 +55,17 @@ def task_priority_action_snapshot(
         return {
             "action": f"/task {safe_label}",
             "reason": "active task is still planning",
+        }
+
+    if safe_label and safe_phase == "rate_limited":
+        retry_at = str((rate_limit or {}).get("retry_at", "")).strip() if isinstance(rate_limit, dict) else ""
+        return {
+            "action": f"/task {safe_label}",
+            "reason": (
+                f"active task is waiting for provider capacity until {retry_at}"
+                if retry_at
+                else "active task is waiting for provider capacity"
+            ),
         }
 
     if safe_label and safe_phase in {"needs_retry", "critic_review"}:
@@ -89,6 +101,7 @@ def offdesk_priority_action_snapshot(
     active_task_label: str,
     active_task_tf_phase: str,
     active_task_targets: Optional[Dict[str, List[str]]] = None,
+    active_task_rate_limit: Optional[Dict[str, Any]] = None,
     syncback_pending: bool,
     followup_count: int,
     proposal_count: int,
@@ -109,6 +122,7 @@ def offdesk_priority_action_snapshot(
         rerun_review_lane_ids=list((active_task_targets or {}).get("rerun_review_lane_ids") or []),
         manual_followup_execution_lane_ids=list((active_task_targets or {}).get("manual_followup_execution_lane_ids") or []),
         manual_followup_review_lane_ids=list((active_task_targets or {}).get("manual_followup_review_lane_ids") or []),
+        rate_limit=active_task_rate_limit if isinstance(active_task_rate_limit, dict) else None,
     )
     if str(task_priority.get("action", "")).strip():
         return task_priority

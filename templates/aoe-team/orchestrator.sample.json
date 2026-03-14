@@ -23,7 +23,7 @@
       "session": ""
     },
     {
-      "role": "Reviewer",
+      "role": "Codex-Reviewer",
       "provider": "codex",
       "launch": "codex",
       "session": ""

@@ -208,7 +208,7 @@ def enforce_dispatch_policies(
             "error: verifier gate enabled but no verifier role is available.\n"
             f"required_candidates={', '.join(verifier_candidates) or '-'}\n"
             f"project_roles={', '.join(available_roles) or '-'}\n"
-            "hint: add a verifier role (e.g. Reviewer) or disable gate with --no-require-verifier",
+            "hint: add a verifier role (e.g. Codex-Reviewer) or disable gate with --no-require-verifier",
             context="verifier-gate setup",
             with_menu=True,
             reply_markup=early_gate_reply_markup(entry, key),

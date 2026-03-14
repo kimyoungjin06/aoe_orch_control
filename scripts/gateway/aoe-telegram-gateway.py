@@ -89,6 +89,7 @@ import aoe_tg_plan_ensemble as plan_ensemble_mod
 import aoe_tg_poll_loop as poll_loop_mod
 import aoe_tg_message_handler as message_handler_mod
 import aoe_tg_request_state as request_state_mod
+from aoe_tg_role_aliases import canonicalize_role_name
 import aoe_tg_tf_exec as tf_exec_mod
 import aoe_tg_tf_backend_selection as tf_backend_selection_mod
 import aoe_tg_tf_backend_local as tf_backend_local_mod
@@ -195,7 +196,7 @@ DEFAULT_ORCH_COMMAND_TIMEOUT_SEC = 900
 DEFAULT_MAX_TEXT_CHARS = 3800
 DEFAULT_TASK_HISTORY_LIMIT = 80
 DEFAULT_TASK_KEEP_PER_PROJECT = 120
-DEFAULT_VERIFIER_ROLES = "Reviewer,QA,Verifier"
+DEFAULT_VERIFIER_ROLES = "Codex-Reviewer,QA,Verifier"
 DEFAULT_TASK_PLAN_MAX_SUBTASKS = 4
 DEFAULT_TASK_PLAN_REPLAN_ATTEMPTS = 2
 DEFAULT_SLASH_ONLY = True
@@ -1979,7 +1980,7 @@ def build_planned_dispatch_prompt(
             if not isinstance(row, dict):
                 continue
             gid = str(row.get("group_id", "")).strip() or "R"
-            role = str(row.get("role", "")).strip() or "Reviewer"
+            role = str(row.get("role", "")).strip() or "Codex-Reviewer"
             kind = str(row.get("kind", "")).strip() or "verifier"
             depends_on = [str(item).strip() for item in (row.get("depends_on") or []) if str(item).strip()]
             dep_txt = f" after {', '.join(depends_on)}" if depends_on else ""
