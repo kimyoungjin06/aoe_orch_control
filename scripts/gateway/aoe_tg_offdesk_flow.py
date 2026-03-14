@@ -860,6 +860,8 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
         "active_task_label": str(latest_task.get("label", "")).strip(),
         "active_task_tf_phase": str(latest_task.get("tf_phase", "")).strip(),
         "active_task_status": str(latest_task.get("status", "")).strip(),
+        "active_task_degraded_by": list(degraded_by),
+        "active_task_rate_limit": dict(active_rate_limit),
         "bootstrap_recommended": bootstrap_recommended,
         "sync_quality": str(sync_quality.get("quality", "")).strip(),
         "sync_quality_warn": bool(sync_quality.get("warn", False)),

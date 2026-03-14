@@ -498,6 +498,22 @@ def _handle_offdesk_command(
             first_reason = str(row.get("priority_reason", "")).strip() or "-"
             first_action = first_action or "-"
             lines.append(f"  first: {first_action} | {first_reason}")
+            active_rate_limit = row.get("active_task_rate_limit") if isinstance(row.get("active_task_rate_limit"), dict) else {}
+            active_degraded_by = [str(x).strip() for x in (row.get("active_task_degraded_by") or []) if str(x).strip()]
+            if active_rate_limit:
+                providers = [
+                    str(x).strip()
+                    for x in (active_rate_limit.get("limited_providers") or [])
+                    if str(x).strip()
+                ]
+                retry_at = str(active_rate_limit.get("retry_at", "")).strip() or "-"
+                lines.append(
+                    "  provider_capacity: providers={providers} retry_at={retry_at} degraded={degraded}".format(
+                        providers=",".join(providers) if providers else "-",
+                        retry_at=retry_at,
+                        degraded=",".join(active_degraded_by) if active_degraded_by else "-",
+                    )
+                )
             note_rows = list(row.get("notes") or [])
             for note in note_rows[:2]:
                 lines.append(f"  note: {note}")
