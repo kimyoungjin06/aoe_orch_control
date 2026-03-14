@@ -2448,6 +2448,36 @@ def test_offdesk_review_clean_keyboard_includes_auto_recover_when_available(tmp_
     assert "/auto recover" in buttons
 
 
+def test_offdesk_review_shows_recovery_grace_until_when_auto_recently_recovered(tmp_path: Path) -> None:
+    state = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+    team_dir = tmp_path / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (team_dir / "auto_scheduler.json").write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "chat_id": "939062873",
+                "command": "next",
+                "recovered_at": "2026-03-14T03:31:00+09:00",
+                "recovery_grace_until": "2026-03-14T03:41:00+00:00",
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    body, _markup = _call_management_status_with_markup(
+        tmp_path=tmp_path,
+        manager_state=state,
+        cmd="offdesk",
+        rest="review all",
+    )
+
+    assert "- recovery_grace_until: 2026-03-14T03:41:00+00:00" in body
+
+
 def _write_tf_exec_map(team_dir: Path, req_id: str, *, mode: str, workdir: Path, run_dir: Path) -> None:
     m = gw.load_tf_exec_map(team_dir)
     m[req_id] = {

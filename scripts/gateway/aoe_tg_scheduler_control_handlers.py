@@ -782,6 +782,7 @@ def _handle_offdesk_command(
             capacity_summary = _rate_limited_capacity_summary(manager_state)
             capacity_policy = _provider_capacity_policy(capacity_summary)
             recovery_action = _capacity_recovery_action(auto_state, provider_state, manager_state)
+            recovery_grace_until = str(auto_state.get("recovery_grace_until", "")).strip()
             recovery_target = _capacity_recovery_target(
                 auto_state,
                 focus_row=project_lock_row(manager_state),
@@ -811,6 +812,8 @@ def _handle_offdesk_command(
                 lines.append(f"- capacity_recovery_target: {recovery_target.get('target', '-')}")
                 if recovery_target.get("adjusted_reason"):
                     lines.append(f"- capacity_recovery_note: {recovery_target.get('adjusted_reason', '-')}")
+            if recovery_grace_until:
+                lines.append(f"- recovery_grace_until: {recovery_grace_until}")
             lines.extend(_provider_capacity_memory_lines(provider_state))
             send(
                 "\n".join(lines).strip(),
@@ -831,6 +834,7 @@ def _handle_offdesk_command(
         capacity_summary = _rate_limited_capacity_summary_for_reports(reports)
         capacity_policy = _provider_capacity_policy(capacity_summary)
         recovery_action = _capacity_recovery_action(auto_state, provider_state, manager_state)
+        recovery_grace_until = str(auto_state.get("recovery_grace_until", "")).strip()
         recovery_target = _capacity_recovery_target(
             auto_state,
             focus_row=project_lock_row(manager_state),
@@ -864,6 +868,8 @@ def _handle_offdesk_command(
             lines.append(f"- capacity_recovery_target: {recovery_target.get('target', '-')}")
             if recovery_target.get("adjusted_reason"):
                 lines.append(f"- capacity_recovery_note: {recovery_target.get('adjusted_reason', '-')}")
+        if recovery_grace_until:
+            lines.append(f"- recovery_grace_until: {recovery_grace_until}")
         lines.extend(_provider_capacity_memory_lines(provider_state))
         if not flagged:
             lines.extend(["- status: clean", "", "next:", "- /offdesk on", "- /auto status"])
