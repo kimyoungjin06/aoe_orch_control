@@ -58,6 +58,47 @@ def _next_rate_limited_task_snapshot(manager_state: Dict[str, Any]) -> Dict[str,
     return best_row
 
 
+def _rate_limited_capacity_summary(manager_state: Dict[str, Any]) -> Dict[str, str]:
+    projects = manager_state.get("projects") if isinstance(manager_state, dict) else {}
+    if not isinstance(projects, dict):
+        return {}
+    project_aliases: set[str] = set()
+    provider_counts: Dict[str, int] = {}
+    task_count = 0
+    for key, entry in projects.items():
+        if not isinstance(entry, dict):
+            continue
+        alias = str(entry.get("project_alias", "")).strip().upper() or str(key or "").strip() or "-"
+        tasks = entry.get("tasks")
+        if not isinstance(tasks, dict):
+            continue
+        project_has_limited_task = False
+        for task in tasks.values():
+            if not isinstance(task, dict):
+                continue
+            rate_limit = task.get("rate_limit") if isinstance(task.get("rate_limit"), dict) else {}
+            if str(rate_limit.get("mode", "")).strip().lower() != "blocked":
+                continue
+            task_count += 1
+            project_has_limited_task = True
+            for raw_provider in rate_limit.get("limited_providers") or []:
+                provider = str(raw_provider or "").strip().lower()
+                if not provider:
+                    continue
+                provider_counts[provider] = int(provider_counts.get(provider, 0)) + 1
+        if project_has_limited_task:
+            project_aliases.add(alias)
+    if task_count <= 0:
+        return {}
+    ordered = sorted(provider_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    provider_summary = ", ".join(f"{provider}={count}" for provider, count in ordered) or "-"
+    return {
+        "task_count": str(task_count),
+        "project_count": str(len(project_aliases)),
+        "provider_summary": provider_summary,
+    }
+
+
 def _handle_focus_command(
     *,
     args: Any,
@@ -893,6 +934,7 @@ def _handle_auto_command(
         last_prefetch_mode = str(current.get("last_prefetch_mode", "")).strip()
         next_retry_at = str(current.get("next_retry_at", "")).strip()
         next_retry_target = _next_rate_limited_task_snapshot(manager_state)
+        capacity_summary = _rate_limited_capacity_summary(manager_state)
         stuck_candidate = str(current.get("stuck_candidate", "")).strip()
         stuck_count = int(current.get("stuck_count") or 0)
         fail_count = int(current.get("fail_count") or 0)
@@ -920,6 +962,14 @@ def _handle_auto_command(
             lines.append(f"- last_reason: {compact_reason(last_reason, 120)}")
         if next_retry_at:
             lines.append(f"- next_retry_at: {next_retry_at}")
+        if capacity_summary:
+            lines.append(
+                "- provider_capacity: tasks={tasks} projects={projects} providers={providers}".format(
+                    tasks=capacity_summary.get("task_count", "0"),
+                    projects=capacity_summary.get("project_count", "0"),
+                    providers=capacity_summary.get("provider_summary", "-"),
+                )
+            )
         if next_retry_target:
             lines.append(
                 "- next_retry_target: {alias} {task_ref} providers={providers} degraded={degraded}".format(
