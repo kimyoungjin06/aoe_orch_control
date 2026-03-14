@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Iterable, Optional
 
 
@@ -36,6 +38,23 @@ def is_rate_limit_error(raw: object) -> bool:
 def fallback_provider_for(raw: Optional[str]) -> str:
     token = str(raw or "").strip().lower()
     return _PROVIDER_FALLBACKS.get(token, "")
+
+
+def load_provider_capacity_state(team_dir: Any) -> dict:
+    token = str(team_dir or "").strip()
+    if not token:
+        return {}
+    try:
+        path = Path(token).expanduser().resolve() / "provider_capacity.json"
+    except Exception:
+        return {}
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def extract_retry_after_sec(raw: object, *, default: int = 300) -> int:
@@ -89,6 +108,43 @@ def rate_limit_retry_active(snapshot: object, *, now: Optional[datetime] = None)
     if current.tzinfo is None:
         current = current.replace(tzinfo=timezone.utc)
     return parsed > current.astimezone(timezone.utc)
+
+
+def provider_cooldown_active(memory_state: Any, provider: str, *, now: Optional[datetime] = None) -> bool:
+    if not isinstance(memory_state, dict):
+        return False
+    providers = memory_state.get("providers") if isinstance(memory_state.get("providers"), dict) else {}
+    row = providers.get(str(provider or "").strip().lower()) if isinstance(providers, dict) else None
+    if not isinstance(row, dict):
+        return False
+    parsed = parse_retry_at(row.get("next_retry_at") or row.get("last_retry_at"))
+    if parsed is None:
+        return False
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return parsed > current.astimezone(timezone.utc)
+
+
+def proactive_fallback_provider(
+    provider: str,
+    *,
+    memory_state: Any,
+    available_providers: Iterable[str] = (),
+    now: Optional[datetime] = None,
+) -> str:
+    origin = str(provider or "").strip().lower()
+    fallback = fallback_provider_for(origin)
+    if not fallback or fallback == origin:
+        return ""
+    available = {str(item or "").strip().lower() for item in (available_providers or []) if str(item or "").strip()}
+    if available and fallback not in available:
+        return ""
+    if not provider_cooldown_active(memory_state, origin, now=now):
+        return ""
+    if provider_cooldown_active(memory_state, fallback, now=now):
+        return ""
+    return fallback
 
 
 def build_rate_limit_snapshot(

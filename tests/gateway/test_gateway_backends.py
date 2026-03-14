@@ -801,6 +801,92 @@ def test_worker_handler_falls_back_to_codex_when_claude_is_rate_limited(tmp_path
     assert "provider_rate_limit provider=claude fallback=codex" in logs
 
 
+def test_worker_handler_proactively_falls_back_to_codex_when_claude_cooldown_is_active(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    team_dir = project_root / ".aoe-team"
+    bin_dir = tmp_path / "bin"
+    project_root.mkdir(parents=True)
+    team_dir.mkdir(parents=True)
+    bin_dir.mkdir(parents=True)
+
+    (team_dir / "orchestrator.json").write_text(
+        json.dumps(
+            {
+                "agents": [
+                    {
+                        "role": "Claude-Writer",
+                        "provider": "claude",
+                        "launch": "claude",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    (team_dir / "provider_capacity.json").write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "claude": {
+                        "blocked_count": 1,
+                        "project_count": 1,
+                        "cooldown_level": "cooldown",
+                        "next_retry_at": "2099-03-14T03:10:00+09:00",
+                    }
+                }
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    claude_bin = bin_dir / "claude"
+    claude_bin.write_text("#!/usr/bin/env bash\nexit 99\n", encoding="utf-8")
+    claude_bin.chmod(0o755)
+
+    codex_bin = bin_dir / "codex"
+    codex_bin.write_text(
+        "#!/usr/bin/env bash\n"
+        "out=''\n"
+        "while [[ $# -gt 0 ]]; do\n"
+        "  if [[ \"$1\" == '-o' ]]; then out=\"$2\"; shift 2; continue; fi\n"
+        "  shift\n"
+        "done\n"
+        "printf 'fallback ok\\n' > \"$out\"\n",
+        encoding="utf-8",
+    )
+    codex_bin.chmod(0o755)
+
+    env = dict(os.environ)
+    env.update(
+        {
+            "PATH": f"{bin_dir}:{env.get('PATH', '')}",
+            "AOE_WORKER_ACTOR": "Claude-Writer",
+            "AOE_PROJECT_ROOT": str(project_root),
+            "AOE_TEAM_DIR": str(team_dir),
+            "AOE_MSG_TITLE": "writer task",
+            "AOE_MSG_BODY": "User Request:\n정리 문서를 작성해줘.\n",
+        }
+    )
+
+    proc = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "team" / "runtime" / "worker_codex_handler.sh")],
+        text=True,
+        capture_output=True,
+        env=env,
+        cwd=str(project_root),
+    )
+
+    assert proc.returncode == 0
+    assert "fallback ok" in proc.stdout
+    logs = "\n".join(path.read_text(encoding="utf-8") for path in (team_dir / "logs").glob("worker_*.log"))
+    assert "provider_cooldown provider=claude fallback=codex" in logs
+
+
 def test_worker_handler_falls_back_to_claude_when_codex_is_rate_limited(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     team_dir = project_root / ".aoe-team"
@@ -875,6 +961,25 @@ def test_degraded_by_from_worker_sessions_reads_rate_limit_fallback_markers(tmp_
     log_path.write_text(
         "[WARN] provider_rate_limit provider=claude fallback=codex role=Claude-Writer\n"
         "[WARN] provider_rate_limit provider=codex fallback=claude role=Codex-Writer\n",
+        encoding="utf-8",
+    )
+
+    degraded = tf_exec.degraded_by_from_worker_sessions(
+        {
+            "sessions": [
+                {"log_file": str(log_path)},
+            ]
+        }
+    )
+
+    assert degraded == ["claude_rate_limit->codex", "codex_rate_limit->claude"]
+
+
+def test_degraded_by_from_worker_sessions_reads_provider_cooldown_fallback_markers(tmp_path: Path) -> None:
+    log_path = tmp_path / "worker.log"
+    log_path.write_text(
+        "[WARN] provider_cooldown provider=claude fallback=codex role=Claude-Writer\n"
+        "[WARN] provider_cooldown provider=codex fallback=claude role=Codex-Writer\n",
         encoding="utf-8",
     )
 

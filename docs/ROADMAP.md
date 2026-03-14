@@ -78,4 +78,5 @@
 - [x] provider capacity summary를 `/auto status`, `/offdesk review`에 표시
 - [x] provider capacity cooldown memory(`provider_capacity.json`) 저장
 - [x] operator override history(`/auto off`) 기록
+- [x] planning / worker runtime이 active provider cooldown memory를 보고 선제 fallback
 - [ ] provider별 backoff level 세분화 정책 고도화
