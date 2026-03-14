@@ -376,6 +376,60 @@ def _provider_capacity_snapshot(
     return result
 
 
+def _merge_provider_capacity_memory(
+    previous_state: Dict[str, Any],
+    snapshot: Dict[str, Any],
+    *,
+    now_iso: str,
+) -> Dict[str, Any]:
+    payload = dict(snapshot) if isinstance(snapshot, dict) else {}
+    previous = previous_state if isinstance(previous_state, dict) else {}
+
+    history = previous.get("override_history") if isinstance(previous.get("override_history"), list) else []
+    if history:
+        payload["override_history"] = [row for row in history if isinstance(row, dict)][-10:]
+
+    repeat_count = int(previous.get("recovery_repeat_count", 0) or 0)
+    repeat_last_at = str(previous.get("recovery_repeat_last_at", "")).strip()
+    repeat_history = [
+        row
+        for row in (previous.get("recovery_repeat_history") if isinstance(previous.get("recovery_repeat_history"), list) else [])
+        if isinstance(row, dict)
+    ][-9:]
+    previous_active = str(previous.get("recovery_repeat_active_summary", "")).strip()
+    current_repeat = payload.get("recovery_repeat") if isinstance(payload.get("recovery_repeat"), dict) else {}
+    current_summary = str(current_repeat.get("summary", "")).strip()
+    current_aliases = [str(x).strip().upper() for x in (current_repeat.get("aliases") or []) if str(x).strip()]
+
+    if current_summary:
+        if current_summary != previous_active:
+            repeat_count += 1
+            repeat_last_at = now_iso
+            repeat_history.append(
+                {
+                    "at": now_iso,
+                    "summary": current_summary,
+                    "aliases": current_aliases,
+                }
+            )
+        payload["recovery_repeat_active_summary"] = current_summary
+    else:
+        payload.pop("recovery_repeat_active_summary", None)
+
+    if repeat_count > 0:
+        payload["recovery_repeat_count"] = repeat_count
+        if repeat_last_at:
+            payload["recovery_repeat_last_at"] = repeat_last_at
+        if repeat_history:
+            payload["recovery_repeat_history"] = repeat_history[-10:]
+    else:
+        payload.pop("recovery_repeat_count", None)
+        payload.pop("recovery_repeat_last_at", None)
+        payload.pop("recovery_repeat_history", None)
+
+    return payload
+
+
 def _auto_enabled(auto_state: Dict[str, Any]) -> bool:
     return bool(auto_state.get("enabled", False))
 
@@ -797,10 +851,11 @@ def main() -> int:
                         auto_state.pop("next_retry_at", None)
                     _save_json(auto_state_path, auto_state)
                     previous_capacity = _load_json(provider_capacity_state_path)
-                    capacity_payload = dict(capacity_snapshot)
-                    history = previous_capacity.get("override_history") if isinstance(previous_capacity.get("override_history"), list) else []
-                    if history:
-                        capacity_payload["override_history"] = [row for row in history if isinstance(row, dict)][-10:]
+                    capacity_payload = _merge_provider_capacity_memory(
+                        previous_capacity,
+                        capacity_snapshot,
+                        now_iso=_now_iso(),
+                    )
                     _save_json(provider_capacity_state_path, capacity_payload)
                 except Exception:
                     pass

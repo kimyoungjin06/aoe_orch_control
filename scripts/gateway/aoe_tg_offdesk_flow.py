@@ -935,6 +935,7 @@ def sort_offdesk_reports(reports: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             _status_rank(row),
             -int(row.get("severity_score", 0) or 0),
             -int(row.get("capacity_pressure_score", 0) or 0),
+            -int(row.get("capacity_repeat_count", 0) or 0),
             -int(row.get("capacity_provider_count", 0) or 0),
             -int(row.get("capacity_retry_wait_sec", 0) or 0),
             _alias_rank(row),
