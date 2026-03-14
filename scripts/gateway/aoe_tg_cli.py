@@ -78,7 +78,7 @@ def build_parser(*, deps: Dict[str, Any]) -> argparse.ArgumentParser:
     p.add_argument("--owner-bootstrap-mode", default=os.environ.get("AOE_OWNER_BOOTSTRAP_MODE", ""), help="owner convenience: if default_mode is unset, set it to dispatch/direct on first owner message")
     p.add_argument("--require-verifier", action="store_true", default=(os.environ.get("AOE_REQUIRE_VERIFIER", "1").strip().lower() in {"1", "true", "yes", "on"}), help="require verifier-role completion before integration/close")
     p.add_argument("--no-require-verifier", dest="require_verifier", action="store_false", help="disable verifier gate")
-    p.add_argument("--verifier-roles", default=os.environ.get("AOE_VERIFIER_ROLES", deps["DEFAULT_VERIFIER_ROLES"]), help="comma-separated verifier role names (default: Codex-Reviewer,QA,Verifier)")
+    p.add_argument("--verifier-roles", default=os.environ.get("AOE_VERIFIER_ROLES", deps["DEFAULT_VERIFIER_ROLES"]), help="comma-separated verifier role names (default: Codex-Reviewer,Claude-Reviewer,QA,Verifier)")
 
     plan_max_raw = (os.environ.get("AOE_PLAN_MAX_SUBTASKS", "") or "").strip()
     try:
