@@ -2951,6 +2951,74 @@ def test_todo_next_blocks_unready_project(tmp_path: Path) -> None:
     assert "/orch status O2" in sent[-1]
 
 
+def test_todo_next_resumes_rate_limited_todo_after_retry_at(tmp_path: Path) -> None:
+    team_dir = tmp_path / "TwinPaper" / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (team_dir / "orchestrator.json").write_text("{}", encoding="utf-8")
+    manager_state = {
+        "projects": {
+            "twinpaper": {
+                "name": "twinpaper",
+                "display_name": "TwinPaper",
+                "project_alias": "O2",
+                "project_root": str(tmp_path / "TwinPaper"),
+                "team_dir": str(team_dir),
+                "todos": [
+                    {
+                        "id": "TODO-001",
+                        "summary": "resume me",
+                        "priority": "P1",
+                        "status": "running",
+                        "updated_at": "2026-03-14T00:00:00+0900",
+                    },
+                    {
+                        "id": "TODO-002",
+                        "summary": "leave later",
+                        "priority": "P2",
+                        "status": "open",
+                    },
+                ],
+                "tasks": {
+                    "r1": {
+                        "request_id": "r1",
+                        "todo_id": "TODO-001",
+                        "status": "running",
+                        "tf_phase": "rate_limited",
+                        "rate_limit": {
+                            "mode": "blocked",
+                            "limited_providers": ["codex", "claude"],
+                            "retry_after_sec": 180,
+                            "retry_at": "2000-01-01T00:00:00+00:00",
+                        },
+                    }
+                },
+                "todo_seq": 2,
+            }
+        }
+    }
+    sent: list[str] = []
+
+    result = todo_handlers.handle_todo_command(
+        cmd="todo",
+        args=argparse.Namespace(dry_run=False, manager_state_file=tmp_path / "state.json"),
+        manager_state=manager_state,
+        chat_id="939062873",
+        chat_role="admin",
+        orch_target="twinpaper",
+        rest="next",
+        send=lambda body, **kwargs: sent.append(body) or True,
+        get_context=lambda target: ("twinpaper", manager_state["projects"]["twinpaper"], argparse.Namespace(project_root=tmp_path / "TwinPaper", team_dir=team_dir)),
+        save_manager_state=lambda *args, **kwargs: None,
+        now_iso=lambda: "2026-03-14T01:00:00+0900",
+    )
+
+    assert result["terminal"] is False
+    assert result["run_prompt"] == "resume me"
+    assert manager_state["projects"]["twinpaper"]["pending_todo"]["todo_id"] == "TODO-001"
+    assert sent
+    assert "todo next resumed" in sent[-1]
+
+
 def test_todo_with_explicit_other_project_under_focus_returns_operator_message(tmp_path: Path) -> None:
     state = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
     twin_root = tmp_path / "TwinPaper"

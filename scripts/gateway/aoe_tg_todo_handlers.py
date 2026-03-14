@@ -638,8 +638,10 @@ def handle_todo_command(
             )
             return {"terminal": True}
 
+        resume_rows = queue_snap.get("resume_rows") if isinstance(queue_snap.get("resume_rows"), list) else []
         open_rows = _sorted_open_todos(todos)
-        if not open_rows:
+        candidate_rows = [row for row in resume_rows if isinstance(row, dict)] or open_rows
+        if not candidate_rows:
             send(
                 f"orch: {key}\n"
                 "no open todo.\n"
@@ -649,7 +651,7 @@ def handle_todo_command(
             )
             return {"terminal": True}
 
-        item = open_rows[0]
+        item = candidate_rows[0]
         todo_id = str(item.get("id", "")).strip() or "-"
         pr = _normalize_priority(str(item.get("priority", "P2")))
         summary = str(item.get("summary", "")).strip()
@@ -663,8 +665,9 @@ def handle_todo_command(
             save_manager_state=save_manager_state,
             now_iso=now_iso,
         )
+        headline = "todo next resumed" if item in resume_rows else "todo next selected"
         send(
-            "todo next selected\n"
+            f"{headline}\n"
             f"- orch: {key}\n"
             f"- id: {queued['todo_id']}\n"
             f"- priority: {queued['priority']}\n"

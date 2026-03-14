@@ -104,7 +104,8 @@ def pick_global_next_candidate(
         snap = project_queue_snapshot(entry)
         if not ignore_busy and snap["has_running"]:
             continue
-        item = snap["best_open"]
+        resume_item = snap["best_resume"] if isinstance(snap.get("best_resume"), dict) else None
+        item = resume_item if isinstance(resume_item, dict) else snap["best_open"]
         if not isinstance(item, dict):
             continue
         candidates.append(
@@ -112,6 +113,7 @@ def pick_global_next_candidate(
                 "project_key": str(key),
                 "project_alias": ops_project_alias(entry, str(key)),
                 "todo": item,
+                "selection_kind": "resume" if isinstance(resume_item, dict) and item is resume_item else "open",
                 "priority_rank": ops_priority_rank(str(item.get("priority", "P2"))),
                 "created_at": str(item.get("created_at", "")),
                 "todo_id": str(item.get("id", "")).strip(),

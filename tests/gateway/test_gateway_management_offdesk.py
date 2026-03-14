@@ -2566,3 +2566,80 @@ def test_offdesk_prepare_shows_rate_limited_and_degraded_active_task(tmp_path: P
     assert "first: /task T-001 | active task is waiting for provider capacity" in text
     assert "active_task_degraded_by: claude_rate_limit->codex" in text
     assert "active_task_rate_limit: mode=blocked providers=codex,claude retry_after=180s retry_at=2026-03-14T01:23:00+09:00" in text
+
+
+def test_next_resumes_parked_rate_limited_todo_after_retry_at(tmp_path: Path) -> None:
+    state = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+    project_root = tmp_path / "Local"
+    team_dir = project_root / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (team_dir / "orchestrator.json").write_text("{}", encoding="utf-8")
+    state["projects"]["local"] = {
+        "name": "local",
+        "display_name": "Local",
+        "project_alias": "O3",
+        "project_root": str(project_root),
+        "team_dir": str(team_dir),
+        "tasks": {
+            "r1": {
+                "request_id": "r1",
+                "todo_id": "TODO-001",
+                "status": "running",
+                "tf_phase": "rate_limited",
+                "rate_limit": {
+                    "mode": "blocked",
+                    "limited_providers": ["codex", "claude"],
+                    "retry_after_sec": 180,
+                    "retry_at": "2000-01-01T00:00:00+00:00",
+                },
+            }
+        },
+        "todos": [
+            {
+                "id": "TODO-001",
+                "summary": "resume row",
+                "priority": "P1",
+                "status": "running",
+                "updated_at": "2026-03-14T00:00:00+0900",
+            },
+            {
+                "id": "TODO-002",
+                "summary": "open row",
+                "priority": "P2",
+                "status": "open",
+                "created_at": "2026-03-13T23:50:00+0900",
+            },
+        ],
+    }
+    sent: list[str] = []
+    saves: list[Path] = []
+
+    def _send(body: str, **kwargs: object) -> bool:
+        sent.append(body)
+        return True
+
+    def _get_context(key: str):
+        entry = state["projects"][key]
+        return key, entry, argparse.Namespace(project_root=Path(entry["project_root"]), team_dir=Path(entry["team_dir"]))
+
+    result = sched.handle_scheduler_command(
+        cmd="next",
+        args=argparse.Namespace(dry_run=False, manager_state_file=tmp_path / ".aoe-team" / "orch_manager_state.json"),
+        manager_state=state,
+        chat_id="939062873",
+        chat_role="admin",
+        orch_target=None,
+        rest="",
+        send=_send,
+        get_context=_get_context,
+        save_manager_state=lambda path, manager_state: saves.append(path),
+        now_iso=lambda: "2026-03-14T01:00:00+0900",
+    )
+
+    assert result["terminal"] is False
+    assert result["cmd"] == "run"
+    assert result["orch_target"] == "local"
+    assert result["run_prompt"] == "resume row"
+    assert state["projects"]["local"]["pending_todo"]["todo_id"] == "TODO-001"
+    assert sent
+    assert "next resumed (global)" in sent[-1]

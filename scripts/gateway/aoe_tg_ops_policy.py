@@ -131,6 +131,34 @@ def sorted_open_todos(todos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return rows
 
 
+def sorted_resumable_todos(entry: Dict[str, Any]) -> List[Dict[str, Any]]:
+    todos = todo_rows(entry)
+    rows: List[Dict[str, Any]] = []
+    for row in todos:
+        if not isinstance(row, dict):
+            continue
+        status = str(row.get("status", "open")).strip().lower() or "open"
+        if status != "running":
+            continue
+        todo_id = str(row.get("id", "")).strip()
+        if not todo_id:
+            continue
+        if linked_task_blocks_todo(entry, todo_id):
+            continue
+        if not linked_tasks_for_todo(entry, todo_id):
+            continue
+        rows.append(row)
+    rows.sort(
+        key=lambda r: (
+            priority_rank(r.get("priority", "P2")),
+            str(r.get("updated_at", "")),
+            str(r.get("created_at", "")),
+            str(r.get("id", "")),
+        )
+    )
+    return rows
+
+
 def linked_tasks_for_todo(entry: Dict[str, Any], todo_id: str) -> List[Dict[str, Any]]:
     token = str(todo_id or "").strip()
     if not token:
@@ -195,14 +223,19 @@ def project_queue_snapshot(entry: Dict[str, Any]) -> Dict[str, Any]:
         elif status == "blocked":
             blocked_count += 1
     open_rows = sorted_open_todos(todos)
+    resume_rows = sorted_resumable_todos(entry)
     best_open = open_rows[0] if open_rows else None
+    best_resume = resume_rows[0] if resume_rows else None
     pending = entry.get("pending_todo") if isinstance(entry, dict) else None
     pending_id = str(pending.get("todo_id", "")).strip() if isinstance(pending, dict) else ""
     return {
         "todos": todos,
         "open_rows": open_rows,
+        "resume_rows": resume_rows,
         "best_open": best_open,
+        "best_resume": best_resume,
         "open_count": len(open_rows),
+        "resume_count": len(resume_rows),
         "running_count": running_count,
         "parked_count": parked_count,
         "blocked_count": blocked_count,
