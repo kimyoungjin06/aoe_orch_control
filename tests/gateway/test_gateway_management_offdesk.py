@@ -187,10 +187,13 @@ def _management_control_kwargs(
         ),
         auto_state_path=mgmt_handlers._auto_state_path,
         offdesk_state_path=mgmt_handlers._offdesk_state_path,
+        provider_capacity_state_path=mgmt_handlers._provider_capacity_state_path,
         load_auto_state=mgmt_handlers._load_auto_state,
         save_auto_state=mgmt_handlers._save_auto_state,
         load_offdesk_state=mgmt_handlers._load_offdesk_state,
         save_offdesk_state=mgmt_handlers._save_offdesk_state,
+        load_provider_capacity_state=mgmt_handlers._load_provider_capacity_state,
+        save_provider_capacity_state=mgmt_handlers._save_provider_capacity_state,
         scheduler_session_name=mgmt_handlers._scheduler_session_name,
         tmux_has_session=mgmt_handlers._tmux_has_session,
         tmux_auto_command=mgmt_handlers._tmux_auto_command,
@@ -1011,6 +1014,38 @@ def test_auto_status_shows_next_retry_at_when_rate_limited_work_is_waiting(tmp_p
         + "\n",
         encoding="utf-8",
     )
+    (team_dir / "provider_capacity.json").write_text(
+        json.dumps(
+            {
+                "updated_at": "2026-03-14T03:00:30+09:00",
+                "providers": {
+                    "claude": {
+                        "blocked_count": 2,
+                        "project_count": 2,
+                        "cooldown_level": "critical",
+                        "next_retry_at": "2026-03-14T03:10:00+09:00",
+                    },
+                    "codex": {
+                        "blocked_count": 1,
+                        "project_count": 1,
+                        "cooldown_level": "elevated",
+                        "next_retry_at": "2026-03-14T03:10:00+09:00",
+                    },
+                },
+                "override_history": [
+                    {
+                        "at": "2026-03-14T02:59:00+09:00",
+                        "action": "/auto off",
+                        "policy_level": "critical",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     state = gw.default_manager_state(tmp_path, team_dir)
     state["projects"]["default"]["project_alias"] = "O1"
     state["projects"]["default"]["tasks"] = {
@@ -1055,6 +1090,9 @@ def test_auto_status_shows_next_retry_at_when_rate_limited_work_is_waiting(tmp_p
     assert "- provider_capacity: tasks=2 projects=2 providers=claude=2, codex=1" in text
     assert "- capacity_policy: critical | both primary providers are blocked across multiple tasks/projects" in text
     assert "- capacity_operator_action: /auto off" in text
+    assert "- capacity_memory_updated_at: 2026-03-14T03:00:30+09:00" in text
+    assert "- provider_memory: claude(blocked=2 projects=2 level=critical retry=2026-03-14T03:10:00+09:00), codex(blocked=1 projects=1 level=elevated retry=2026-03-14T03:10:00+09:00)" in text
+    assert "- capacity_override_last: /auto off @ 2026-03-14T02:59:00+09:00 (critical)" in text
     assert "- next_retry_target: O1 T-201 providers=codex,claude degraded=claude_rate_limit->codex" in text
 
 
@@ -1989,6 +2027,109 @@ def test_auto_scheduler_adjusts_idle_to_upcoming_retry_at() -> None:
     assert 4.0 <= sleep_sec <= 5.0
 
 
+def test_auto_scheduler_builds_provider_capacity_snapshot() -> None:
+    state = {
+        "projects": {
+            "o3": {
+                "project_alias": "O3",
+                "tasks": {
+                    "req-201": {
+                        "label": "T-201",
+                        "rate_limit": {
+                            "mode": "blocked",
+                            "limited_providers": ["codex", "claude"],
+                            "retry_at": "2026-03-14T03:10:00+09:00",
+                        },
+                    }
+                },
+            },
+            "o4": {
+                "project_alias": "O4",
+                "tasks": {
+                    "req-301": {
+                        "label": "T-301",
+                        "rate_limit": {
+                            "mode": "blocked",
+                            "limited_providers": ["claude"],
+                            "retry_at": "2026-03-14T03:25:00+09:00",
+                        },
+                    }
+                },
+            },
+        }
+    }
+
+    snapshot = auto_sched._provider_capacity_snapshot(
+        state,
+        now=auto_sched._parse_iso_dt("2026-03-14T03:00:00+09:00"),
+    )
+
+    assert snapshot["summary"]["task_count"] == "2"
+    assert snapshot["summary"]["project_count"] == "2"
+    assert snapshot["summary"]["provider_summary"] == "claude=2, codex=1"
+    assert snapshot["summary"]["policy_level"] == "critical"
+    assert snapshot["summary"]["operator_action"] == "/auto off"
+    assert snapshot["providers"]["claude"]["blocked_count"] == 2
+    assert snapshot["providers"]["claude"]["project_count"] == 2
+    assert snapshot["providers"]["claude"]["cooldown_level"] == "critical"
+    assert snapshot["providers"]["codex"]["blocked_count"] == 1
+    assert snapshot["providers"]["codex"]["project_count"] == 1
+    assert snapshot["providers"]["codex"]["cooldown_level"] == "elevated"
+
+
+def test_auto_off_records_provider_capacity_override_history(tmp_path: Path, monkeypatch) -> None:
+    team_dir = tmp_path / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    provider_state_path = team_dir / mgmt_handlers.PROVIDER_CAPACITY_STATE_FILENAME
+    provider_state_path.write_text(json.dumps({}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    manager_state = gw.default_manager_state(tmp_path, team_dir)
+    manager_state["projects"]["default"]["project_alias"] = "O1"
+    manager_state["projects"]["default"]["tasks"] = {
+        "req-201": {
+            "request_id": "req-201",
+            "label": "T-201",
+            "status": "running",
+            "rate_limit": {
+                "mode": "blocked",
+                "limited_providers": ["codex", "claude"],
+                "retry_at": "2026-03-14T03:10:00+09:00",
+            },
+        }
+    }
+    manager_state["projects"]["o2"] = {
+        "project_alias": "O2",
+        "tasks": {
+            "req-301": {
+                "request_id": "req-301",
+                "label": "T-301",
+                "status": "running",
+                "rate_limit": {
+                    "mode": "blocked",
+                    "limited_providers": ["claude"],
+                    "retry_at": "2026-03-14T03:25:00+09:00",
+                },
+            }
+        },
+    }
+    sent: list[tuple[str, dict | None]] = []
+    kwargs = _management_control_kwargs(tmp_path=tmp_path, manager_state=manager_state, cmd="auto", rest="off", sent=sent)
+    kwargs["args"].dry_run = False
+    kwargs["tmux_auto_command"] = lambda args, action: (True, "stopped")
+    monkeypatch.setattr(mgmt_handlers, "_now_iso", lambda: "2026-03-14T03:01:00+09:00")
+    kwargs["now_iso"] = mgmt_handlers._now_iso
+
+    ok = scheduler_control.handle_scheduler_control_command(**kwargs)
+
+    assert ok is True
+    state = mgmt_handlers._load_provider_capacity_state(provider_state_path)
+    history = state.get("override_history")
+    assert isinstance(history, list) and history
+    last = history[-1]
+    assert last["action"] == "/auto off"
+    assert last["policy_level"] == "critical"
+    assert last["providers"] == "claude=2, codex=1"
+
+
 def _write_tf_exec_map(team_dir: Path, req_id: str, *, mode: str, workdir: Path, run_dir: Path) -> None:
     m = gw.load_tf_exec_map(team_dir)
     m[req_id] = {
@@ -2662,6 +2803,40 @@ def test_offdesk_prepare_shows_rate_limited_and_degraded_active_task(tmp_path: P
 
 def test_offdesk_review_surfaces_provider_capacity_for_rate_limited_task(tmp_path: Path) -> None:
     state = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+    team_dir = tmp_path / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (team_dir / "provider_capacity.json").write_text(
+        json.dumps(
+            {
+                "updated_at": "2026-03-14T01:21:00+09:00",
+                "providers": {
+                    "claude": {
+                        "blocked_count": 1,
+                        "project_count": 1,
+                        "cooldown_level": "cooldown",
+                        "next_retry_at": "2026-03-14T01:23:00+09:00",
+                    },
+                    "codex": {
+                        "blocked_count": 1,
+                        "project_count": 1,
+                        "cooldown_level": "elevated",
+                        "next_retry_at": "2026-03-14T01:23:00+09:00",
+                    },
+                },
+                "override_history": [
+                    {
+                        "at": "2026-03-14T01:20:00+09:00",
+                        "action": "/auto status",
+                        "policy_level": "elevated",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     entry = state["projects"]["default"]
     entry["project_alias"] = "O1"
     entry["display_name"] = "Demo"
@@ -2708,6 +2883,9 @@ def test_offdesk_review_surfaces_provider_capacity_for_rate_limited_task(tmp_pat
     assert "- provider_capacity: tasks=1 projects=1 providers=claude=1, codex=1" in body
     assert "- capacity_policy: elevated | both primary providers are blocked" in body
     assert "- capacity_operator_action: /auto status" in body
+    assert "- capacity_memory_updated_at: 2026-03-14T01:21:00+09:00" in body
+    assert "- provider_memory: claude(blocked=1 projects=1 level=cooldown retry=2026-03-14T01:23:00+09:00), codex(blocked=1 projects=1 level=elevated retry=2026-03-14T01:23:00+09:00)" in body
+    assert "- capacity_override_last: /auto status @ 2026-03-14T01:20:00+09:00 (elevated)" in body
     assert "task:rate_limited" in body
     assert "capacity:codex,claude" in body
     assert "first: /task T-001 | active task is waiting for provider capacity until 2026-03-14T01:23:00+09:00" in body

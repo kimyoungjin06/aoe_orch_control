@@ -28,6 +28,7 @@ DEFAULT_IDLE_SEC = 20.0
 DEFAULT_PREFETCH_MIN_INTERVAL_SEC = 60.0
 DEFAULT_PREFETCH_SINCE = "12h"
 DEFAULT_MAX_FAILURES = 3
+PROVIDER_CAPACITY_STATE_FILE = "provider_capacity.json"
 
 
 def _now_iso() -> str:
@@ -106,6 +107,168 @@ def _adjust_idle_for_retry_at(idle_sec: float, retry_at: str, *, now: Optional[d
     if remaining <= 0:
         return 1.0
     return max(1.0, min(float(idle_sec), remaining))
+
+
+def _provider_capacity_policy(summary: Dict[str, Any]) -> Dict[str, str]:
+    try:
+        task_count = int(summary.get("task_count", 0) or 0)
+    except Exception:
+        task_count = 0
+    try:
+        project_count = int(summary.get("project_count", 0) or 0)
+    except Exception:
+        project_count = 0
+    provider_counts = summary.get("provider_counts") if isinstance(summary.get("provider_counts"), dict) else {}
+    provider_names = {str(key or "").strip().lower() for key in provider_counts.keys() if str(key or "").strip()}
+    if task_count <= 0:
+        return {}
+    both_primary = {"codex", "claude"}.issubset(provider_names)
+    if both_primary and (task_count >= 2 or project_count >= 2):
+        return {
+            "level": "critical",
+            "reason": "both primary providers are blocked across multiple tasks/projects",
+            "operator_action": "/auto off",
+        }
+    if both_primary:
+        return {
+            "level": "elevated",
+            "reason": "both primary providers are blocked",
+            "operator_action": "/auto status",
+        }
+    if task_count >= 2 or project_count >= 2:
+        return {
+            "level": "elevated",
+            "reason": "provider cooldown is affecting multiple tasks/projects",
+            "operator_action": "/offdesk review",
+        }
+    return {
+        "level": "cooldown",
+        "reason": "provider cooldown is isolated to a single task",
+        "operator_action": "/auto status",
+    }
+
+
+def _provider_cooldown_level(
+    blocked_count: int,
+    project_count: int,
+    next_retry_at: str,
+    *,
+    now: Optional[datetime] = None,
+) -> str:
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    retry_dt = _parse_iso_dt(next_retry_at)
+    retry_wait_sec = max(0.0, (retry_dt - current.astimezone(timezone.utc)).total_seconds()) if retry_dt else 0.0
+    if blocked_count >= 2 and project_count >= 2:
+        return "critical"
+    if blocked_count >= 2 or project_count >= 2 or retry_wait_sec >= 600:
+        return "elevated"
+    return "cooldown"
+
+
+def _provider_capacity_snapshot(state: Dict[str, Any], *, now: Optional[datetime] = None) -> Dict[str, Any]:
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    current_iso = current.astimezone(timezone.utc).isoformat()
+    projects = state.get("projects") if isinstance(state, dict) else {}
+    if not isinstance(projects, dict):
+        return {"summary": {}, "providers": {}}
+
+    provider_rows: Dict[str, Dict[str, Any]] = {}
+    project_aliases: set[str] = set()
+    task_count = 0
+    next_retry_at = ""
+    best_retry_dt: Optional[datetime] = None
+
+    for key, entry in projects.items():
+        if not isinstance(entry, dict):
+            continue
+        alias = str(entry.get("project_alias", "")).strip().upper() or str(key or "").strip() or "-"
+        tasks = entry.get("tasks")
+        if not isinstance(tasks, dict):
+            continue
+        project_has_limited_task = False
+        for request_id, task in tasks.items():
+            if not isinstance(task, dict):
+                continue
+            rate_limit = task.get("rate_limit") if isinstance(task.get("rate_limit"), dict) else {}
+            if str(rate_limit.get("mode", "")).strip().lower() != "blocked":
+                continue
+            task_count += 1
+            project_has_limited_task = True
+            task_ref = str(task.get("label", "")).strip() or str(task.get("short_id", "")).strip() or str(request_id or "").strip() or "-"
+            retry_at = str(rate_limit.get("retry_at", "")).strip()
+            retry_dt = _parse_iso_dt(retry_at)
+            if retry_dt is not None and retry_dt > current and (best_retry_dt is None or retry_dt < best_retry_dt):
+                best_retry_dt = retry_dt
+                next_retry_at = retry_dt.isoformat()
+            for raw_provider in rate_limit.get("limited_providers") or []:
+                provider = str(raw_provider or "").strip().lower()
+                if not provider:
+                    continue
+                row = provider_rows.setdefault(
+                    provider,
+                    {
+                        "blocked_count": 0,
+                        "projects": set(),
+                        "tasks": set(),
+                        "last_retry_at": "",
+                        "last_seen_at": current_iso,
+                    },
+                )
+                row["blocked_count"] = int(row.get("blocked_count", 0) or 0) + 1
+                row["projects"].add(alias)
+                row["tasks"].add(f"{alias}:{task_ref}")
+                row["last_seen_at"] = current_iso
+                prev_next = _parse_iso_dt(row.get("next_retry_at"))
+                if retry_dt is not None and (prev_next is None or retry_dt < prev_next):
+                    row["next_retry_at"] = retry_dt.isoformat()
+                if retry_dt is not None:
+                    prev_retry = _parse_iso_dt(row.get("last_retry_at"))
+                    if prev_retry is None or retry_dt > prev_retry:
+                        row["last_retry_at"] = retry_dt.isoformat()
+        if project_has_limited_task:
+            project_aliases.add(alias)
+
+    if task_count <= 0:
+        return {"summary": {}, "providers": {}}
+
+    provider_counts = {provider: int(row.get("blocked_count", 0) or 0) for provider, row in provider_rows.items()}
+    ordered = sorted(provider_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    provider_summary = ", ".join(f"{provider}={count}" for provider, count in ordered) or "-"
+    summary = {
+        "task_count": str(task_count),
+        "project_count": str(len(project_aliases)),
+        "provider_summary": provider_summary,
+        "provider_counts": provider_counts,
+        "next_retry_at": next_retry_at,
+    }
+    policy = _provider_capacity_policy(summary)
+    if policy:
+        summary["policy_level"] = str(policy.get("level", "")).strip()
+        summary["policy_reason"] = str(policy.get("reason", "")).strip()
+        summary["operator_action"] = str(policy.get("operator_action", "")).strip()
+
+    normalized_rows: Dict[str, Dict[str, Any]] = {}
+    for provider, row in provider_rows.items():
+        projects = sorted(str(x) for x in row.get("projects", set()) if str(x).strip())
+        tasks = sorted(str(x) for x in row.get("tasks", set()) if str(x).strip())
+        blocked_count = int(row.get("blocked_count", 0) or 0)
+        next_retry = str(row.get("next_retry_at", "")).strip()
+        normalized_rows[provider] = {
+            "blocked_count": blocked_count,
+            "project_count": len(projects),
+            "task_count": len(tasks),
+            "projects": projects,
+            "tasks": tasks,
+            "next_retry_at": next_retry,
+            "last_retry_at": str(row.get("last_retry_at", "")).strip(),
+            "last_seen_at": current_iso,
+            "cooldown_level": _provider_cooldown_level(blocked_count, len(projects), next_retry, now=current),
+        }
+    return {"summary": summary, "providers": normalized_rows}
 
 
 def _auto_enabled(auto_state: Dict[str, Any]) -> bool:
@@ -374,6 +537,7 @@ def main() -> int:
         if str(args0.auto_state_file).strip()
         else (team_dir / "auto_scheduler.json").resolve()
     )
+    provider_capacity_state_path = (team_dir / PROVIDER_CAPACITY_STATE_FILE).resolve()
     chat_id_fallback = str(args0.chat_id or "").strip()
 
     gateway_path = (project_root / "scripts" / "gateway" / "aoe-telegram-gateway.py").resolve()
@@ -502,8 +666,10 @@ def main() -> int:
                 try:
                     state = gw.load_manager_state(gw_args.manager_state_file, gw_args.project_root, gw_args.team_dir)
                     next_retry_at = _next_rate_limited_retry_at(state)
+                    capacity_snapshot = _provider_capacity_snapshot(state)
                 except Exception:
                     next_retry_at = ""
+                    capacity_snapshot = {"summary": {}, "providers": {}}
                 sleep_sec = _adjust_idle_for_retry_at(idle_sec, next_retry_at) if next_retry_at else idle_sec
                 if args0.verbose:
                     retry_hint = f" next_retry_at={next_retry_at}" if next_retry_at else ""
@@ -517,6 +683,12 @@ def main() -> int:
                     else:
                         auto_state.pop("next_retry_at", None)
                     _save_json(auto_state_path, auto_state)
+                    previous_capacity = _load_json(provider_capacity_state_path)
+                    capacity_payload = dict(capacity_snapshot)
+                    history = previous_capacity.get("override_history") if isinstance(previous_capacity.get("override_history"), list) else []
+                    if history:
+                        capacity_payload["override_history"] = [row for row in history if isinstance(row, dict)][-10:]
+                    _save_json(provider_capacity_state_path, capacity_payload)
                 except Exception:
                     pass
                 if args0.once:

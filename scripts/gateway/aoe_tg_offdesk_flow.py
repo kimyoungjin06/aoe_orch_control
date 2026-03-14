@@ -1078,6 +1078,10 @@ def offdesk_state_path(args: Any, *, filename: str) -> Path:
     return Path(str(getattr(args, "team_dir", "."))).expanduser().resolve() / filename
 
 
+def provider_capacity_state_path(args: Any, *, filename: str) -> Path:
+    return Path(str(getattr(args, "team_dir", "."))).expanduser().resolve() / filename
+
+
 def load_auto_state(path: Path) -> Dict[str, Any]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -1100,6 +1104,14 @@ def load_offdesk_state(path: Path) -> Dict[str, Any]:
 
 
 def save_offdesk_state(path: Path, state: Dict[str, Any]) -> None:
+    save_auto_state(path, state)
+
+
+def load_provider_capacity_state(path: Path) -> Dict[str, Any]:
+    return load_auto_state(path)
+
+
+def save_provider_capacity_state(path: Path, state: Dict[str, Any]) -> None:
     save_auto_state(path, state)
 
 
