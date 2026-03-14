@@ -1012,11 +1012,29 @@ def test_auto_status_shows_next_retry_at_when_rate_limited_work_is_waiting(tmp_p
         encoding="utf-8",
     )
     state = gw.default_manager_state(tmp_path, team_dir)
+    state["projects"]["default"]["project_alias"] = "O1"
+    state["projects"]["default"]["tasks"] = {
+        "req-201": {
+            "request_id": "req-201",
+            "label": "T-201",
+            "status": "running",
+            "rate_limit": {
+                "mode": "blocked",
+                "limited_providers": ["codex", "claude"],
+                "retry_after_sec": 180,
+                "retry_at": "2026-03-14T03:10:00+09:00",
+            },
+            "result": {
+                "degraded_by": ["claude_rate_limit->codex"],
+            },
+        }
+    }
 
     text = _call_management_status(tmp_path=tmp_path, manager_state=state, cmd="auto", rest="status")
 
     assert "- last_reason: no_runnable_open_todo" in text
     assert "- next_retry_at: 2026-03-14T03:10:00+09:00" in text
+    assert "- next_retry_target: O1 T-201 providers=codex,claude degraded=claude_rate_limit->codex" in text
 
 
 def test_auto_status_short_compacts_failure_reason_and_uses_ops_summary(tmp_path: Path) -> None:

@@ -1,7 +1,61 @@
 #!/usr/bin/env python3
 """Scheduler-control command handlers extracted from management handlers."""
 
-from typing import Any, Callable, Dict, List
+from datetime import datetime, timezone
+from typing import Any, Callable, Dict, List, Optional
+
+
+def _parse_iso_datetime(raw: Any) -> Optional[datetime]:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    normalized = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _next_rate_limited_task_snapshot(manager_state: Dict[str, Any]) -> Dict[str, str]:
+    projects = manager_state.get("projects") if isinstance(manager_state, dict) else {}
+    if not isinstance(projects, dict):
+        return {}
+    best_dt: Optional[datetime] = None
+    best_row: Dict[str, str] = {}
+    for key, entry in projects.items():
+        if not isinstance(entry, dict):
+            continue
+        alias = str(entry.get("project_alias", "")).strip().upper() or str(key or "").strip() or "-"
+        tasks = entry.get("tasks")
+        if not isinstance(tasks, dict):
+            continue
+        for request_id, task in tasks.items():
+            if not isinstance(task, dict):
+                continue
+            rate_limit = task.get("rate_limit") if isinstance(task.get("rate_limit"), dict) else {}
+            if str(rate_limit.get("mode", "")).strip().lower() != "blocked":
+                continue
+            retry_at = str(rate_limit.get("retry_at", "")).strip()
+            parsed = _parse_iso_datetime(retry_at)
+            if parsed is None:
+                continue
+            if best_dt is not None and parsed >= best_dt:
+                continue
+            result = task.get("result") if isinstance(task.get("result"), dict) else {}
+            degraded_by = [str(x).strip() for x in (result.get("degraded_by") or []) if str(x).strip()]
+            providers = [str(x).strip() for x in (rate_limit.get("limited_providers") or []) if str(x).strip()]
+            best_dt = parsed
+            best_row = {
+                "alias": alias,
+                "task_ref": str(task.get("label", "")).strip() or str(task.get("short_id", "")).strip() or str(request_id or "").strip() or "-",
+                "providers": ",".join(providers) if providers else "-",
+                "retry_at": retry_at or "-",
+                "degraded": ",".join(degraded_by) if degraded_by else "-",
+            }
+    return best_row
 
 
 def _handle_focus_command(
@@ -838,6 +892,7 @@ def _handle_auto_command(
         last_prefetch_reason = str(current.get("last_prefetch_reason", "")).strip()
         last_prefetch_mode = str(current.get("last_prefetch_mode", "")).strip()
         next_retry_at = str(current.get("next_retry_at", "")).strip()
+        next_retry_target = _next_rate_limited_task_snapshot(manager_state)
         stuck_candidate = str(current.get("stuck_candidate", "")).strip()
         stuck_count = int(current.get("stuck_count") or 0)
         fail_count = int(current.get("fail_count") or 0)
@@ -865,6 +920,15 @@ def _handle_auto_command(
             lines.append(f"- last_reason: {compact_reason(last_reason, 120)}")
         if next_retry_at:
             lines.append(f"- next_retry_at: {next_retry_at}")
+        if next_retry_target:
+            lines.append(
+                "- next_retry_target: {alias} {task_ref} providers={providers} degraded={degraded}".format(
+                    alias=next_retry_target.get("alias", "-"),
+                    task_ref=next_retry_target.get("task_ref", "-"),
+                    providers=next_retry_target.get("providers", "-"),
+                    degraded=next_retry_target.get("degraded", "-"),
+                )
+            )
         if stuck_count and stuck_candidate:
             lines.append(f"- stuck: {stuck_count} ({stuck_candidate})")
         if fail_count:
