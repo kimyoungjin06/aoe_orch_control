@@ -252,9 +252,13 @@ def _provider_capacity_memory_lines(memory_state: Dict[str, Any]) -> List[str]:
     lines: List[str] = []
     updated_at = str(memory_state.get("updated_at", "")).strip()
     providers = memory_state.get("providers") if isinstance(memory_state.get("providers"), dict) else {}
+    recovery_repeat = memory_state.get("recovery_repeat") if isinstance(memory_state.get("recovery_repeat"), dict) else {}
     history = memory_state.get("override_history") if isinstance(memory_state.get("override_history"), list) else []
     if updated_at:
         lines.append(f"- capacity_memory_updated_at: {updated_at}")
+    repeat_summary = str(recovery_repeat.get("summary", "")).strip()
+    if repeat_summary:
+        lines.append(f"- capacity_recovery_repeat_memory: {repeat_summary}")
     if providers:
         parts: List[str] = []
         for name in sorted(str(key).strip().lower() for key in providers.keys() if str(key).strip()):
@@ -274,8 +278,10 @@ def _provider_capacity_memory_lines(memory_state: Dict[str, Any]) -> List[str]:
                 else:
                     wait_bucket = "short"
             project_count = int(row.get("project_count", 0) or 0)
+            repeat_projects = [str(x).strip().upper() for x in (row.get("repeat_projects") or []) if str(x).strip()]
+            repeat_suffix = f" repeat={','.join(repeat_projects)}" if repeat_projects else ""
             parts.append(
-                f"{name}(blocked={blocked_count} projects={project_count} level={level} wait={wait_bucket} retry={retry_at})"
+                f"{name}(blocked={blocked_count} projects={project_count} level={level} wait={wait_bucket} retry={retry_at}{repeat_suffix})"
             )
         if parts:
             lines.append(f"- provider_memory: {', '.join(parts)}")
@@ -303,6 +309,23 @@ def _prune_provider_capacity_state(memory_state: Dict[str, Any], *, now: Optiona
             continue
         kept[str(name)] = row
     state["providers"] = kept
+    repeated = sorted(
+        {
+            str(alias).strip().upper()
+            for row in kept.values()
+            if isinstance(row, dict)
+            for alias in (row.get("repeat_projects") or [])
+            if str(alias).strip()
+        }
+    )
+    if repeated:
+        state["recovery_repeat"] = {
+            "project_count": len(repeated),
+            "aliases": repeated,
+            "summary": ",".join(repeated),
+        }
+    else:
+        state.pop("recovery_repeat", None)
     history = state.get("override_history") if isinstance(state.get("override_history"), list) else []
     if history:
         state["override_history"] = [row for row in history if isinstance(row, dict)][-10:]

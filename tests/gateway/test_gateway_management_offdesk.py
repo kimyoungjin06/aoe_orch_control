@@ -2213,6 +2213,58 @@ def test_auto_scheduler_builds_provider_capacity_snapshot() -> None:
     assert snapshot["providers"]["codex"]["retry_wait_bucket"] == "medium"
 
 
+def test_auto_scheduler_persists_recovery_repeat_in_provider_capacity_snapshot() -> None:
+    state = {
+        "projects": {
+            "o1": {
+                "project_alias": "O1",
+                "tasks": {
+                    "req-201": {
+                        "label": "T-201",
+                        "rate_limit": {
+                            "mode": "blocked",
+                            "limited_providers": ["codex", "claude"],
+                            "retry_at": "2026-03-14T03:10:00+09:00",
+                        },
+                    }
+                },
+            },
+            "o4": {
+                "project_alias": "O4",
+                "tasks": {
+                    "req-301": {
+                        "label": "T-301",
+                        "rate_limit": {
+                            "mode": "blocked",
+                            "limited_providers": ["claude"],
+                            "retry_at": "2026-03-14T03:25:00+09:00",
+                        },
+                    }
+                },
+            },
+        }
+    }
+    auto_state = {
+        "recovery_grace_until": "2000-01-01T00:00:00+00:00",
+        "recovery_project_aliases": ["O1"],
+    }
+
+    snapshot = auto_sched._provider_capacity_snapshot(
+        state,
+        auto_state=auto_state,
+        now=auto_sched._parse_iso_dt("2026-03-14T03:00:00+09:00"),
+    )
+
+    assert snapshot["summary"]["recovery_repeat_project_count"] == "1"
+    assert snapshot["summary"]["recovery_repeat_summary"] == "O1"
+    assert snapshot["summary"]["policy_level"] == "critical"
+    assert snapshot["recovery_repeat"]["summary"] == "O1"
+    assert snapshot["providers"]["claude"]["repeat_project_count"] == 1
+    assert snapshot["providers"]["claude"]["repeat_projects"] == ["O1"]
+    assert snapshot["providers"]["codex"]["repeat_project_count"] == 1
+    assert snapshot["providers"]["codex"]["repeat_projects"] == ["O1"]
+
+
 def test_auto_scheduler_escalates_single_provider_to_critical_on_long_retry_wait() -> None:
     state = {
         "projects": {
@@ -2292,6 +2344,32 @@ def test_auto_off_records_provider_capacity_override_history(tmp_path: Path, mon
     assert last["action"] == "/auto off"
     assert last["policy_level"] == "critical"
     assert last["providers"] == "claude=2, codex=1"
+
+
+def test_provider_capacity_memory_lines_show_recovery_repeat_memory() -> None:
+    lines = scheduler_control._provider_capacity_memory_lines(
+        {
+            "updated_at": "2026-03-14T03:30:00+09:00",
+            "recovery_repeat": {
+                "project_count": 1,
+                "aliases": ["O1"],
+                "summary": "O1",
+            },
+            "providers": {
+                "claude": {
+                    "blocked_count": 2,
+                    "project_count": 2,
+                    "next_retry_at": "2026-03-14T03:45:00+09:00",
+                    "cooldown_level": "critical",
+                    "retry_wait_bucket": "medium",
+                    "repeat_projects": ["O1"],
+                }
+            },
+        }
+    )
+
+    assert "- capacity_recovery_repeat_memory: O1" in lines
+    assert any("repeat=O1" in line for line in lines if "provider_memory:" in line)
 
 
 def test_auto_status_shows_capacity_recovery_action_when_auto_is_disabled_after_override(tmp_path: Path) -> None:
