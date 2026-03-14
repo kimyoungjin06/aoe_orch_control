@@ -1053,6 +1053,8 @@ def test_auto_status_shows_next_retry_at_when_rate_limited_work_is_waiting(tmp_p
     assert "- last_reason: no_runnable_open_todo" in text
     assert "- next_retry_at: 2026-03-14T03:10:00+09:00" in text
     assert "- provider_capacity: tasks=2 projects=2 providers=claude=2, codex=1" in text
+    assert "- capacity_policy: critical | both primary providers are blocked across multiple tasks/projects" in text
+    assert "- capacity_operator_action: /auto off" in text
     assert "- next_retry_target: O1 T-201 providers=codex,claude degraded=claude_rate_limit->codex" in text
 
 
@@ -2704,6 +2706,8 @@ def test_offdesk_review_surfaces_provider_capacity_for_rate_limited_task(tmp_pat
 
     assert "offdesk review" in body
     assert "- provider_capacity: tasks=1 projects=1 providers=claude=1, codex=1" in body
+    assert "- capacity_policy: elevated | both primary providers are blocked" in body
+    assert "- capacity_operator_action: /auto status" in body
     assert "task:rate_limited" in body
     assert "capacity:codex,claude" in body
     assert "first: /task T-001 | active task is waiting for provider capacity until 2026-03-14T01:23:00+09:00" in body

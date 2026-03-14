@@ -96,6 +96,7 @@ def _rate_limited_capacity_summary(manager_state: Dict[str, Any]) -> Dict[str, s
         "task_count": str(task_count),
         "project_count": str(len(project_aliases)),
         "provider_summary": provider_summary,
+        "provider_counts": dict(provider_counts),
     }
 
 
@@ -126,6 +127,48 @@ def _rate_limited_capacity_summary_for_reports(reports: List[Dict[str, Any]]) ->
         "task_count": str(task_count),
         "project_count": str(len(project_aliases)),
         "provider_summary": provider_summary,
+        "provider_counts": dict(provider_counts),
+    }
+
+
+def _provider_capacity_policy(summary: Dict[str, Any]) -> Dict[str, str]:
+    if not isinstance(summary, dict):
+        return {}
+    try:
+        task_count = int(summary.get("task_count", 0) or 0)
+    except Exception:
+        task_count = 0
+    try:
+        project_count = int(summary.get("project_count", 0) or 0)
+    except Exception:
+        project_count = 0
+    provider_counts = summary.get("provider_counts") if isinstance(summary.get("provider_counts"), dict) else {}
+    provider_names = {str(key or "").strip().lower() for key in provider_counts.keys() if str(key or "").strip()}
+    if task_count <= 0:
+        return {}
+    both_primary = {"codex", "claude"}.issubset(provider_names)
+    if both_primary and (task_count >= 2 or project_count >= 2):
+        return {
+            "level": "critical",
+            "reason": "both primary providers are blocked across multiple tasks/projects",
+            "operator_action": "/auto off",
+        }
+    if both_primary:
+        return {
+            "level": "elevated",
+            "reason": "both primary providers are blocked",
+            "operator_action": "/auto status",
+        }
+    if task_count >= 2 or project_count >= 2:
+        return {
+            "level": "elevated",
+            "reason": "provider cooldown is affecting multiple tasks/projects",
+            "operator_action": "/offdesk review",
+        }
+    return {
+        "level": "cooldown",
+        "reason": "provider cooldown is isolated to a single task",
+        "operator_action": "/auto status",
     }
 
 
@@ -574,6 +617,7 @@ def _handle_offdesk_command(
         reports = sort_offdesk_reports(reports)
         flagged = [row for row in reports if str(row.get("status", "")).strip().lower() in {"warn", "blocked"}]
         capacity_summary = _rate_limited_capacity_summary_for_reports(reports)
+        capacity_policy = _provider_capacity_policy(capacity_summary)
         lines = [
             "offdesk review",
             f"- reviewed: {len(reports)}",
@@ -587,6 +631,14 @@ def _handle_offdesk_command(
                     providers=capacity_summary.get("provider_summary", "-"),
                 )
             )
+        if capacity_policy:
+            lines.append(
+                "- capacity_policy: {level} | {reason}".format(
+                    level=capacity_policy.get("level", "-"),
+                    reason=capacity_policy.get("reason", "-"),
+                )
+            )
+            lines.append(f"- capacity_operator_action: {capacity_policy.get('operator_action', '-')}")
         if not flagged:
             lines.extend(["- status: clean", "", "next:", "- /offdesk on", "- /auto status"])
             send(
@@ -974,6 +1026,7 @@ def _handle_auto_command(
         next_retry_at = str(current.get("next_retry_at", "")).strip()
         next_retry_target = _next_rate_limited_task_snapshot(manager_state)
         capacity_summary = _rate_limited_capacity_summary(manager_state)
+        capacity_policy = _provider_capacity_policy(capacity_summary)
         stuck_candidate = str(current.get("stuck_candidate", "")).strip()
         stuck_count = int(current.get("stuck_count") or 0)
         fail_count = int(current.get("fail_count") or 0)
@@ -1009,6 +1062,14 @@ def _handle_auto_command(
                     providers=capacity_summary.get("provider_summary", "-"),
                 )
             )
+        if capacity_policy:
+            lines.append(
+                "- capacity_policy: {level} | {reason}".format(
+                    level=capacity_policy.get("level", "-"),
+                    reason=capacity_policy.get("reason", "-"),
+                )
+            )
+            lines.append(f"- capacity_operator_action: {capacity_policy.get('operator_action', '-')}")
         if next_retry_target:
             lines.append(
                 "- next_retry_target: {alias} {task_ref} providers={providers} degraded={degraded}".format(
