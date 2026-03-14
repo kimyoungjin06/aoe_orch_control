@@ -295,6 +295,40 @@ def _capacity_recovery_action(
     }
 
 
+def _capacity_recovery_target(
+    auto_state: Dict[str, Any],
+    *,
+    focus_row: Optional[Dict[str, Any]] = None,
+    normalize_prefetch_token: Optional[Callable[[Any], str]] = None,
+    prefetch_display: Optional[Callable[[Any, Any, bool], str]] = None,
+) -> Dict[str, str]:
+    effective_command = str(auto_state.get("command", "next")).strip().lower() or "next"
+    requested_command = effective_command
+    if effective_command not in {"next", "fanout"}:
+        effective_command = "next"
+    adjusted_reason = ""
+    if focus_row and effective_command == "fanout":
+        effective_command = "next"
+        adjusted_reason = "project lock forces next instead of fanout"
+    normalize = normalize_prefetch_token or (lambda raw: str(raw or "").strip().lower())
+    token = normalize(auto_state.get("prefetch", ""))
+    replace_sync = bool(auto_state.get("prefetch_replace_sync", False))
+    if prefetch_display:
+        prefetch_summary = str(prefetch_display(token, auto_state.get("prefetch_since", ""), replace_sync) or "").strip()
+    else:
+        prefetch_summary = token
+    target = effective_command
+    if token and prefetch_summary and prefetch_summary != "-":
+        target = f"{effective_command} + {prefetch_summary}"
+    result = {
+        "command": effective_command,
+        "target": target,
+    }
+    if requested_command != effective_command:
+        result["adjusted_reason"] = adjusted_reason or f"requested {requested_command}"
+    return result
+
+
 def _handle_focus_command(
     *,
     args: Any,
@@ -741,6 +775,12 @@ def _handle_offdesk_command(
             capacity_summary = _rate_limited_capacity_summary(manager_state)
             capacity_policy = _provider_capacity_policy(capacity_summary)
             recovery_action = _capacity_recovery_action(auto_state, provider_state, manager_state)
+            recovery_target = _capacity_recovery_target(
+                auto_state,
+                focus_row=project_lock_row(manager_state),
+                normalize_prefetch_token=lambda raw: str(raw or "").strip().lower(),
+                prefetch_display=prefetch_display,
+            )
             lines = ["offdesk review", "- no orch projects registered"]
             if capacity_summary:
                 lines.append(
@@ -761,6 +801,9 @@ def _handle_offdesk_command(
             if recovery_action:
                 lines.append(f"- capacity_recovery_action: {recovery_action.get('action', '-')}")
                 lines.append(f"- capacity_recovery_reason: {recovery_action.get('reason', '-')}")
+                lines.append(f"- capacity_recovery_target: {recovery_target.get('target', '-')}")
+                if recovery_target.get("adjusted_reason"):
+                    lines.append(f"- capacity_recovery_note: {recovery_target.get('adjusted_reason', '-')}")
             lines.extend(_provider_capacity_memory_lines(provider_state))
             send(
                 "\n".join(lines).strip(),
@@ -781,6 +824,12 @@ def _handle_offdesk_command(
         capacity_summary = _rate_limited_capacity_summary_for_reports(reports)
         capacity_policy = _provider_capacity_policy(capacity_summary)
         recovery_action = _capacity_recovery_action(auto_state, provider_state, manager_state)
+        recovery_target = _capacity_recovery_target(
+            auto_state,
+            focus_row=project_lock_row(manager_state),
+            normalize_prefetch_token=lambda raw: str(raw or "").strip().lower(),
+            prefetch_display=prefetch_display,
+        )
         lines = [
             "offdesk review",
             f"- reviewed: {len(reports)}",
@@ -805,6 +854,9 @@ def _handle_offdesk_command(
         if recovery_action:
             lines.append(f"- capacity_recovery_action: {recovery_action.get('action', '-')}")
             lines.append(f"- capacity_recovery_reason: {recovery_action.get('reason', '-')}")
+            lines.append(f"- capacity_recovery_target: {recovery_target.get('target', '-')}")
+            if recovery_target.get("adjusted_reason"):
+                lines.append(f"- capacity_recovery_note: {recovery_target.get('adjusted_reason', '-')}")
         lines.extend(_provider_capacity_memory_lines(provider_state))
         if not flagged:
             lines.extend(["- status: clean", "", "next:", "- /offdesk on", "- /auto status"])
@@ -1189,6 +1241,12 @@ def _handle_auto_command(
 
     if sub == "status":
         recovery_action = _capacity_recovery_action(current, provider_state, manager_state)
+        recovery_target = _capacity_recovery_target(
+            current,
+            focus_row=focus_row,
+            normalize_prefetch_token=normalize_prefetch_token,
+            prefetch_display=prefetch_display,
+        )
         chat_ref = str(current.get("chat_id", "")).strip() or "-"
         eff_force = bool(current.get("force", False))
         eff_command = str(current.get("command", "next")).strip().lower() or "next"
@@ -1255,6 +1313,9 @@ def _handle_auto_command(
         if recovery_action:
             lines.append(f"- capacity_recovery_action: {recovery_action.get('action', '-')}")
             lines.append(f"- capacity_recovery_reason: {recovery_action.get('reason', '-')}")
+            lines.append(f"- capacity_recovery_target: {recovery_target.get('target', '-')}")
+            if recovery_target.get("adjusted_reason"):
+                lines.append(f"- capacity_recovery_note: {recovery_target.get('adjusted_reason', '-')}")
         lines.extend(_provider_capacity_memory_lines(provider_state))
         if next_retry_target:
             lines.append(
@@ -1369,11 +1430,13 @@ def _handle_auto_command(
             )
             return True
 
-        effective_command = str(current.get("command", "next")).strip().lower() or "next"
-        if effective_command not in {"next", "fanout"}:
-            effective_command = "next"
-        if focus_row and effective_command == "fanout":
-            effective_command = "next"
+        recovery_target = _capacity_recovery_target(
+            current,
+            focus_row=focus_row,
+            normalize_prefetch_token=normalize_prefetch_token,
+            prefetch_display=prefetch_display,
+        )
+        effective_command = str(recovery_target.get("command", "next")).strip().lower() or "next"
 
         provider_state = _prune_provider_capacity_state(provider_state, now=now_dt)
         override_history = provider_state.get("override_history") if isinstance(provider_state.get("override_history"), list) else []
@@ -1411,6 +1474,9 @@ def _handle_auto_command(
             "auto scheduler recovered\n"
             "- enabled: yes\n"
             f"- command: {effective_command}\n"
+            f"- resume_target: {recovery_target.get('target', '-')}\n"
+            + (f"- resume_note: {recovery_target.get('adjusted_reason', '-')}\n" if recovery_target.get("adjusted_reason") else "")
+            +
             f"- force: {'yes' if force_recover else 'no'}\n"
             f"- tmux: {'started' if ok else 'start_failed'}\n"
             f"- detail: {out or '-'}\n"

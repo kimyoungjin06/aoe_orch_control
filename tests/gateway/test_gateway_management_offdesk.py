@@ -2302,7 +2302,9 @@ def test_auto_status_shows_capacity_recovery_action_when_auto_is_disabled_after_
             {
                 "enabled": False,
                 "chat_id": "939062873",
-                "command": "next",
+                "command": "fanout",
+                "prefetch": "sync_recent",
+                "prefetch_replace_sync": True,
             },
             ensure_ascii=False,
             indent=2,
@@ -2335,6 +2337,7 @@ def test_auto_status_shows_capacity_recovery_action_when_auto_is_disabled_after_
 
     assert "- capacity_recovery_action: /auto recover" in text
     assert "- capacity_recovery_reason: capacity cooldown has cleared; resume the auto scheduler" in text
+    assert "- capacity_recovery_target: fanout + sync_recent+replace (full-scope; since ignored)" in text
 
 
 def test_auto_recover_reenables_scheduler_and_records_override_history(tmp_path: Path, monkeypatch) -> None:
@@ -2403,6 +2406,7 @@ def test_auto_recover_reenables_scheduler_and_records_override_history(tmp_path:
     assert "providers" not in provider_state or provider_state.get("providers") == {}
     assert sent
     assert "auto scheduler recovered" in sent[-1][0]
+    assert "- resume_target: next" in sent[-1][0]
 
 
 def test_offdesk_review_clean_keyboard_includes_auto_recover_when_available(tmp_path: Path) -> None:
@@ -2437,6 +2441,7 @@ def test_offdesk_review_clean_keyboard_includes_auto_recover_when_available(tmp_
     )
 
     assert "- capacity_recovery_action: /auto recover" in body
+    assert "- capacity_recovery_target: next" in body
     buttons = _button_texts(markup)
     assert "/auto recover" in buttons
 
