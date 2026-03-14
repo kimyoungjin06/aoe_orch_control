@@ -160,11 +160,30 @@ def _provider_cooldown_level(
         current = current.replace(tzinfo=timezone.utc)
     retry_dt = _parse_iso_dt(next_retry_at)
     retry_wait_sec = max(0.0, (retry_dt - current.astimezone(timezone.utc)).total_seconds()) if retry_dt else 0.0
+    if blocked_count >= 3 or (blocked_count >= 2 and project_count >= 2) or retry_wait_sec >= 1800:
+        return "critical"
     if blocked_count >= 2 and project_count >= 2:
         return "critical"
     if blocked_count >= 2 or project_count >= 2 or retry_wait_sec >= 600:
         return "elevated"
     return "cooldown"
+
+
+def _provider_retry_wait_bucket(
+    next_retry_at: str,
+    *,
+    now: Optional[datetime] = None,
+) -> str:
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    retry_dt = _parse_iso_dt(next_retry_at)
+    retry_wait_sec = max(0.0, (retry_dt - current.astimezone(timezone.utc)).total_seconds()) if retry_dt else 0.0
+    if retry_wait_sec >= 1800:
+        return "long"
+    if retry_wait_sec >= 540:
+        return "medium"
+    return "short"
 
 
 def _provider_capacity_snapshot(state: Dict[str, Any], *, now: Optional[datetime] = None) -> Dict[str, Any]:
@@ -267,6 +286,7 @@ def _provider_capacity_snapshot(state: Dict[str, Any], *, now: Optional[datetime
             "last_retry_at": str(row.get("last_retry_at", "")).strip(),
             "last_seen_at": current_iso,
             "cooldown_level": _provider_cooldown_level(blocked_count, len(projects), next_retry, now=current),
+            "retry_wait_bucket": _provider_retry_wait_bucket(next_retry, now=current),
         }
     return {"summary": summary, "providers": normalized_rows}
 

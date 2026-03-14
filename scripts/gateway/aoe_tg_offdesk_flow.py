@@ -26,6 +26,7 @@ from aoe_tg_priority_actions import (
     task_lane_target_snapshot,
 )
 from aoe_tg_project_runtime import project_runtime_issue, project_runtime_label
+from aoe_tg_queue_engine import project_capacity_snapshot
 from aoe_tg_task_view import task_display_label
 from aoe_tg_todo_policy import (
     normalize_proposal_kind,
@@ -455,6 +456,34 @@ def alias_index(alias: str) -> int:
     return int(token) if token.isdigit() else 10**9
 
 
+def _capacity_pressure_snapshot(active_rate_limit: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(active_rate_limit, dict):
+        return {"provider_count": 0, "retry_wait_sec": 0, "pressure_score": 0, "retry_at": ""}
+    providers = [str(x).strip() for x in (active_rate_limit.get("limited_providers") or []) if str(x).strip()]
+    retry_at = str(active_rate_limit.get("retry_at", "")).strip()
+    retry_dt = parse_iso_datetime(retry_at)
+    current = datetime.now(retry_dt.tzinfo or timezone.utc) if retry_dt is not None else datetime.now(timezone.utc)
+    retry_wait_sec = 0
+    if retry_dt is not None:
+        try:
+            retry_wait_sec = max(0, int((retry_dt - current).total_seconds()))
+        except Exception:
+            retry_wait_sec = 0
+    pressure_score = len(providers) * 20
+    if retry_wait_sec >= 1800:
+        pressure_score += 30
+    elif retry_wait_sec >= 900:
+        pressure_score += 20
+    elif retry_wait_sec >= 300:
+        pressure_score += 10
+    return {
+        "provider_count": len(providers),
+        "retry_wait_sec": retry_wait_sec,
+        "pressure_score": pressure_score,
+        "retry_at": retry_at,
+    }
+
+
 def offdesk_prepare_targets(
     manager_state: Dict[str, Any],
     raw_target: str,
@@ -462,6 +491,18 @@ def offdesk_prepare_targets(
     project_lock_row: Callable[[Dict[str, Any]], Dict[str, Any]],
     resolve_project_entry: Callable[[Dict[str, Any], str], Tuple[str, Dict[str, Any]]],
 ) -> List[Tuple[str, Dict[str, Any]]]:
+    def _sort_key(row: Tuple[str, Dict[str, Any]]) -> Tuple[int, str, int, int, int]:
+        key, entry = row
+        capacity = project_capacity_snapshot(entry if isinstance(entry, dict) else {})
+        alias = str(entry.get("project_alias", "")).strip() if isinstance(entry, dict) else str(key)
+        return (
+            int(capacity.get("penalty_rank", 0) or 0),
+            str(capacity.get("next_retry_at", "") or "9999-12-31T23:59:59+00:00"),
+            int(capacity.get("active_count", 0) or 0),
+            int(capacity.get("provider_count", 0) or 0),
+            alias_index(alias or str(key)),
+        )
+
     token = str(raw_target or "").strip()
     locked = project_lock_row(manager_state)
     if token:
@@ -473,7 +514,7 @@ def offdesk_prepare_targets(
                 return [(key, entry)] if isinstance(entry, dict) else []
             projects = manager_state.get("projects") if isinstance(manager_state, dict) else {}
             rows = list_ops_projects(projects)
-            rows.sort(key=lambda kv: alias_index(str(kv[1].get("project_alias", "")).strip() or str(kv[0])))
+            rows.sort(key=_sort_key)
             return rows
         key, entry = resolve_project_entry(manager_state, token)
         return [(key, entry)]
@@ -486,7 +527,7 @@ def offdesk_prepare_targets(
 
     projects = manager_state.get("projects") if isinstance(manager_state, dict) else {}
     rows = list_ops_projects(projects)
-    rows.sort(key=lambda kv: alias_index(str(kv[1].get("project_alias", "")).strip() or str(kv[0])))
+    rows.sort(key=_sort_key)
     return rows
 
 
@@ -609,6 +650,7 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
     task_tf_phase = str(latest_task.get("tf_phase", "")).strip()
     task_status = str(latest_task.get("status", "")).strip()
     active_rate_limit = latest_task.get("rate_limit") if isinstance(latest_task.get("rate_limit"), dict) else {}
+    capacity_pressure = _capacity_pressure_snapshot(active_rate_limit)
     if task_tf_phase in {"needs_retry", "manual_intervention", "blocked", "critic_review"}:
         status = "warn" if status == "ready" else status
         notes.append(f"active task needs attention ({task_tf_phase})")
@@ -630,6 +672,7 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
                 capacity_bits.append("retry_at=" + retry_at)
             notes.append("provider capacity blocked (" + " ".join(capacity_bits) + ")")
         severity_score += 40
+        severity_score += int(capacity_pressure.get("pressure_score", 0) or 0)
     elif task_status in {"running", "pending"}:
         status = "warn" if status == "ready" else status
         notes.append(f"active task in progress ({task_tf_phase or task_status})")
@@ -868,6 +911,9 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
         "sync_candidate_classes": dict(sync_quality.get("candidate_classes") or {}),
         "sync_candidate_doc_types": dict(sync_quality.get("candidate_doc_types") or {}),
         "severity_score": int(severity_score),
+        "capacity_pressure_score": int(capacity_pressure.get("pressure_score", 0) or 0),
+        "capacity_retry_wait_sec": int(capacity_pressure.get("retry_wait_sec", 0) or 0),
+        "capacity_provider_count": int(capacity_pressure.get("provider_count", 0) or 0),
         "attention_summary": attention_summary,
         "priority_action": str(priority_action.get("action", "")).strip(),
         "priority_reason": str(priority_action.get("reason", "")).strip(),
@@ -888,6 +934,9 @@ def sort_offdesk_reports(reports: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         key=lambda row: (
             _status_rank(row),
             -int(row.get("severity_score", 0) or 0),
+            -int(row.get("capacity_pressure_score", 0) or 0),
+            -int(row.get("capacity_provider_count", 0) or 0),
+            -int(row.get("capacity_retry_wait_sec", 0) or 0),
             _alias_rank(row),
             str(row.get("display", "")),
         ),

@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 from aoe_tg_ops_policy import build_batch_finish_message, format_ops_skip_detail, new_ops_skip_counters
 from aoe_tg_project_runtime import project_hidden_from_ops, project_runtime_issue
+from aoe_tg_queue_engine import project_capacity_snapshot
 from aoe_tg_queue_engine import drain_peek_next_todo as queue_drain_peek_next_todo
 from aoe_tg_ops_policy import project_queue_snapshot
 
@@ -198,10 +199,18 @@ def handle_fanout_command(
 
     deps["ensure_project_aliases"](manager_state)
 
-    def _proj_sort_key(k: str) -> Tuple[int, str]:
+    def _proj_sort_key(k: str) -> Tuple[int, str, int, int, int, str]:
         entry = projects.get(k) if isinstance(projects.get(k), dict) else {}
         alias = deps["normalize_project_alias"](str((entry or {}).get("project_alias", ""))) or "O?"
-        return (deps["extract_project_alias_index"](alias), str(k))
+        capacity = project_capacity_snapshot(entry if isinstance(entry, dict) else {})
+        return (
+            int(capacity.get("penalty_rank", 0) or 0),
+            str(capacity.get("next_retry_at", "") or "9999-12-31T23:59:59+00:00"),
+            int(capacity.get("active_count", 0) or 0),
+            int(capacity.get("provider_count", 0) or 0),
+            deps["extract_project_alias_index"](alias),
+            str(k),
+        )
 
     ordered_keys = sorted(
         [str(k) for k, entry in projects.items() if isinstance(entry, dict) and not project_hidden_from_ops(entry)],
