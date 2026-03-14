@@ -140,11 +140,14 @@ def derive_tf_phase_reason(task: Any) -> str:
     if str(rate_limit.get("mode", "")).strip().lower() == "blocked":
         providers = [str(x).strip() for x in (rate_limit.get("limited_providers") or []) if str(x).strip()]
         retry_after = int(rate_limit.get("retry_after_sec", 0) or 0)
+        retry_at = str(rate_limit.get("retry_at", "")).strip()
         parts = []
         if providers:
             parts.append("providers=" + ",".join(providers))
         if retry_after > 0:
             parts.append(f"retry_after={retry_after}s")
+        if retry_at:
+            parts.append(f"retry_at={retry_at}")
         return "provider capacity unavailable" + (f" ({' '.join(parts)})" if parts else "")
     if plan_gate_reason:
         return plan_gate_reason

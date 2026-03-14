@@ -67,3 +67,11 @@
 - [x] planning 시작 직후 provisional task에 `phase1_*` 메타와 candidate roles를 즉시 반영
 - [x] `planning_planner` / `planning_critic` 이벤트에 `project_key`, `request_id`, `task_short_id`를 항상 싣기
 - [x] writer/reporting 성격 평문을 `orch-monitor`가 아니라 Mother-Orch `dispatch_task`로 우선 분류
+
+## 7. Current Provider Capacity Handling
+- [x] Claude rate limit 시 Codex fallback
+- [x] Codex rate limit 시 Claude fallback
+- [x] 양쪽 provider 모두 rate limit이면 task를 `tf_phase=rate_limited`로 유지
+- [x] `retry_after_sec`와 함께 absolute `retry_at` 저장
+- [x] `rate_limited` task가 전체 queue를 영구 busy로 막지 않도록 parked 상태로 분리
+- [ ] `retry_at` 도래 시 scheduler/offdesk 자동 resume

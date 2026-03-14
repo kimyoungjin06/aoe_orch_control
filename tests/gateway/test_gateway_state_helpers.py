@@ -3162,6 +3162,107 @@ def test_queue_engine_matches_gateway_and_scheduler_next_selection(tmp_path: Pat
     assert gw_pick == ("local", "TODO-002", "candidate")
 
 
+def test_queue_snapshot_treats_future_rate_limited_task_as_parked_not_busy(tmp_path: Path) -> None:
+    state = _empty_state()
+    team = tmp_path / "Local" / ".aoe-team"
+    team.mkdir(parents=True, exist_ok=True)
+    (team / "orchestrator.json").write_text("{}", encoding="utf-8")
+
+    state["projects"]["local"] = {
+        "name": "local",
+        "display_name": "Local",
+        "project_alias": "O3",
+        "project_root": str(tmp_path / "Local"),
+        "team_dir": str(team),
+        "todos": [
+            {"id": "TODO-001", "summary": "rate limited current", "priority": "P1", "status": "running"},
+            {"id": "TODO-002", "summary": "next open", "priority": "P2", "status": "open"},
+        ],
+        "tasks": {
+            "r1": {
+                "request_id": "r1",
+                "todo_id": "TODO-001",
+                "status": "running",
+                "tf_phase": "rate_limited",
+                "rate_limit": {
+                    "mode": "blocked",
+                    "limited_providers": ["codex", "claude"],
+                    "retry_after_sec": 180,
+                    "retry_at": "2999-01-01T00:00:00+00:00",
+                },
+            }
+        },
+    }
+
+    snap = ops_policy.project_queue_snapshot(state["projects"]["local"])
+    queue_pick = queue_engine.pick_global_next_candidate(state["projects"], ignore_busy=False, skip_paused=True)
+
+    assert snap["has_running"] is False
+    assert snap["has_parked"] is True
+    assert queue_pick is not None
+    assert queue_pick["todo"]["id"] == "TODO-002"
+
+
+def test_has_task_linked_to_todo_releases_after_retry_at_passes() -> None:
+    entry = {
+        "tasks": {
+            "r1": {
+                "request_id": "r1",
+                "todo_id": "TODO-001",
+                "status": "running",
+                "tf_phase": "rate_limited",
+                "rate_limit": {
+                    "mode": "blocked",
+                    "limited_providers": ["codex", "claude"],
+                    "retry_after_sec": 180,
+                    "retry_at": "2000-01-01T00:00:00+00:00",
+                },
+            }
+        }
+    }
+
+    assert queue_engine.has_task_linked_to_todo(entry, "TODO-001") is False
+
+
+def test_drain_peek_resumes_pending_todo_after_rate_limit_retry_at_passes(tmp_path: Path) -> None:
+    state = _empty_state()
+    team = tmp_path / "Local" / ".aoe-team"
+    team.mkdir(parents=True, exist_ok=True)
+    (team / "orchestrator.json").write_text("{}", encoding="utf-8")
+
+    state["projects"]["local"] = {
+        "name": "local",
+        "display_name": "Local",
+        "project_alias": "O3",
+        "project_root": str(tmp_path / "Local"),
+        "team_dir": str(team),
+        "todos": [
+            {"id": "TODO-001", "summary": "retry me", "priority": "P1", "status": "running"},
+        ],
+        "pending_todo": {
+            "todo_id": "TODO-001",
+            "chat_id": "939062873",
+            "selected_at": "2026-03-14T01:00:00+09:00",
+        },
+        "tasks": {
+            "r1": {
+                "request_id": "r1",
+                "todo_id": "TODO-001",
+                "status": "running",
+                "tf_phase": "rate_limited",
+                "rate_limit": {
+                    "mode": "blocked",
+                    "limited_providers": ["codex", "claude"],
+                    "retry_after_sec": 180,
+                    "retry_at": "2000-01-01T00:00:00+00:00",
+                },
+            }
+        },
+    }
+
+    assert gateway_batch_ops.drain_peek_next_todo(state, "939062873", force=False) == ("local", "TODO-001", "resume_pending")
+
+
 def test_transport_module_matches_gateway_transport_exports() -> None:
     previous = os.environ.get("AOE_TG_COMMAND_PREFIXES")
     os.environ["AOE_TG_COMMAND_PREFIXES"] = "!/"
@@ -3275,6 +3376,7 @@ def test_task_lifecycle_and_monitor_show_rate_limit_and_degraded_state() -> None
             "mode": "blocked",
             "limited_providers": ["codex", "claude"],
             "retry_after_sec": 180,
+            "retry_at": "2026-03-14T01:23:00+09:00",
         },
         "result": {
             "degraded_by": ["claude_rate_limit->codex"],
@@ -3297,7 +3399,7 @@ def test_task_lifecycle_and_monitor_show_rate_limit_and_degraded_state() -> None
     )
 
     assert "tf_phase: rate_limited" in lifecycle
-    assert "rate_limit: mode=blocked providers=codex, claude retry_after=180s" in lifecycle
+    assert "rate_limit: mode=blocked providers=codex, claude retry_after=180s retry_at=2026-03-14T01:23:00+09:00" in lifecycle
     assert "degraded_by: claude_rate_limit->codex" in lifecycle
-    assert "rate_limit providers=codex,claude retry=180s" in monitor
+    assert "rate_limit providers=codex,claude retry=180s retry_at=2026-03-14T01:23:00+09:00" in monitor
     assert "degraded=claude_rate_limit->codex" in monitor

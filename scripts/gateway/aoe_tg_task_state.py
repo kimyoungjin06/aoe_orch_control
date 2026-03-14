@@ -1146,10 +1146,12 @@ def summarize_task_monitor(
         if tf_phase == "rate_limited" and rate_limit:
             providers = [str(x).strip() for x in (rate_limit.get("limited_providers") or []) if str(x).strip()]
             retry_after = int(rate_limit.get("retry_after_sec", 0) or 0)
+            retry_at = str(rate_limit.get("retry_at", "")).strip()
             target_parts.append(
-                "rate_limit {providers} {retry}".format(
+                "rate_limit {providers} {retry} {retry_at}".format(
                     providers="providers=" + ",".join(providers) if providers else "providers=-",
                     retry=(f"retry={retry_after}s" if retry_after > 0 else "retry=-"),
+                    retry_at=(f"retry_at={retry_at}" if retry_at else "retry_at=-"),
                 )
             )
         if target_parts:

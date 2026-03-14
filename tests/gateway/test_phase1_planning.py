@@ -220,6 +220,8 @@ def test_phase1_ensemble_blocks_when_all_providers_are_rate_limited() -> None:
     assert result["rate_limit"]["mode"] == "blocked"
     assert sorted(result["rate_limit"]["limited_providers"]) == ["claude", "codex"]
     assert result["rate_limit"]["retry_after_sec"] == 180
+    assert "retry_at" in result["rate_limit"]
+    assert str(result["rate_limit"]["retry_at"]).strip()
 
 
 def test_resolve_dispatch_mode_defaults_to_tf_dispatch_when_not_forced_direct() -> None:

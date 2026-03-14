@@ -239,11 +239,13 @@ def summarize_task_lifecycle(project_name: str, task: Dict[str, Any]) -> str:
     if rate_limit:
         providers = [str(x).strip() for x in (rate_limit.get("limited_providers") or []) if str(x).strip()]
         retry_after = int(rate_limit.get("retry_after_sec", 0) or 0)
+        retry_at = str(rate_limit.get("retry_at", "")).strip()
         lines.append(
-            "rate_limit: mode={mode} providers={providers} retry_after={retry}".format(
+            "rate_limit: mode={mode} providers={providers} retry_after={retry} retry_at={retry_at}".format(
                 mode=str(rate_limit.get("mode", "")).strip() or "-",
                 providers=", ".join(providers) if providers else "-",
                 retry=(f"{retry_after}s" if retry_after > 0 else "-"),
+                retry_at=retry_at or "-",
             )
         )
     if degraded_by:

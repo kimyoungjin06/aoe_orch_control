@@ -2543,6 +2543,7 @@ def test_offdesk_prepare_shows_rate_limited_and_degraded_active_task(tmp_path: P
                 "mode": "blocked",
                 "limited_providers": ["codex", "claude"],
                 "retry_after_sec": 180,
+                "retry_at": "2026-03-14T01:23:00+09:00",
             },
             "result": {
                 "degraded_by": ["claude_rate_limit->codex"],
@@ -2564,4 +2565,4 @@ def test_offdesk_prepare_shows_rate_limited_and_degraded_active_task(tmp_path: P
     assert "task:degraded" in text
     assert "first: /task T-001 | active task is waiting for provider capacity" in text
     assert "active_task_degraded_by: claude_rate_limit->codex" in text
-    assert "active_task_rate_limit: mode=blocked providers=codex,claude retry_after=180s" in text
+    assert "active_task_rate_limit: mode=blocked providers=codex,claude retry_after=180s retry_at=2026-03-14T01:23:00+09:00" in text

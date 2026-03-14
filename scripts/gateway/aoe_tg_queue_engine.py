@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from aoe_tg_ops_policy import (
     find_pending_todo_for_chat as find_ops_pending_todo_for_chat,
+    linked_task_blocks_todo,
     list_ops_projects,
     priority_rank as ops_priority_rank,
     project_alias as ops_project_alias,
@@ -89,18 +90,7 @@ def has_task_linked_to_todo(entry: Dict[str, Any], todo_id: str) -> bool:
     token = str(todo_id or "").strip()
     if not token:
         return False
-    tasks = entry.get("tasks")
-    if not isinstance(tasks, dict):
-        return False
-    for task in tasks.values():
-        if not isinstance(task, dict):
-            continue
-        if str(task.get("todo_id", "")).strip() != token:
-            continue
-        status = str(task.get("status", "")).strip().lower()
-        if status in {"pending", "running"}:
-            return True
-    return False
+    return linked_task_blocks_todo(entry, token)
 
 
 def pick_global_next_candidate(

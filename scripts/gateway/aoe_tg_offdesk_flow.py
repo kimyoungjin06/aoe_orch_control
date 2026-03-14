@@ -770,11 +770,13 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
         if active_rate_limit:
             providers = [str(x).strip() for x in (active_rate_limit.get("limited_providers") or []) if str(x).strip()]
             retry_after = int(active_rate_limit.get("retry_after_sec", 0) or 0)
+            retry_at = str(active_rate_limit.get("retry_at", "")).strip()
             lines.append(
-                "  active_task_rate_limit: mode={mode} providers={providers} retry_after={retry}".format(
+                "  active_task_rate_limit: mode={mode} providers={providers} retry_after={retry} retry_at={retry_at}".format(
                     mode=str(active_rate_limit.get("mode", "")).strip() or "-",
                     providers=",".join(providers) if providers else "-",
                     retry=(f"{retry_after}s" if retry_after > 0 else "-"),
+                    retry_at=retry_at or "-",
                 )
             )
         lines.append("  active_task_lanes: " + " | ".join(lane_parts))
