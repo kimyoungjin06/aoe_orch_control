@@ -578,7 +578,14 @@ def _build_gateway_args(gw: Any, project_root: Path, team_dir: Path, verbose: bo
     return args
 
 
-def _peek_next(gw: Any, args: argparse.Namespace, chat_id: str, force: bool) -> Tuple[str, str, str]:
+def _peek_next(
+    gw: Any,
+    args: argparse.Namespace,
+    chat_id: str,
+    force: bool,
+    *,
+    provider_capacity_state: Optional[Dict[str, Any]] = None,
+) -> Tuple[str, str, str]:
     state = gw.load_manager_state(args.manager_state_file, args.project_root, args.team_dir)
     recovery_grace_until = ""
     try:
@@ -589,7 +596,13 @@ def _peek_next(gw: Any, args: argparse.Namespace, chat_id: str, force: bool) -> 
     except Exception:
         recovery_grace_until = ""
     try:
-        return gw._drain_peek_next_todo(state, chat_id, force=force, recovery_grace_until=recovery_grace_until)
+        return gw._drain_peek_next_todo(
+            state,
+            chat_id,
+            force=force,
+            recovery_grace_until=recovery_grace_until,
+            provider_capacity_state=provider_capacity_state,
+        )
     except Exception:
         return "", "", "peek_error"
 
@@ -787,7 +800,14 @@ def main() -> int:
             time.sleep(max(2.0, float(idle_sec)))
             continue
 
-        project_key, todo_id, reason = _peek_next(gw, gw_args, chat_id, force=force)
+        provider_capacity_state = _load_json(provider_capacity_state_path)
+        project_key, todo_id, reason = _peek_next(
+            gw,
+            gw_args,
+            chat_id,
+            force=force,
+            provider_capacity_state=provider_capacity_state,
+        )
         if not project_key or not todo_id:
             # Optional prefetch: when idle (no runnable todo), try to seed queue from recent docs.
             if prefetch == "sync_recent" and (reason or "") == "no_runnable_open_todo":
@@ -825,7 +845,14 @@ def main() -> int:
                     except Exception as exc:
                         if args0.verbose:
                             print(f"[AUTO] prefetch failed: {exc}", flush=True)
-                    project_key, todo_id, reason = _peek_next(gw, gw_args, chat_id, force=force)
+                    provider_capacity_state = _load_json(provider_capacity_state_path)
+                    project_key, todo_id, reason = _peek_next(
+                        gw,
+                        gw_args,
+                        chat_id,
+                        force=force,
+                        provider_capacity_state=provider_capacity_state,
+                    )
 
             if not project_key or not todo_id:
                 last_idle_reason = reason or "idle"
