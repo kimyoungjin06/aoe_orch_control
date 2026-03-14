@@ -2612,10 +2612,11 @@ def test_offdesk_prepare_shows_rate_limited_and_degraded_active_task(tmp_path: P
     )
 
     assert "task:rate_limited" in text
-    assert "task:degraded" in text
-    assert "first: /task T-001 | active task is waiting for provider capacity" in text
+    assert "capacity:codex,claude" in text
+    assert "first: /task T-001 | active task is waiting for provider capacity until 2026-03-14T01:23:00+09:00" in text
     assert "active_task_degraded_by: claude_rate_limit->codex" in text
     assert "active_task_rate_limit: mode=blocked providers=codex,claude retry_after=180s retry_at=2026-03-14T01:23:00+09:00" in text
+    assert "provider_capacity: providers=codex,claude retry_at=2026-03-14T01:23:00+09:00 degraded=claude_rate_limit->codex" in text
 
 
 def test_next_resumes_parked_rate_limited_todo_after_retry_at(tmp_path: Path) -> None:

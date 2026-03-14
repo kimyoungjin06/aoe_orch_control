@@ -608,6 +608,7 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
         severity_score += 55
     task_tf_phase = str(latest_task.get("tf_phase", "")).strip()
     task_status = str(latest_task.get("status", "")).strip()
+    active_rate_limit = latest_task.get("rate_limit") if isinstance(latest_task.get("rate_limit"), dict) else {}
     if task_tf_phase in {"needs_retry", "manual_intervention", "blocked", "critic_review"}:
         status = "warn" if status == "ready" else status
         notes.append(f"active task needs attention ({task_tf_phase})")
@@ -617,6 +618,17 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
         status = "warn" if status == "ready" else status
         notes.append("active task is waiting for provider capacity")
         attention.append("task:rate_limited")
+        providers = [str(x).strip() for x in (active_rate_limit.get("limited_providers") or []) if str(x).strip()]
+        retry_at = str(active_rate_limit.get("retry_at", "")).strip()
+        if providers:
+            attention.append("capacity:" + ",".join(providers))
+        if providers or retry_at:
+            capacity_bits: List[str] = []
+            if providers:
+                capacity_bits.append("providers=" + ",".join(providers))
+            if retry_at:
+                capacity_bits.append("retry_at=" + retry_at)
+            notes.append("provider capacity blocked (" + " ".join(capacity_bits) + ")")
         severity_score += 40
     elif task_status in {"running", "pending"}:
         status = "warn" if status == "ready" else status
@@ -767,7 +779,6 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
             )
         if degraded_by:
             lines.append("  active_task_degraded_by: " + ",".join(degraded_by))
-        active_rate_limit = latest_task.get("rate_limit") if isinstance(latest_task.get("rate_limit"), dict) else {}
         if active_rate_limit:
             providers = [str(x).strip() for x in (active_rate_limit.get("limited_providers") or []) if str(x).strip()]
             retry_after = int(active_rate_limit.get("retry_after_sec", 0) or 0)
@@ -778,6 +789,13 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
                     providers=",".join(providers) if providers else "-",
                     retry=(f"{retry_after}s" if retry_after > 0 else "-"),
                     retry_at=retry_at or "-",
+                )
+            )
+            lines.append(
+                "  provider_capacity: providers={providers} retry_at={retry_at} degraded={degraded}".format(
+                    providers=",".join(providers) if providers else "-",
+                    retry_at=retry_at or "-",
+                    degraded=",".join(degraded_by) if degraded_by else "-",
                 )
             )
         lines.append("  active_task_lanes: " + " | ".join(lane_parts))
