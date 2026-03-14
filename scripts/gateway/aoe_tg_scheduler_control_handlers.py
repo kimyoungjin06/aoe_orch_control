@@ -187,7 +187,9 @@ def _provider_capacity_memory_lines(memory_state: Dict[str, Any]) -> List[str]:
             row = providers.get(name) if isinstance(providers.get(name), dict) else {}
             blocked_count = int(row.get("blocked_count", 0) or 0)
             level = str(row.get("cooldown_level", "")).strip() or "cooldown"
-            parts.append(f"{name}(blocked={blocked_count} level={level})")
+            retry_at = str(row.get("next_retry_at", "")).strip() or "-"
+            project_count = int(row.get("project_count", 0) or 0)
+            parts.append(f"{name}(blocked={blocked_count} projects={project_count} level={level} retry={retry_at})")
         if parts:
             lines.append(f"- provider_memory: {', '.join(parts)}")
     if history:
@@ -500,6 +502,8 @@ def _handle_offdesk_command(
     off_path = offdesk_state_path(args)
     off_state = load_offdesk_state(off_path)
     off_enabled = bool(off_state.get("enabled", False))
+    provider_state_path = provider_capacity_state_path(args)
+    provider_state = load_provider_capacity_state(provider_state_path)
 
     auto_path = auto_state_path(args)
     auto_state = load_auto_state(auto_path)
@@ -586,9 +590,9 @@ def _handle_offdesk_command(
             f"- ready: {ready_count}",
             f"- warn: {warn_count}",
             f"- blocked: {blocked_count}",
-            "",
-            "projects:",
         ]
+        lines.extend(_provider_capacity_memory_lines(provider_state))
+        lines.extend(["", "projects:"])
         for report in reports:
             lines.extend(report.get("lines") or [])
 
@@ -669,6 +673,7 @@ def _handle_offdesk_command(
                 )
             )
             lines.append(f"- capacity_operator_action: {capacity_policy.get('operator_action', '-')}")
+        lines.extend(_provider_capacity_memory_lines(provider_state))
         if not flagged:
             lines.extend(["- status: clean", "", "next:", "- /offdesk on", "- /auto status"])
             send(

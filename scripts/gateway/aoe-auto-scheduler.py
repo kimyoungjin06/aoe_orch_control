@@ -148,6 +148,25 @@ def _provider_capacity_policy(summary: Dict[str, Any]) -> Dict[str, str]:
     }
 
 
+def _provider_cooldown_level(
+    blocked_count: int,
+    project_count: int,
+    next_retry_at: str,
+    *,
+    now: Optional[datetime] = None,
+) -> str:
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    retry_dt = _parse_iso_dt(next_retry_at)
+    retry_wait_sec = max(0.0, (retry_dt - current.astimezone(timezone.utc)).total_seconds()) if retry_dt else 0.0
+    if blocked_count >= 2 and project_count >= 2:
+        return "critical"
+    if blocked_count >= 2 or project_count >= 2 or retry_wait_sec >= 600:
+        return "elevated"
+    return "cooldown"
+
+
 def _provider_capacity_snapshot(state: Dict[str, Any], *, now: Optional[datetime] = None) -> Dict[str, Any]:
     current = now or datetime.now(timezone.utc)
     if current.tzinfo is None:
@@ -203,6 +222,9 @@ def _provider_capacity_snapshot(state: Dict[str, Any], *, now: Optional[datetime
                 row["projects"].add(alias)
                 row["tasks"].add(f"{alias}:{task_ref}")
                 row["last_seen_at"] = current_iso
+                prev_next = _parse_iso_dt(row.get("next_retry_at"))
+                if retry_dt is not None and (prev_next is None or retry_dt < prev_next):
+                    row["next_retry_at"] = retry_dt.isoformat()
                 if retry_dt is not None:
                     prev_retry = _parse_iso_dt(row.get("last_retry_at"))
                     if prev_retry is None or retry_dt > prev_retry:
@@ -230,15 +252,21 @@ def _provider_capacity_snapshot(state: Dict[str, Any], *, now: Optional[datetime
         summary["operator_action"] = str(policy.get("operator_action", "")).strip()
 
     normalized_rows: Dict[str, Dict[str, Any]] = {}
-    default_level = str(summary.get("policy_level", "")).strip() or "cooldown"
     for provider, row in provider_rows.items():
+        projects = sorted(str(x) for x in row.get("projects", set()) if str(x).strip())
+        tasks = sorted(str(x) for x in row.get("tasks", set()) if str(x).strip())
+        blocked_count = int(row.get("blocked_count", 0) or 0)
+        next_retry = str(row.get("next_retry_at", "")).strip()
         normalized_rows[provider] = {
-            "blocked_count": int(row.get("blocked_count", 0) or 0),
-            "projects": sorted(str(x) for x in row.get("projects", set()) if str(x).strip()),
-            "tasks": sorted(str(x) for x in row.get("tasks", set()) if str(x).strip()),
+            "blocked_count": blocked_count,
+            "project_count": len(projects),
+            "task_count": len(tasks),
+            "projects": projects,
+            "tasks": tasks,
+            "next_retry_at": next_retry,
             "last_retry_at": str(row.get("last_retry_at", "")).strip(),
             "last_seen_at": current_iso,
-            "cooldown_level": default_level,
+            "cooldown_level": _provider_cooldown_level(blocked_count, len(projects), next_retry, now=current),
         }
     return {"summary": summary, "providers": normalized_rows}
 

@@ -74,4 +74,8 @@
 - [x] 양쪽 provider 모두 rate limit이면 task를 `tf_phase=rate_limited`로 유지
 - [x] `retry_after_sec`와 함께 absolute `retry_at` 저장
 - [x] `rate_limited` task가 전체 queue를 영구 busy로 막지 않도록 parked 상태로 분리
-- [ ] `retry_at` 도래 시 scheduler/offdesk 자동 resume
+- [x] `retry_at` 도래 시 scheduler/offdesk 자동 resume
+- [x] provider capacity summary를 `/auto status`, `/offdesk review`에 표시
+- [x] provider capacity cooldown memory(`provider_capacity.json`) 저장
+- [x] operator override history(`/auto off`) 기록
+- [ ] provider별 backoff level 세분화 정책 고도화
