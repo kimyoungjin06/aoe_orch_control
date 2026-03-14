@@ -1018,6 +1018,31 @@ def test_task_lifecycle_summary_includes_phase1_planning_metadata() -> None:
     assert "phase1_candidate_roles: Codex-Analyst, Claude-Analyst, Codex-Reviewer" in summary
 
 
+def test_task_lifecycle_summary_omits_empty_phase1_actor_placeholder() -> None:
+    summary = gw.summarize_task_lifecycle(
+        "Demo",
+        {
+            "request_id": "REQ-PLAN",
+            "short_id": "T-302",
+            "prompt": "Prepare report",
+            "status": "running",
+            "mode": "dispatch",
+            "roles": ["Codex-Writer", "Claude-Writer", "Codex-Reviewer", "Claude-Reviewer"],
+            "tf_phase": "planning",
+            "phase1_mode": "ensemble",
+            "phase1_rounds": 3,
+            "phase1_providers": ["codex", "claude"],
+            "phase1_current_phase": "planner",
+            "phase1_current_round": 1,
+            "phase1_current_total_rounds": 3,
+            "stages": {"planning": "running"},
+        },
+    )
+
+    assert "phase1_progress: planner 1/3" in summary
+    assert "phase1_progress: planner 1/3 -" not in summary
+
+
 def test_blocked_state_helpers_clear_and_promote_manual_followup() -> None:
     item = {
         "status": "running",

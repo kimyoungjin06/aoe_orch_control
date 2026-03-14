@@ -221,17 +221,11 @@ def summarize_task_lifecycle(project_name: str, task: Dict[str, Any]) -> str:
             actor_parts.append(f"planner={phase1_current_planner}")
         if phase1_current_critic:
             actor_parts.append(f"critic={phase1_current_critic}")
-        lines.append(
-            "phase1_progress: {phase} {round_info}{actors}".format(
-                phase=phase1_current_phase or "planning",
-                round_info=(
-                    f"{phase1_current_round}/{phase1_current_total} "
-                    if phase1_current_round and phase1_current_total
-                    else ""
-                ),
-                actors=(" ".join(actor_parts) if actor_parts else "-"),
-            ).rstrip()
-        )
+        progress_parts = [phase1_current_phase or "planning"]
+        if phase1_current_round and phase1_current_total:
+            progress_parts.append(f"{phase1_current_round}/{phase1_current_total}")
+        progress_parts.extend(actor_parts)
+        lines.append("phase1_progress: " + " ".join(progress_parts))
     if phase1_candidate_roles:
         lines.append("phase1_candidate_roles: " + ", ".join(phase1_candidate_roles))
     rate_limit = task.get("rate_limit") if isinstance(task.get("rate_limit"), dict) else {}
