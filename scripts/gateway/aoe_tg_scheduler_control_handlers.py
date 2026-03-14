@@ -819,6 +819,7 @@ def _handle_auto_command(
         last_prefetch_at = str(current.get("last_prefetch_at", "")).strip()
         last_prefetch_reason = str(current.get("last_prefetch_reason", "")).strip()
         last_prefetch_mode = str(current.get("last_prefetch_mode", "")).strip()
+        next_retry_at = str(current.get("next_retry_at", "")).strip()
         stuck_candidate = str(current.get("stuck_candidate", "")).strip()
         stuck_count = int(current.get("stuck_count") or 0)
         fail_count = int(current.get("fail_count") or 0)
@@ -844,6 +845,8 @@ def _handle_auto_command(
             lines.append(f"- last_candidate: {last_candidate}")
         if last_reason:
             lines.append(f"- last_reason: {compact_reason(last_reason, 120)}")
+        if next_retry_at:
+            lines.append(f"- next_retry_at: {next_retry_at}")
         if stuck_count and stuck_candidate:
             lines.append(f"- stuck: {stuck_count} ({stuck_candidate})")
         if fail_count:

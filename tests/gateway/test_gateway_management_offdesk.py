@@ -993,6 +993,32 @@ def test_auto_status_shows_replace_sync_prefetch_mode(tmp_path: Path) -> None:
     assert "- prefetch: sync_recent+replace (full-scope; since ignored)" in text
 
 
+def test_auto_status_shows_next_retry_at_when_rate_limited_work_is_waiting(tmp_path: Path) -> None:
+    team_dir = tmp_path / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (team_dir / "auto_scheduler.json").write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "chat_id": "939062873",
+                "command": "next",
+                "next_retry_at": "2026-03-14T03:10:00+09:00",
+                "last_reason": "no_runnable_open_todo",
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    state = gw.default_manager_state(tmp_path, team_dir)
+
+    text = _call_management_status(tmp_path=tmp_path, manager_state=state, cmd="auto", rest="status")
+
+    assert "- last_reason: no_runnable_open_todo" in text
+    assert "- next_retry_at: 2026-03-14T03:10:00+09:00" in text
+
+
 def test_auto_status_short_compacts_failure_reason_and_uses_ops_summary(tmp_path: Path) -> None:
     team_dir = tmp_path / ".aoe-team"
     team_dir.mkdir(parents=True, exist_ok=True)
