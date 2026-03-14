@@ -726,6 +726,7 @@ def _provision_planning_task(
         task["phase1_mode"] = str(phase1_mode).strip()
     if int(phase1_rounds or 0) > 0:
         task["phase1_rounds"] = int(phase1_rounds)
+        task["phase1_current_round"] = 1
         task["phase1_current_total_rounds"] = int(phase1_rounds)
     if phase1_providers:
         task["phase1_providers"] = [str(item).strip() for item in phase1_providers if str(item).strip()]
