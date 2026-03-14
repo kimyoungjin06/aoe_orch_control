@@ -1146,7 +1146,7 @@ def test_auto_status_shows_next_retry_at_when_rate_limited_work_is_waiting(tmp_p
     assert "- capacity_policy: critical | both primary providers are blocked across multiple tasks/projects" in text
     assert "- capacity_operator_action: /auto off" in text
     assert "- capacity_memory_updated_at: 2026-03-14T03:00:30+09:00" in text
-    assert "- provider_memory: claude(blocked=2 projects=2 level=critical retry=2026-03-14T03:10:00+09:00), codex(blocked=1 projects=1 level=elevated retry=2026-03-14T03:10:00+09:00)" in text
+    assert "- provider_memory: claude(blocked=2 projects=2 level=critical wait=medium retry=2026-03-14T03:10:00+09:00), codex(blocked=1 projects=1 level=elevated wait=medium retry=2026-03-14T03:10:00+09:00)" in text
     assert "- capacity_override_last: /auto off @ 2026-03-14T02:59:00+09:00 (critical)" in text
     assert "- next_retry_target: O1 T-201 providers=codex,claude degraded=claude_rate_limit->codex" in text
 
@@ -1999,6 +1999,84 @@ def test_offdesk_review_sorts_flagged_projects_by_severity(tmp_path: Path) -> No
     assert "first: /sync bootstrap O4 24h | bootstrap backlog because the project has never been synced" in body
 
 
+def test_offdesk_review_sorts_rate_limited_projects_by_capacity_pressure(tmp_path: Path) -> None:
+    state = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+
+    root_o3 = tmp_path / "Nano"
+    team_o3 = root_o3 / ".aoe-team"
+    team_o3.mkdir(parents=True, exist_ok=True)
+    (root_o3 / "TODO.md").write_text("# Tasks\n- [ ] current task\n", encoding="utf-8")
+    (team_o3 / "AOE_TODO.md").write_text("@include ../TODO.md\n", encoding="utf-8")
+    (team_o3 / "orchestrator.json").write_text("{}", encoding="utf-8")
+    state["projects"]["nano"] = {
+        "name": "nano",
+        "display_name": "Nano",
+        "project_alias": "O3",
+        "project_root": str(root_o3),
+        "team_dir": str(team_o3),
+        "runtime_ready": True,
+        "todos": [{"id": "TODO-001", "summary": "current task", "priority": "P1", "status": "running"}],
+        "tasks": {
+            "r1": {
+                "request_id": "r1",
+                "label": "T-301",
+                "status": "running",
+                "tf_phase": "rate_limited",
+                "rate_limit": {
+                    "mode": "blocked",
+                    "limited_providers": ["claude"],
+                    "retry_after_sec": 180,
+                    "retry_at": "2026-03-14T03:20:00+09:00",
+                },
+            }
+        },
+        "last_sync_at": "2026-03-12T20:00:00+0900",
+        "last_sync_mode": "scenario",
+        "last_sync_candidate_classes": {"scenario": 1},
+        "last_sync_candidate_doc_types": {"todo": 1},
+    }
+
+    root_o4 = tmp_path / "Map"
+    team_o4 = root_o4 / ".aoe-team"
+    team_o4.mkdir(parents=True, exist_ok=True)
+    (root_o4 / "TODO.md").write_text("# Tasks\n- [ ] current task\n", encoding="utf-8")
+    (team_o4 / "AOE_TODO.md").write_text("@include ../TODO.md\n", encoding="utf-8")
+    (team_o4 / "orchestrator.json").write_text("{}", encoding="utf-8")
+    state["projects"]["map"] = {
+        "name": "map",
+        "display_name": "Map",
+        "project_alias": "O4",
+        "project_root": str(root_o4),
+        "team_dir": str(team_o4),
+        "runtime_ready": True,
+        "todos": [{"id": "TODO-001", "summary": "current task", "priority": "P1", "status": "running"}],
+        "tasks": {
+            "r2": {
+                "request_id": "r2",
+                "label": "T-401",
+                "status": "running",
+                "tf_phase": "rate_limited",
+                "rate_limit": {
+                    "mode": "blocked",
+                    "limited_providers": ["codex", "claude"],
+                    "retry_after_sec": 180,
+                    "retry_at": "2026-03-14T04:00:00+09:00",
+                },
+            }
+        },
+        "last_sync_at": "2026-03-12T20:00:00+0900",
+        "last_sync_mode": "scenario",
+        "last_sync_candidate_classes": {"scenario": 1},
+        "last_sync_candidate_doc_types": {"todo": 1},
+    }
+
+    body = _call_management_status(tmp_path=tmp_path, manager_state=state, cmd="offdesk", rest="review all")
+
+    idx_o4 = body.index("- O4 Map [warn]")
+    idx_o3 = body.index("- O3 Nano [warn]")
+    assert idx_o4 < idx_o3
+
+
 def test_offdesk_prepare_reply_markup_includes_clean_actions(tmp_path: Path) -> None:
     state = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
 
@@ -2127,9 +2205,39 @@ def test_auto_scheduler_builds_provider_capacity_snapshot() -> None:
     assert snapshot["providers"]["claude"]["blocked_count"] == 2
     assert snapshot["providers"]["claude"]["project_count"] == 2
     assert snapshot["providers"]["claude"]["cooldown_level"] == "critical"
+    assert snapshot["providers"]["claude"]["retry_wait_bucket"] == "medium"
     assert snapshot["providers"]["codex"]["blocked_count"] == 1
     assert snapshot["providers"]["codex"]["project_count"] == 1
     assert snapshot["providers"]["codex"]["cooldown_level"] == "elevated"
+    assert snapshot["providers"]["codex"]["retry_wait_bucket"] == "medium"
+
+
+def test_auto_scheduler_escalates_single_provider_to_critical_on_long_retry_wait() -> None:
+    state = {
+        "projects": {
+            "o3": {
+                "project_alias": "O3",
+                "tasks": {
+                    "req-201": {
+                        "label": "T-201",
+                        "rate_limit": {
+                            "mode": "blocked",
+                            "limited_providers": ["claude"],
+                            "retry_at": "2026-03-14T04:00:00+09:00",
+                        },
+                    }
+                },
+            }
+        }
+    }
+
+    snapshot = auto_sched._provider_capacity_snapshot(
+        state,
+        now=auto_sched._parse_iso_dt("2026-03-14T03:00:00+09:00"),
+    )
+
+    assert snapshot["providers"]["claude"]["cooldown_level"] == "critical"
+    assert snapshot["providers"]["claude"]["retry_wait_bucket"] == "long"
 
 
 def test_auto_off_records_provider_capacity_override_history(tmp_path: Path, monkeypatch) -> None:
@@ -2939,7 +3047,7 @@ def test_offdesk_review_surfaces_provider_capacity_for_rate_limited_task(tmp_pat
     assert "- capacity_policy: elevated | both primary providers are blocked" in body
     assert "- capacity_operator_action: /auto status" in body
     assert "- capacity_memory_updated_at: 2026-03-14T01:21:00+09:00" in body
-    assert "- provider_memory: claude(blocked=1 projects=1 level=cooldown retry=2026-03-14T01:23:00+09:00), codex(blocked=1 projects=1 level=elevated retry=2026-03-14T01:23:00+09:00)" in body
+    assert "- provider_memory: claude(blocked=1 projects=1 level=cooldown wait=short retry=2026-03-14T01:23:00+09:00), codex(blocked=1 projects=1 level=elevated wait=short retry=2026-03-14T01:23:00+09:00)" in body
     assert "- capacity_override_last: /auto status @ 2026-03-14T01:20:00+09:00 (elevated)" in body
     assert "task:rate_limited" in body
     assert "capacity:codex,claude" in body

@@ -188,8 +188,21 @@ def _provider_capacity_memory_lines(memory_state: Dict[str, Any]) -> List[str]:
             blocked_count = int(row.get("blocked_count", 0) or 0)
             level = str(row.get("cooldown_level", "")).strip() or "cooldown"
             retry_at = str(row.get("next_retry_at", "")).strip() or "-"
+            wait_bucket = str(row.get("retry_wait_bucket", "")).strip()
+            if not wait_bucket:
+                parsed = _parse_iso_datetime(retry_at)
+                current = _parse_iso_datetime(updated_at) or datetime.now(timezone.utc)
+                retry_wait_sec = max(0.0, (parsed - current).total_seconds()) if parsed is not None else 0.0
+                if retry_wait_sec >= 1800:
+                    wait_bucket = "long"
+                elif retry_wait_sec >= 540:
+                    wait_bucket = "medium"
+                else:
+                    wait_bucket = "short"
             project_count = int(row.get("project_count", 0) or 0)
-            parts.append(f"{name}(blocked={blocked_count} projects={project_count} level={level} retry={retry_at})")
+            parts.append(
+                f"{name}(blocked={blocked_count} projects={project_count} level={level} wait={wait_bucket} retry={retry_at})"
+            )
         if parts:
             lines.append(f"- provider_memory: {', '.join(parts)}")
     if history:
