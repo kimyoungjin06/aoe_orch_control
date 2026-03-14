@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from aoe_tg_ops_policy import build_batch_finish_message, format_ops_skip_detail, new_ops_skip_counters
+from aoe_tg_provider_fallback import load_provider_capacity_state
 from aoe_tg_project_runtime import project_hidden_from_ops, project_runtime_issue
 from aoe_tg_queue_engine import project_capacity_snapshot
 from aoe_tg_queue_engine import drain_peek_next_todo as queue_drain_peek_next_todo
@@ -51,12 +52,14 @@ def drain_peek_next_todo(
     *,
     force: bool,
     recovery_grace_until: Any = None,
+    provider_capacity_state: Any = None,
 ) -> Tuple[str, str, str]:
     return queue_drain_peek_next_todo(
         manager_state,
         chat_id,
         force=force,
         recovery_grace_until=recovery_grace_until,
+        provider_capacity_state=provider_capacity_state,
     )
 
 
@@ -228,6 +231,7 @@ def handle_fanout_command(
 
     deps["ensure_project_aliases"](manager_state)
     recovery_grace_until = _auto_recovery_grace_until(args)
+    provider_capacity_state = load_provider_capacity_state(getattr(args, "team_dir", ""))
 
     def _proj_sort_key(k: str) -> Tuple[int, str, int, int, int, str]:
         entry = projects.get(k) if isinstance(projects.get(k), dict) else {}
@@ -235,12 +239,14 @@ def handle_fanout_command(
         capacity = project_capacity_snapshot(
             entry if isinstance(entry, dict) else {},
             recovery_grace_until=recovery_grace_until,
+            provider_capacity_state=provider_capacity_state,
         )
         return (
             int(capacity.get("penalty_rank", 0) or 0),
             str(capacity.get("next_retry_at", "") or "9999-12-31T23:59:59+00:00"),
             int(capacity.get("active_count", 0) or 0),
             int(capacity.get("recent_recovered_count", 0) or 0),
+            int(capacity.get("repeat_count", 0) or 0),
             int(capacity.get("provider_count", 0) or 0),
             deps["extract_project_alias_index"](alias),
             str(k),

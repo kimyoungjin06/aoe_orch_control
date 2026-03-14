@@ -3447,6 +3447,92 @@ def test_queue_pick_penalizes_recently_recovered_rate_limited_project_during_rec
     assert grace_pick["capacity_penalty_rank"] == 0
 
 
+def test_queue_pick_penalizes_repeat_heavy_project_during_recovery_grace(tmp_path: Path) -> None:
+    state = _empty_state()
+    repeat_team = tmp_path / "Repeat" / ".aoe-team"
+    fresh_team = tmp_path / "Fresh" / ".aoe-team"
+    repeat_team.mkdir(parents=True, exist_ok=True)
+    fresh_team.mkdir(parents=True, exist_ok=True)
+    (repeat_team / "orchestrator.json").write_text("{}", encoding="utf-8")
+    (fresh_team / "orchestrator.json").write_text("{}", encoding="utf-8")
+
+    state["projects"]["repeat"] = {
+        "name": "repeat",
+        "display_name": "Repeat",
+        "project_alias": "O2",
+        "project_root": str(tmp_path / "Repeat"),
+        "team_dir": str(repeat_team),
+        "todos": [
+            {"id": "TODO-001", "summary": "repeat-heavy work", "priority": "P1", "status": "open", "created_at": "2026-03-14T00:00:00+09:00"},
+        ],
+        "tasks": {
+            "r1": {
+                "request_id": "r1",
+                "todo_id": "TODO-001",
+                "status": "running",
+                "tf_phase": "rate_limited",
+                "rate_limit": {
+                    "mode": "blocked",
+                    "limited_providers": ["claude"],
+                    "retry_after_sec": 180,
+                    "retry_at": "2000-01-01T00:00:00+00:00",
+                },
+            }
+        },
+    }
+    state["projects"]["fresh"] = {
+        "name": "fresh",
+        "display_name": "Fresh",
+        "project_alias": "O3",
+        "project_root": str(tmp_path / "Fresh"),
+        "team_dir": str(fresh_team),
+        "todos": [
+            {"id": "TODO-010", "summary": "fresh work", "priority": "P1", "status": "open", "created_at": "2026-03-14T00:00:00+09:00"},
+        ],
+        "tasks": {
+            "r2": {
+                "request_id": "r2",
+                "todo_id": "TODO-010",
+                "status": "running",
+                "tf_phase": "rate_limited",
+                "rate_limit": {
+                    "mode": "blocked",
+                    "limited_providers": ["claude"],
+                    "retry_after_sec": 180,
+                    "retry_at": "2000-01-01T00:00:00+00:00",
+                },
+            }
+        },
+    }
+
+    provider_capacity_state = {
+        "recovery_repeat_history": [
+            {"at": "2026-03-14T00:10:00+09:00", "summary": "O2", "aliases": ["O2"]},
+            {"at": "2026-03-14T00:20:00+09:00", "summary": "O2", "aliases": ["O2"]},
+        ]
+    }
+
+    queue_pick = queue_engine.pick_global_next_candidate(
+        state["projects"],
+        ignore_busy=False,
+        skip_paused=True,
+        recovery_grace_until="2999-01-01T00:00:00+00:00",
+        provider_capacity_state=provider_capacity_state,
+    )
+    gw_pick = gw._drain_peek_next_todo(
+        state,
+        "939062873",
+        force=False,
+        recovery_grace_until="2999-01-01T00:00:00+00:00",
+        provider_capacity_state=provider_capacity_state,
+    )
+
+    assert isinstance(queue_pick, dict)
+    assert queue_pick["project_key"] == "fresh"
+    assert queue_pick["capacity_repeat_count"] == 0
+    assert gw_pick == ("fresh", "TODO-010", "candidate")
+
+
 def test_transport_module_matches_gateway_transport_exports() -> None:
     previous = os.environ.get("AOE_TG_COMMAND_PREFIXES")
     os.environ["AOE_TG_COMMAND_PREFIXES"] = "!/"

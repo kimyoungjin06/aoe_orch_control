@@ -1074,6 +1074,12 @@ def test_auto_status_shows_next_retry_at_when_rate_limited_work_is_waiting(tmp_p
         json.dumps(
             {
                 "updated_at": "2026-03-14T03:00:30+09:00",
+                "recovery_repeat_count": 2,
+                "recovery_repeat_last_at": "2026-03-14T03:29:00+09:00",
+                "recovery_repeat_history": [
+                    {"at": "2026-03-14T03:11:00+09:00", "summary": "O2", "aliases": ["O2"]},
+                    {"at": "2026-03-14T03:29:00+09:00", "summary": "O1", "aliases": ["O1"]},
+                ],
                 "providers": {
                     "claude": {
                         "blocked_count": 2,
@@ -1146,6 +1152,7 @@ def test_auto_status_shows_next_retry_at_when_rate_limited_work_is_waiting(tmp_p
     assert "- provider_capacity: tasks=2 projects=2 providers=claude=2, codex=1" in text
     assert "- capacity_policy: critical | both primary providers are blocked across multiple tasks/projects" in text
     assert "- capacity_operator_action: /auto off" in text
+    assert "- capacity_recovery_repeat_summary: count=2 latest=O1 last=2026-03-14T03:29:00+09:00" in text
     assert "- capacity_memory_updated_at: 2026-03-14T03:00:30+09:00" in text
     assert "- provider_memory: claude(blocked=2 projects=2 level=critical wait=medium retry=2026-03-14T03:10:00+09:00), codex(blocked=1 projects=1 level=elevated wait=medium retry=2026-03-14T03:10:00+09:00)" in text
     assert "- capacity_override_last: /auto off @ 2026-03-14T02:59:00+09:00 (critical)" in text
@@ -2213,6 +2220,58 @@ def test_auto_scheduler_builds_provider_capacity_snapshot() -> None:
     assert snapshot["providers"]["codex"]["retry_wait_bucket"] == "medium"
 
 
+def test_auto_scheduler_persists_recovery_repeat_in_provider_capacity_snapshot() -> None:
+    state = {
+        "projects": {
+            "o1": {
+                "project_alias": "O1",
+                "tasks": {
+                    "req-201": {
+                        "label": "T-201",
+                        "rate_limit": {
+                            "mode": "blocked",
+                            "limited_providers": ["codex", "claude"],
+                            "retry_at": "2026-03-14T03:10:00+09:00",
+                        },
+                    }
+                },
+            },
+            "o4": {
+                "project_alias": "O4",
+                "tasks": {
+                    "req-301": {
+                        "label": "T-301",
+                        "rate_limit": {
+                            "mode": "blocked",
+                            "limited_providers": ["claude"],
+                            "retry_at": "2026-03-14T03:25:00+09:00",
+                        },
+                    }
+                },
+            },
+        }
+    }
+    auto_state = {
+        "recovery_grace_until": "2000-01-01T00:00:00+00:00",
+        "recovery_project_aliases": ["O1"],
+    }
+
+    snapshot = auto_sched._provider_capacity_snapshot(
+        state,
+        auto_state=auto_state,
+        now=auto_sched._parse_iso_dt("2026-03-14T03:00:00+09:00"),
+    )
+
+    assert snapshot["summary"]["recovery_repeat_project_count"] == "1"
+    assert snapshot["summary"]["recovery_repeat_summary"] == "O1"
+    assert snapshot["summary"]["policy_level"] == "critical"
+    assert snapshot["recovery_repeat"]["summary"] == "O1"
+    assert snapshot["providers"]["claude"]["repeat_project_count"] == 1
+    assert snapshot["providers"]["claude"]["repeat_projects"] == ["O1"]
+    assert snapshot["providers"]["codex"]["repeat_project_count"] == 1
+    assert snapshot["providers"]["codex"]["repeat_projects"] == ["O1"]
+
+
 def test_auto_scheduler_escalates_single_provider_to_critical_on_long_retry_wait() -> None:
     state = {
         "projects": {
@@ -2292,6 +2351,78 @@ def test_auto_off_records_provider_capacity_override_history(tmp_path: Path, mon
     assert last["action"] == "/auto off"
     assert last["policy_level"] == "critical"
     assert last["providers"] == "claude=2, codex=1"
+
+
+def test_provider_capacity_memory_lines_show_recovery_repeat_memory() -> None:
+    lines = scheduler_control._provider_capacity_memory_lines(
+        {
+            "updated_at": "2026-03-14T03:30:00+09:00",
+            "recovery_repeat_count": 2,
+            "recovery_repeat_last_at": "2026-03-14T03:29:00+09:00",
+            "recovery_repeat_history": [
+                {"at": "2026-03-14T03:15:00+09:00", "summary": "O2", "aliases": ["O2"]},
+                {"at": "2026-03-14T03:29:00+09:00", "summary": "O1", "aliases": ["O1"]},
+            ],
+            "recovery_repeat": {
+                "project_count": 1,
+                "aliases": ["O1"],
+                "summary": "O1",
+            },
+            "providers": {
+                "claude": {
+                    "blocked_count": 2,
+                    "project_count": 2,
+                    "next_retry_at": "2026-03-14T03:45:00+09:00",
+                    "cooldown_level": "critical",
+                    "retry_wait_bucket": "medium",
+                    "repeat_projects": ["O1"],
+                }
+            },
+        }
+    )
+
+    assert "- capacity_recovery_repeat_memory: O1" in lines
+    assert "- capacity_recovery_repeat_stats: count=2 last=2026-03-14T03:29:00+09:00" in lines
+    assert any("capacity_recovery_repeat_history:" in line and "O2@2026-03-14T03:15:00+09:00" in line and "O1@2026-03-14T03:29:00+09:00" in line for line in lines)
+    assert any("repeat=O1" in line for line in lines if "provider_memory:" in line)
+
+
+def test_auto_scheduler_merge_provider_capacity_memory_tracks_repeat_count_once_per_active_summary() -> None:
+    first = auto_sched._merge_provider_capacity_memory(
+        {},
+        {
+            "summary": {"task_count": "1"},
+            "providers": {},
+            "recovery_repeat": {"summary": "O1", "aliases": ["O1"], "project_count": 1},
+        },
+        now_iso="2026-03-14T03:30:00+09:00",
+    )
+    second = auto_sched._merge_provider_capacity_memory(
+        first,
+        {
+            "summary": {"task_count": "1"},
+            "providers": {},
+            "recovery_repeat": {"summary": "O1", "aliases": ["O1"], "project_count": 1},
+        },
+        now_iso="2026-03-14T03:31:00+09:00",
+    )
+    cleared = auto_sched._merge_provider_capacity_memory(
+        second,
+        {
+            "summary": {"task_count": "0"},
+            "providers": {},
+        },
+        now_iso="2026-03-14T03:32:00+09:00",
+    )
+
+    assert first["recovery_repeat_count"] == 1
+    assert first["recovery_repeat_last_at"] == "2026-03-14T03:30:00+09:00"
+    assert len(first["recovery_repeat_history"]) == 1
+    assert second["recovery_repeat_count"] == 1
+    assert len(second["recovery_repeat_history"]) == 1
+    assert "recovery_repeat_active_summary" not in cleared
+    assert cleared["recovery_repeat_count"] == 1
+    assert len(cleared["recovery_repeat_history"]) == 1
 
 
 def test_auto_status_shows_capacity_recovery_action_when_auto_is_disabled_after_override(tmp_path: Path) -> None:
@@ -2524,6 +2655,84 @@ def test_auto_status_escalates_when_same_recovered_project_blocks_again_after_gr
     assert "- capacity_recovery_repeat: O1" in text
     assert "- capacity_policy: critical | same recovered project hit both primary providers again after recovery grace (O1)" in text
     assert "- capacity_operator_action: /auto off" in text
+
+
+def test_auto_status_escalates_from_repeat_memory_history(tmp_path: Path) -> None:
+    team_dir = tmp_path / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (team_dir / "auto_scheduler.json").write_text(
+        json.dumps({"enabled": True, "chat_id": "939062873", "command": "next"}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (team_dir / "provider_capacity.json").write_text(
+        json.dumps(
+            {
+                "updated_at": "2026-03-14T03:30:00+09:00",
+                "recovery_repeat_count": 2,
+                "recovery_repeat_last_at": "2026-03-14T03:29:00+09:00",
+                "recovery_repeat_history": [
+                    {"at": "2026-03-14T03:15:00+09:00", "summary": "O2", "aliases": ["O2"]},
+                    {"at": "2026-03-14T03:29:00+09:00", "summary": "O1", "aliases": ["O1"]},
+                ],
+                "providers": {},
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    state = gw.default_manager_state(tmp_path, team_dir)
+    entry = state["projects"]["default"]
+    entry["project_alias"] = "O1"
+    entry["tasks"] = {
+        "r_demo": {
+            "request_id": "r_demo",
+            "label": "T-001",
+            "short_id": "T-001",
+            "status": "running",
+            "rate_limit": {
+                "mode": "blocked",
+                "limited_providers": ["claude"],
+                "retry_after_sec": 180,
+                "retry_at": "2026-03-14T01:23:00+09:00",
+            },
+        }
+    }
+
+    text = _call_management_status(tmp_path=tmp_path, manager_state=state, cmd="auto", rest="status")
+
+    assert "- capacity_policy: elevated | provider cooldown is recurring with recent repeat history count=2 latest=O1" in text
+    assert "- capacity_operator_action: /offdesk review" in text
+
+
+def test_sort_offdesk_reports_prioritizes_capacity_repeat_count() -> None:
+    rows = [
+        {
+            "alias": "O1",
+            "display": "O1",
+            "status": "warn",
+            "severity_score": 10,
+            "capacity_pressure_score": 20,
+            "capacity_repeat_count": 1,
+            "capacity_provider_count": 1,
+            "capacity_retry_wait_sec": 0,
+        },
+        {
+            "alias": "O2",
+            "display": "O2",
+            "status": "warn",
+            "severity_score": 10,
+            "capacity_pressure_score": 20,
+            "capacity_repeat_count": 3,
+            "capacity_provider_count": 1,
+            "capacity_retry_wait_sec": 0,
+        },
+    ]
+
+    ordered = mgmt_handlers._sort_offdesk_reports(rows)
+
+    assert [row["alias"] for row in ordered] == ["O2", "O1"]
 
 
 def test_offdesk_review_escalates_when_same_recovered_project_blocks_again_after_grace(tmp_path: Path) -> None:
@@ -3265,6 +3474,12 @@ def test_offdesk_review_surfaces_provider_capacity_for_rate_limited_task(tmp_pat
         json.dumps(
             {
                 "updated_at": "2026-03-14T01:21:00+09:00",
+                "recovery_repeat_count": 2,
+                "recovery_repeat_last_at": "2026-03-14T01:19:00+09:00",
+                "recovery_repeat_history": [
+                    {"at": "2026-03-14T01:10:00+09:00", "summary": "O2", "aliases": ["O2"]},
+                    {"at": "2026-03-14T01:19:00+09:00", "summary": "O1", "aliases": ["O1"]},
+                ],
                 "providers": {
                     "claude": {
                         "blocked_count": 1,
@@ -3337,8 +3552,9 @@ def test_offdesk_review_surfaces_provider_capacity_for_rate_limited_task(tmp_pat
 
     assert "offdesk review" in body
     assert "- provider_capacity: tasks=1 projects=1 providers=claude=1, codex=1" in body
-    assert "- capacity_policy: elevated | both primary providers are blocked" in body
-    assert "- capacity_operator_action: /auto status" in body
+    assert "- capacity_policy: critical | both primary providers are blocked with recent repeat history count=2 latest=O1" in body
+    assert "- capacity_operator_action: /auto off" in body
+    assert "- capacity_recovery_repeat_summary: count=2 latest=O1 last=2026-03-14T01:19:00+09:00" in body
     assert "- capacity_memory_updated_at: 2026-03-14T01:21:00+09:00" in body
     assert "- provider_memory: claude(blocked=1 projects=1 level=cooldown wait=short retry=2026-03-14T01:23:00+09:00), codex(blocked=1 projects=1 level=elevated wait=short retry=2026-03-14T01:23:00+09:00)" in body
     assert "- capacity_override_last: /auto status @ 2026-03-14T01:20:00+09:00 (elevated)" in body
@@ -3349,7 +3565,7 @@ def test_offdesk_review_surfaces_provider_capacity_for_rate_limited_task(tmp_pat
     assert "do: /task T-001, /auto status" in body
     buttons = _button_texts(markup)
     assert "/task T-001" in buttons
-    assert "/auto status" in buttons
+    assert "/auto off" in buttons
 
 
 def test_offdesk_review_promotes_auto_off_when_capacity_policy_is_critical(tmp_path: Path) -> None:

@@ -109,7 +109,59 @@ def _adjust_idle_for_retry_at(idle_sec: float, retry_at: str, *, now: Optional[d
     return max(1.0, min(float(idle_sec), remaining))
 
 
-def _provider_capacity_policy(summary: Dict[str, Any]) -> Dict[str, str]:
+def _rate_limited_project_aliases(state: Dict[str, Any]) -> list[str]:
+    projects = state.get("projects") if isinstance(state, dict) else {}
+    if not isinstance(projects, dict):
+        return []
+    aliases: set[str] = set()
+    for key, entry in projects.items():
+        if not isinstance(entry, dict):
+            continue
+        alias = str(entry.get("project_alias", "")).strip().upper() or str(key or "").strip().upper()
+        tasks = entry.get("tasks")
+        if not isinstance(tasks, dict):
+            continue
+        for task in tasks.values():
+            if not isinstance(task, dict):
+                continue
+            rate_limit = task.get("rate_limit") if isinstance(task.get("rate_limit"), dict) else {}
+            if str(rate_limit.get("mode", "")).strip().lower() == "blocked":
+                if alias:
+                    aliases.add(alias)
+                break
+    return sorted(aliases)
+
+
+def _recovery_repeat_snapshot(
+    auto_state: Dict[str, Any],
+    state: Dict[str, Any],
+    *,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    grace_until = _parse_iso_dt(auto_state.get("recovery_grace_until"))
+    if grace_until is None or grace_until > current.astimezone(timezone.utc):
+        return {}
+    prior = {
+        str(raw or "").strip().upper()
+        for raw in (auto_state.get("recovery_project_aliases") or [])
+        if str(raw or "").strip()
+    }
+    if not prior:
+        return {}
+    repeated = sorted(prior & set(_rate_limited_project_aliases(state)))
+    if not repeated:
+        return {}
+    return {
+        "project_count": len(repeated),
+        "aliases": repeated,
+        "summary": ",".join(repeated),
+    }
+
+
+def _provider_capacity_policy(summary: Dict[str, Any], recovery_repeat: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
     try:
         task_count = int(summary.get("task_count", 0) or 0)
     except Exception:
@@ -123,6 +175,19 @@ def _provider_capacity_policy(summary: Dict[str, Any]) -> Dict[str, str]:
     if task_count <= 0:
         return {}
     both_primary = {"codex", "claude"}.issubset(provider_names)
+    repeat_summary = str((recovery_repeat or {}).get("summary", "")).strip()
+    if repeat_summary:
+        if both_primary:
+            return {
+                "level": "critical",
+                "reason": f"same recovered project hit both primary providers again after recovery grace ({repeat_summary})",
+                "operator_action": "/auto off",
+            }
+        return {
+            "level": "elevated",
+            "reason": f"same recovered project hit provider cooldown again after recovery grace ({repeat_summary})",
+            "operator_action": "/offdesk review",
+        }
     if both_primary and (task_count >= 2 or project_count >= 2):
         return {
             "level": "critical",
@@ -186,11 +251,19 @@ def _provider_retry_wait_bucket(
     return "short"
 
 
-def _provider_capacity_snapshot(state: Dict[str, Any], *, now: Optional[datetime] = None) -> Dict[str, Any]:
+def _provider_capacity_snapshot(
+    state: Dict[str, Any],
+    *,
+    auto_state: Optional[Dict[str, Any]] = None,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
     current = now or datetime.now(timezone.utc)
     if current.tzinfo is None:
         current = current.replace(tzinfo=timezone.utc)
     current_iso = current.astimezone(timezone.utc).isoformat()
+    auto_state = auto_state if isinstance(auto_state, dict) else {}
+    recovery_repeat = _recovery_repeat_snapshot(auto_state, state, now=current)
+    repeated_aliases = set(recovery_repeat.get("aliases") or [])
     projects = state.get("projects") if isinstance(state, dict) else {}
     if not isinstance(projects, dict):
         return {"summary": {}, "providers": {}}
@@ -233,6 +306,7 @@ def _provider_capacity_snapshot(state: Dict[str, Any], *, now: Optional[datetime
                         "blocked_count": 0,
                         "projects": set(),
                         "tasks": set(),
+                        "repeat_projects": set(),
                         "last_retry_at": "",
                         "last_seen_at": current_iso,
                     },
@@ -240,6 +314,8 @@ def _provider_capacity_snapshot(state: Dict[str, Any], *, now: Optional[datetime
                 row["blocked_count"] = int(row.get("blocked_count", 0) or 0) + 1
                 row["projects"].add(alias)
                 row["tasks"].add(f"{alias}:{task_ref}")
+                if alias in repeated_aliases:
+                    row["repeat_projects"].add(alias)
                 row["last_seen_at"] = current_iso
                 prev_next = _parse_iso_dt(row.get("next_retry_at"))
                 if retry_dt is not None and (prev_next is None or retry_dt < prev_next):
@@ -264,7 +340,10 @@ def _provider_capacity_snapshot(state: Dict[str, Any], *, now: Optional[datetime
         "provider_counts": provider_counts,
         "next_retry_at": next_retry_at,
     }
-    policy = _provider_capacity_policy(summary)
+    if recovery_repeat:
+        summary["recovery_repeat_project_count"] = str(recovery_repeat.get("project_count", 0) or 0)
+        summary["recovery_repeat_summary"] = str(recovery_repeat.get("summary", "")).strip()
+    policy = _provider_capacity_policy(summary, recovery_repeat)
     if policy:
         summary["policy_level"] = str(policy.get("level", "")).strip()
         summary["policy_reason"] = str(policy.get("reason", "")).strip()
@@ -274,6 +353,7 @@ def _provider_capacity_snapshot(state: Dict[str, Any], *, now: Optional[datetime
     for provider, row in provider_rows.items():
         projects = sorted(str(x) for x in row.get("projects", set()) if str(x).strip())
         tasks = sorted(str(x) for x in row.get("tasks", set()) if str(x).strip())
+        repeat_projects = sorted(str(x) for x in row.get("repeat_projects", set()) if str(x).strip())
         blocked_count = int(row.get("blocked_count", 0) or 0)
         next_retry = str(row.get("next_retry_at", "")).strip()
         normalized_rows[provider] = {
@@ -282,13 +362,72 @@ def _provider_capacity_snapshot(state: Dict[str, Any], *, now: Optional[datetime
             "task_count": len(tasks),
             "projects": projects,
             "tasks": tasks,
+            "repeat_project_count": len(repeat_projects),
+            "repeat_projects": repeat_projects,
             "next_retry_at": next_retry,
             "last_retry_at": str(row.get("last_retry_at", "")).strip(),
             "last_seen_at": current_iso,
             "cooldown_level": _provider_cooldown_level(blocked_count, len(projects), next_retry, now=current),
             "retry_wait_bucket": _provider_retry_wait_bucket(next_retry, now=current),
         }
-    return {"summary": summary, "providers": normalized_rows}
+    result = {"summary": summary, "providers": normalized_rows}
+    if recovery_repeat:
+        result["recovery_repeat"] = recovery_repeat
+    return result
+
+
+def _merge_provider_capacity_memory(
+    previous_state: Dict[str, Any],
+    snapshot: Dict[str, Any],
+    *,
+    now_iso: str,
+) -> Dict[str, Any]:
+    payload = dict(snapshot) if isinstance(snapshot, dict) else {}
+    previous = previous_state if isinstance(previous_state, dict) else {}
+
+    history = previous.get("override_history") if isinstance(previous.get("override_history"), list) else []
+    if history:
+        payload["override_history"] = [row for row in history if isinstance(row, dict)][-10:]
+
+    repeat_count = int(previous.get("recovery_repeat_count", 0) or 0)
+    repeat_last_at = str(previous.get("recovery_repeat_last_at", "")).strip()
+    repeat_history = [
+        row
+        for row in (previous.get("recovery_repeat_history") if isinstance(previous.get("recovery_repeat_history"), list) else [])
+        if isinstance(row, dict)
+    ][-9:]
+    previous_active = str(previous.get("recovery_repeat_active_summary", "")).strip()
+    current_repeat = payload.get("recovery_repeat") if isinstance(payload.get("recovery_repeat"), dict) else {}
+    current_summary = str(current_repeat.get("summary", "")).strip()
+    current_aliases = [str(x).strip().upper() for x in (current_repeat.get("aliases") or []) if str(x).strip()]
+
+    if current_summary:
+        if current_summary != previous_active:
+            repeat_count += 1
+            repeat_last_at = now_iso
+            repeat_history.append(
+                {
+                    "at": now_iso,
+                    "summary": current_summary,
+                    "aliases": current_aliases,
+                }
+            )
+        payload["recovery_repeat_active_summary"] = current_summary
+    else:
+        payload.pop("recovery_repeat_active_summary", None)
+
+    if repeat_count > 0:
+        payload["recovery_repeat_count"] = repeat_count
+        if repeat_last_at:
+            payload["recovery_repeat_last_at"] = repeat_last_at
+        if repeat_history:
+            payload["recovery_repeat_history"] = repeat_history[-10:]
+    else:
+        payload.pop("recovery_repeat_count", None)
+        payload.pop("recovery_repeat_last_at", None)
+        payload.pop("recovery_repeat_history", None)
+
+    return payload
 
 
 def _auto_enabled(auto_state: Dict[str, Any]) -> bool:
@@ -439,7 +578,14 @@ def _build_gateway_args(gw: Any, project_root: Path, team_dir: Path, verbose: bo
     return args
 
 
-def _peek_next(gw: Any, args: argparse.Namespace, chat_id: str, force: bool) -> Tuple[str, str, str]:
+def _peek_next(
+    gw: Any,
+    args: argparse.Namespace,
+    chat_id: str,
+    force: bool,
+    *,
+    provider_capacity_state: Optional[Dict[str, Any]] = None,
+) -> Tuple[str, str, str]:
     state = gw.load_manager_state(args.manager_state_file, args.project_root, args.team_dir)
     recovery_grace_until = ""
     try:
@@ -450,7 +596,13 @@ def _peek_next(gw: Any, args: argparse.Namespace, chat_id: str, force: bool) -> 
     except Exception:
         recovery_grace_until = ""
     try:
-        return gw._drain_peek_next_todo(state, chat_id, force=force, recovery_grace_until=recovery_grace_until)
+        return gw._drain_peek_next_todo(
+            state,
+            chat_id,
+            force=force,
+            recovery_grace_until=recovery_grace_until,
+            provider_capacity_state=provider_capacity_state,
+        )
     except Exception:
         return "", "", "peek_error"
 
@@ -648,7 +800,14 @@ def main() -> int:
             time.sleep(max(2.0, float(idle_sec)))
             continue
 
-        project_key, todo_id, reason = _peek_next(gw, gw_args, chat_id, force=force)
+        provider_capacity_state = _load_json(provider_capacity_state_path)
+        project_key, todo_id, reason = _peek_next(
+            gw,
+            gw_args,
+            chat_id,
+            force=force,
+            provider_capacity_state=provider_capacity_state,
+        )
         if not project_key or not todo_id:
             # Optional prefetch: when idle (no runnable todo), try to seed queue from recent docs.
             if prefetch == "sync_recent" and (reason or "") == "no_runnable_open_todo":
@@ -686,7 +845,14 @@ def main() -> int:
                     except Exception as exc:
                         if args0.verbose:
                             print(f"[AUTO] prefetch failed: {exc}", flush=True)
-                    project_key, todo_id, reason = _peek_next(gw, gw_args, chat_id, force=force)
+                    provider_capacity_state = _load_json(provider_capacity_state_path)
+                    project_key, todo_id, reason = _peek_next(
+                        gw,
+                        gw_args,
+                        chat_id,
+                        force=force,
+                        provider_capacity_state=provider_capacity_state,
+                    )
 
             if not project_key or not todo_id:
                 last_idle_reason = reason or "idle"
@@ -694,7 +860,7 @@ def main() -> int:
                 try:
                     state = gw.load_manager_state(gw_args.manager_state_file, gw_args.project_root, gw_args.team_dir)
                     next_retry_at = _next_rate_limited_retry_at(state)
-                    capacity_snapshot = _provider_capacity_snapshot(state)
+                    capacity_snapshot = _provider_capacity_snapshot(state, auto_state=auto_state)
                 except Exception:
                     next_retry_at = ""
                     capacity_snapshot = {"summary": {}, "providers": {}}
@@ -712,10 +878,11 @@ def main() -> int:
                         auto_state.pop("next_retry_at", None)
                     _save_json(auto_state_path, auto_state)
                     previous_capacity = _load_json(provider_capacity_state_path)
-                    capacity_payload = dict(capacity_snapshot)
-                    history = previous_capacity.get("override_history") if isinstance(previous_capacity.get("override_history"), list) else []
-                    if history:
-                        capacity_payload["override_history"] = [row for row in history if isinstance(row, dict)][-10:]
+                    capacity_payload = _merge_provider_capacity_memory(
+                        previous_capacity,
+                        capacity_snapshot,
+                        now_iso=_now_iso(),
+                    )
                     _save_json(provider_capacity_state_path, capacity_payload)
                 except Exception:
                     pass

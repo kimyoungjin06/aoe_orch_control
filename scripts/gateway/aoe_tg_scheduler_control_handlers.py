@@ -192,7 +192,85 @@ def _rate_limited_capacity_summary_for_reports(reports: List[Dict[str, Any]]) ->
     }
 
 
-def _provider_capacity_policy(summary: Dict[str, Any], recovery_repeat: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+def _provider_capacity_repeat_memory(memory_state: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(memory_state, dict):
+        return {}
+    count = int(memory_state.get("recovery_repeat_count", 0) or 0)
+    last_at = str(memory_state.get("recovery_repeat_last_at", "")).strip()
+    history = [
+        row
+        for row in (memory_state.get("recovery_repeat_history") if isinstance(memory_state.get("recovery_repeat_history"), list) else [])
+        if isinstance(row, dict)
+    ]
+    latest = history[-1] if history else {}
+    latest_summary = str(latest.get("summary", "")).strip()
+    return {
+        "count": count,
+        "last_at": last_at,
+        "history": history[-5:],
+        "latest_summary": latest_summary,
+    }
+
+
+def _provider_capacity_repeat_summary_line(memory_state: Dict[str, Any]) -> str:
+    repeat_memory = _provider_capacity_repeat_memory(memory_state)
+    count = int(repeat_memory.get("count", 0) or 0)
+    if count <= 0:
+        return ""
+    latest = str(repeat_memory.get("latest_summary", "")).strip() or "-"
+    last_at = str(repeat_memory.get("last_at", "")).strip()
+    detail = f"count={count} latest={latest}"
+    if last_at:
+        detail += f" last={last_at}"
+    return f"- capacity_recovery_repeat_summary: {detail}"
+
+
+def _provider_repeat_count_map(memory_state: Dict[str, Any]) -> Dict[str, int]:
+    result: Dict[str, int] = {}
+    history = memory_state.get("recovery_repeat_history") if isinstance(memory_state, dict) else None
+    if not isinstance(history, list):
+        return result
+    for row in history:
+        if not isinstance(row, dict):
+            continue
+        for alias in row.get("aliases") or []:
+            token = str(alias or "").strip().upper()
+            if not token:
+                continue
+            result[token] = int(result.get(token, 0) or 0) + 1
+    return result
+
+
+def _annotate_reports_with_provider_repeat_memory(reports: List[Dict[str, Any]], memory_state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    repeat_counts = _provider_repeat_count_map(memory_state)
+    history = memory_state.get("recovery_repeat_history") if isinstance(memory_state, dict) else None
+    latest_by_alias: Dict[str, str] = {}
+    if isinstance(history, list):
+        for row in history:
+            if not isinstance(row, dict):
+                continue
+            at = str(row.get("at", "")).strip()
+            for alias in row.get("aliases") or []:
+                token = str(alias or "").strip().upper()
+                if token and at:
+                    latest_by_alias[token] = at
+    annotated: List[Dict[str, Any]] = []
+    for row in reports:
+        if not isinstance(row, dict):
+            continue
+        alias = str(row.get("alias", "")).strip().upper()
+        enriched = dict(row)
+        enriched["capacity_repeat_count"] = int(repeat_counts.get(alias, 0) or 0)
+        enriched["capacity_repeat_last_at"] = str(latest_by_alias.get(alias, "")).strip()
+        annotated.append(enriched)
+    return annotated
+
+
+def _provider_capacity_policy(
+    summary: Dict[str, Any],
+    recovery_repeat: Optional[Dict[str, Any]] = None,
+    recovery_repeat_memory: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
     if not isinstance(summary, dict):
         return {}
     try:
@@ -221,6 +299,24 @@ def _provider_capacity_policy(summary: Dict[str, Any], recovery_repeat: Optional
             "reason": f"same recovered project hit provider cooldown again after recovery grace ({repeat_summary})",
             "operator_action": "/offdesk review",
         }
+    memory_count = int((recovery_repeat_memory or {}).get("count", 0) or 0)
+    memory_latest = str((recovery_repeat_memory or {}).get("latest_summary", "")).strip()
+    if memory_count >= 2:
+        memory_suffix = f"recent repeat history count={memory_count}"
+        if memory_latest:
+            memory_suffix += f" latest={memory_latest}"
+        if both_primary:
+            return {
+                "level": "critical",
+                "reason": f"both primary providers are blocked with {memory_suffix}",
+                "operator_action": "/auto off",
+            }
+        if task_count >= 1:
+            return {
+                "level": "elevated",
+                "reason": f"provider cooldown is recurring with {memory_suffix}",
+                "operator_action": "/offdesk review",
+            }
     if both_primary and (task_count >= 2 or project_count >= 2):
         return {
             "level": "critical",
@@ -252,9 +348,33 @@ def _provider_capacity_memory_lines(memory_state: Dict[str, Any]) -> List[str]:
     lines: List[str] = []
     updated_at = str(memory_state.get("updated_at", "")).strip()
     providers = memory_state.get("providers") if isinstance(memory_state.get("providers"), dict) else {}
+    recovery_repeat = memory_state.get("recovery_repeat") if isinstance(memory_state.get("recovery_repeat"), dict) else {}
     history = memory_state.get("override_history") if isinstance(memory_state.get("override_history"), list) else []
     if updated_at:
         lines.append(f"- capacity_memory_updated_at: {updated_at}")
+    repeat_summary = str(recovery_repeat.get("summary", "")).strip()
+    if repeat_summary:
+        lines.append(f"- capacity_recovery_repeat_memory: {repeat_summary}")
+    repeat_count = int(memory_state.get("recovery_repeat_count", 0) or 0)
+    repeat_last_at = str(memory_state.get("recovery_repeat_last_at", "")).strip()
+    repeat_history = [
+        row
+        for row in (memory_state.get("recovery_repeat_history") if isinstance(memory_state.get("recovery_repeat_history"), list) else [])
+        if isinstance(row, dict)
+    ]
+    if repeat_count > 0:
+        detail = f"count={repeat_count}"
+        if repeat_last_at:
+            detail += f" last={repeat_last_at}"
+        lines.append(f"- capacity_recovery_repeat_stats: {detail}")
+    if repeat_history:
+        compact = []
+        for row in repeat_history[-3:]:
+            summary = str(row.get("summary", "")).strip() or "-"
+            at = str(row.get("at", "")).strip() or "-"
+            compact.append(f"{summary}@{at}")
+        if compact:
+            lines.append(f"- capacity_recovery_repeat_history: {'; '.join(compact)}")
     if providers:
         parts: List[str] = []
         for name in sorted(str(key).strip().lower() for key in providers.keys() if str(key).strip()):
@@ -274,8 +394,10 @@ def _provider_capacity_memory_lines(memory_state: Dict[str, Any]) -> List[str]:
                 else:
                     wait_bucket = "short"
             project_count = int(row.get("project_count", 0) or 0)
+            repeat_projects = [str(x).strip().upper() for x in (row.get("repeat_projects") or []) if str(x).strip()]
+            repeat_suffix = f" repeat={','.join(repeat_projects)}" if repeat_projects else ""
             parts.append(
-                f"{name}(blocked={blocked_count} projects={project_count} level={level} wait={wait_bucket} retry={retry_at})"
+                f"{name}(blocked={blocked_count} projects={project_count} level={level} wait={wait_bucket} retry={retry_at}{repeat_suffix})"
             )
         if parts:
             lines.append(f"- provider_memory: {', '.join(parts)}")
@@ -303,9 +425,30 @@ def _prune_provider_capacity_state(memory_state: Dict[str, Any], *, now: Optiona
             continue
         kept[str(name)] = row
     state["providers"] = kept
+    repeated = sorted(
+        {
+            str(alias).strip().upper()
+            for row in kept.values()
+            if isinstance(row, dict)
+            for alias in (row.get("repeat_projects") or [])
+            if str(alias).strip()
+        }
+    )
+    if repeated:
+        state["recovery_repeat"] = {
+            "project_count": len(repeated),
+            "aliases": repeated,
+            "summary": ",".join(repeated),
+        }
+    else:
+        state.pop("recovery_repeat", None)
+        state.pop("recovery_repeat_active_summary", None)
     history = state.get("override_history") if isinstance(state.get("override_history"), list) else []
     if history:
         state["override_history"] = [row for row in history if isinstance(row, dict)][-10:]
+    repeat_history = state.get("recovery_repeat_history") if isinstance(state.get("recovery_repeat_history"), list) else []
+    if repeat_history:
+        state["recovery_repeat_history"] = [row for row in repeat_history if isinstance(row, dict)][-10:]
     return state
 
 
@@ -774,6 +917,7 @@ def _handle_offdesk_command(
             return True
 
         reports = [offdesk_prepare_project_report(manager_state, key, entry) for key, entry in targets]
+        reports = _annotate_reports_with_provider_repeat_memory(reports, provider_state)
         reports = sort_offdesk_reports(reports)
         ready_count = sum(1 for row in reports if row.get("status") == "ready")
         warn_count = sum(1 for row in reports if row.get("status") == "warn")
@@ -847,7 +991,8 @@ def _handle_offdesk_command(
         if not targets:
             capacity_summary = _rate_limited_capacity_summary(manager_state)
             recovery_repeat = _recovery_repeat_snapshot(auto_state, manager_state)
-            capacity_policy = _provider_capacity_policy(capacity_summary, recovery_repeat)
+            repeat_memory = _provider_capacity_repeat_memory(provider_state)
+            capacity_policy = _provider_capacity_policy(capacity_summary, recovery_repeat, repeat_memory)
             recovery_action = _capacity_recovery_action(auto_state, provider_state, manager_state)
             recovery_grace_until = str(auto_state.get("recovery_grace_until", "")).strip()
             recovery_target = _capacity_recovery_target(
@@ -883,6 +1028,9 @@ def _handle_offdesk_command(
                     lines.append(f"- capacity_recovery_note: {recovery_target.get('adjusted_reason', '-')}")
             if recovery_grace_until:
                 lines.append(f"- recovery_grace_until: {recovery_grace_until}")
+            repeat_summary_line = _provider_capacity_repeat_summary_line(provider_state)
+            if repeat_summary_line:
+                lines.append(repeat_summary_line)
             lines.extend(_provider_capacity_memory_lines(provider_state))
             send(
                 "\n".join(lines).strip(),
@@ -898,11 +1046,13 @@ def _handle_offdesk_command(
             return True
 
         reports = [offdesk_prepare_project_report(manager_state, key, entry) for key, entry in targets]
+        reports = _annotate_reports_with_provider_repeat_memory(reports, provider_state)
         reports = sort_offdesk_reports(reports)
         flagged = [row for row in reports if str(row.get("status", "")).strip().lower() in {"warn", "blocked"}]
         capacity_summary = _rate_limited_capacity_summary_for_reports(reports)
         recovery_repeat = _recovery_repeat_snapshot(auto_state, manager_state)
-        capacity_policy = _provider_capacity_policy(capacity_summary, recovery_repeat)
+        repeat_memory = _provider_capacity_repeat_memory(provider_state)
+        capacity_policy = _provider_capacity_policy(capacity_summary, recovery_repeat, repeat_memory)
         recovery_action = _capacity_recovery_action(auto_state, provider_state, manager_state)
         recovery_grace_until = str(auto_state.get("recovery_grace_until", "")).strip()
         recovery_target = _capacity_recovery_target(
@@ -942,6 +1092,9 @@ def _handle_offdesk_command(
                 lines.append(f"- capacity_recovery_note: {recovery_target.get('adjusted_reason', '-')}")
         if recovery_grace_until:
             lines.append(f"- recovery_grace_until: {recovery_grace_until}")
+        repeat_summary_line = _provider_capacity_repeat_summary_line(provider_state)
+        if repeat_summary_line:
+            lines.append(repeat_summary_line)
         lines.extend(_provider_capacity_memory_lines(provider_state))
         if not flagged:
             lines.extend(["- status: clean", "", "next:", "- /offdesk on", "- /auto status"])
@@ -1353,7 +1506,8 @@ def _handle_auto_command(
         recovery_grace_until = str(current.get("recovery_grace_until", "")).strip()
         next_retry_target = _next_rate_limited_task_snapshot(manager_state)
         capacity_summary = _rate_limited_capacity_summary(manager_state)
-        capacity_policy = _provider_capacity_policy(capacity_summary, recovery_repeat)
+        repeat_memory = _provider_capacity_repeat_memory(provider_state)
+        capacity_policy = _provider_capacity_policy(capacity_summary, recovery_repeat, repeat_memory)
         stuck_candidate = str(current.get("stuck_candidate", "")).strip()
         stuck_count = int(current.get("stuck_count") or 0)
         fail_count = int(current.get("fail_count") or 0)
@@ -1407,6 +1561,9 @@ def _handle_auto_command(
             lines.append(f"- capacity_recovery_target: {recovery_target.get('target', '-')}")
             if recovery_target.get("adjusted_reason"):
                 lines.append(f"- capacity_recovery_note: {recovery_target.get('adjusted_reason', '-')}")
+        repeat_summary_line = _provider_capacity_repeat_summary_line(provider_state)
+        if repeat_summary_line:
+            lines.append(repeat_summary_line)
         lines.extend(_provider_capacity_memory_lines(provider_state))
         if next_retry_target:
             lines.append(
@@ -1468,7 +1625,8 @@ def _handle_auto_command(
 
     if sub in {"off", "stop"}:
         capacity_summary = _rate_limited_capacity_summary(manager_state)
-        capacity_policy = _provider_capacity_policy(capacity_summary)
+        repeat_memory = _provider_capacity_repeat_memory(provider_state)
+        capacity_policy = _provider_capacity_policy(capacity_summary, recovery_repeat_memory=repeat_memory)
         override_history = provider_state.get("override_history") if isinstance(provider_state.get("override_history"), list) else []
         override_entry = {
             "at": now_iso(),

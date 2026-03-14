@@ -25,6 +25,22 @@ _STATUS_DONE = "done"
 _STATUS_CANCELED = "canceled"
 
 
+def _provider_repeat_count_map(memory_state: Any) -> Dict[str, int]:
+    if not isinstance(memory_state, dict):
+        return {}
+    history = memory_state.get("recovery_repeat_history") if isinstance(memory_state.get("recovery_repeat_history"), list) else []
+    counts: Dict[str, int] = {}
+    for row in history:
+        if not isinstance(row, dict):
+            continue
+        for alias in row.get("aliases") or []:
+            token = str(alias or "").strip().upper()
+            if not token:
+                continue
+            counts[token] = int(counts.get(token, 0) or 0) + 1
+    return counts
+
+
 def _rate_limited_pending_todo(entry: Dict[str, Any], todo_id: str) -> bool:
     token = str(todo_id or "").strip()
     if not token:
@@ -49,6 +65,7 @@ def project_capacity_snapshot(
     *,
     now: Optional[datetime] = None,
     recovery_grace_until: Any = None,
+    provider_capacity_state: Any = None,
 ) -> Dict[str, Any]:
     current = now or datetime.now(timezone.utc)
     if current.tzinfo is None:
@@ -60,6 +77,7 @@ def project_capacity_snapshot(
             "penalty_rank": 0,
             "active_count": 0,
             "recent_recovered_count": 0,
+            "repeat_count": 0,
             "provider_count": 0,
             "next_retry_at": "",
             "limited_providers": [],
@@ -67,6 +85,8 @@ def project_capacity_snapshot(
 
     active_count = 0
     recent_recovered_count = 0
+    alias = str(entry.get("project_alias", "")).strip().upper()
+    repeat_count = int(_provider_repeat_count_map(provider_capacity_state).get(alias, 0) or 0) if alias else 0
     limited_providers: set[str] = set()
     next_retry_dt: Optional[datetime] = None
     for row in tasks.values():
@@ -93,10 +113,15 @@ def project_capacity_snapshot(
         if next_retry_dt is None or parsed < next_retry_dt:
             next_retry_dt = parsed
 
+    penalty_rank = 2 if active_count > 0 else (1 if recent_recovered_count > 0 else 0)
+    if penalty_rank > 0 and repeat_count > 0:
+        penalty_rank += 1
+
     return {
-        "penalty_rank": 2 if active_count > 0 else (1 if recent_recovered_count > 0 else 0),
+        "penalty_rank": penalty_rank,
         "active_count": active_count,
         "recent_recovered_count": recent_recovered_count,
+        "repeat_count": repeat_count,
         "provider_count": len(limited_providers),
         "next_retry_at": next_retry_dt.isoformat() if next_retry_dt else "",
         "limited_providers": sorted(limited_providers),
@@ -180,6 +205,7 @@ def pick_global_next_candidate(
     ignore_busy: bool = False,
     skip_paused: bool = False,
     recovery_grace_until: Any = None,
+    provider_capacity_state: Any = None,
 ) -> Optional[Dict[str, Any]]:
     candidates: List[Dict[str, Any]] = []
     for key, entry in list_ops_projects(projects, skip_paused=skip_paused, require_ready=True):
@@ -190,7 +216,11 @@ def pick_global_next_candidate(
         item = resume_item if isinstance(resume_item, dict) else snap["best_open"]
         if not isinstance(item, dict):
             continue
-        capacity = project_capacity_snapshot(entry, recovery_grace_until=recovery_grace_until)
+        capacity = project_capacity_snapshot(
+            entry,
+            recovery_grace_until=recovery_grace_until,
+            provider_capacity_state=provider_capacity_state,
+        )
         candidates.append(
             {
                 "project_key": str(key),
@@ -201,6 +231,7 @@ def pick_global_next_candidate(
                 "capacity_penalty_rank": int(capacity.get("penalty_rank", 0) or 0),
                 "capacity_active_count": int(capacity.get("active_count", 0) or 0),
                 "capacity_recent_recovered_count": int(capacity.get("recent_recovered_count", 0) or 0),
+                "capacity_repeat_count": int(capacity.get("repeat_count", 0) or 0),
                 "capacity_provider_count": int(capacity.get("provider_count", 0) or 0),
                 "capacity_next_retry_at": str(capacity.get("next_retry_at", "")),
                 "capacity_limited_providers": list(capacity.get("limited_providers", [])),
@@ -217,6 +248,7 @@ def pick_global_next_candidate(
             str(c.get("capacity_next_retry_at", "") or "9999-12-31T23:59:59+00:00"),
             int(c.get("capacity_active_count", 0) if c.get("capacity_active_count", None) is not None else 0),
             int(c.get("capacity_recent_recovered_count", 0) if c.get("capacity_recent_recovered_count", None) is not None else 0),
+            int(c.get("capacity_repeat_count", 0) if c.get("capacity_repeat_count", None) is not None else 0),
             int(c.get("capacity_provider_count", 0) if c.get("capacity_provider_count", None) is not None else 0),
             str(c.get("created_at", "")),
             str(c.get("project_alias", "")),
@@ -232,6 +264,7 @@ def drain_peek_next_todo(
     *,
     force: bool,
     recovery_grace_until: Any = None,
+    provider_capacity_state: Any = None,
 ) -> Tuple[str, str, str]:
     """Return ``(project_key, todo_id, reason)`` for the next runnable item."""
 
@@ -290,7 +323,11 @@ def drain_peek_next_todo(
         if not todo_id or not summary:
             continue
         alias = ops_project_alias(entry, str(key))
-        capacity = project_capacity_snapshot(entry, recovery_grace_until=recovery_grace_until)
+        capacity = project_capacity_snapshot(
+            entry,
+            recovery_grace_until=recovery_grace_until,
+            provider_capacity_state=provider_capacity_state,
+        )
         candidates.append(
             (
                 ops_priority_rank(str(best.get("priority", "P2"))),
@@ -298,6 +335,7 @@ def drain_peek_next_todo(
                 str(capacity.get("next_retry_at", "") or "9999-12-31T23:59:59+00:00"),
                 int(capacity.get("active_count", 0) or 0),
                 int(capacity.get("recent_recovered_count", 0) or 0),
+                int(capacity.get("repeat_count", 0) or 0),
                 int(capacity.get("provider_count", 0) or 0),
                 str(best.get("created_at", "")),
                 str(alias),
@@ -312,5 +350,5 @@ def drain_peek_next_todo(
             return "", "", "pending_rate_limited"
         return "", "", "no_runnable_open_todo"
     candidates.sort()
-    _rank, _penalty, _retry_at, _blocked, _recent, _providers, _created_at, _alias, todo_id, project_key = candidates[0]
+    _rank, _penalty, _retry_at, _blocked, _recent, _repeat, _providers, _created_at, _alias, todo_id, project_key = candidates[0]
     return project_key, todo_id, "candidate"

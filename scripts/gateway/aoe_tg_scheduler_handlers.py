@@ -24,6 +24,7 @@ import re
 import heapq
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from aoe_tg_provider_fallback import load_provider_capacity_state
 
 from aoe_tg_blocked_state import (
     blocked_bucket_count as blocked_bucket_count_base,
@@ -574,12 +575,14 @@ def _pick_global_next_candidate(
     ignore_busy: bool = False,
     skip_paused: bool = False,
     recovery_grace_until: Any = None,
+    provider_capacity_state: Any = None,
 ) -> Optional[Dict[str, Any]]:
     return queue_pick_global_next_candidate(
         projects,
         ignore_busy=ignore_busy,
         skip_paused=skip_paused,
         recovery_grace_until=recovery_grace_until,
+        provider_capacity_state=provider_capacity_state,
     )
 
 
@@ -1986,11 +1989,13 @@ def handle_scheduler_command(
 
     # 1) Pick a candidate across all projects.
     recovery_grace_until = _auto_recovery_grace_until(args)
+    provider_capacity_state = load_provider_capacity_state(getattr(args, "team_dir", ""))
     candidate = _pick_global_next_candidate(
         candidate_projects,
         ignore_busy=force,
         skip_paused=not force,
         recovery_grace_until=recovery_grace_until,
+        provider_capacity_state=provider_capacity_state,
     )
     if not candidate:
         body = build_no_runnable_todo_message(

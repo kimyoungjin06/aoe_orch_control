@@ -2907,12 +2907,14 @@ def _drain_peek_next_todo(
     *,
     force: bool,
     recovery_grace_until: Any = None,
+    provider_capacity_state: Any = None,
 ) -> tuple[str, str, str]:
     return gateway_batch_ops_mod.drain_peek_next_todo(
         manager_state,
         chat_id,
         force=force,
         recovery_grace_until=recovery_grace_until,
+        provider_capacity_state=provider_capacity_state,
     )
 
 
