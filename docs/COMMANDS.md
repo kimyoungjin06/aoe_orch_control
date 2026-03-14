@@ -85,12 +85,15 @@ worker runtime 권한 정책:
 - Claude 권한 env:
   - `AOE_CLAUDE_PERMISSION_MODE=full|workspace-write|read-only|auto|default`
   - `AOE_CLAUDE_RUN_AS_ROOT=1`
+  - `AOE_CLAUDE_FALLBACK_TO_CODEX=1`
 - `full` 계열은 worker runtime에서 사실상 YOLO/full-access로 해석된다.
   - Codex: `--dangerously-bypass-approvals-and-sandbox`
   - Claude: `--dangerously-skip-permissions --permission-mode bypassPermissions`
 - Phase1 planning의 Claude provider도 같은 env를 읽는다.
   - 이제 `run_claude_exec()`는 `--add-dir <project_root>`와 provider별 permission mode를 사용한다.
   - 이전처럼 `--tools ""`로 막혀 있지 않아서 코드/문서 접근 기반 planning이 가능하다.
+- Claude가 provider rate limit(`429`, `retry after`, `rate limit`)로 실패하면 기본적으로 Codex로 한 번 fallback 재시도한다.
+  - 끄려면 `AOE_CLAUDE_FALLBACK_TO_CODEX=0`
 - 진단용:
   - `AOE_WORKER_DRY_RUN=1 bash scripts/team/runtime/worker_codex_handler.sh`
   - 실제 실행 없이 provider/launch/permission 플래그만 출력한다.

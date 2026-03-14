@@ -101,6 +101,76 @@ append_env_exports() {
   done
 }
 
+is_rate_limited_text() {
+  local text="${1:-}"
+  printf '%s' "$text" | grep -Eiq 'rate[[:space:]_-]*limit|429|too[[:space:]]+many[[:space:]]+requests|retry[[:space:]_-]*after|quota|overloaded|capacity'
+}
+
+run_codex_fallback_for_claude_limit() {
+  local allow="${AOE_CLAUDE_FALLBACK_TO_CODEX:-1}"
+  local normalized
+  normalized="$(printf '%s' "$allow" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$normalized" == "0" || "$normalized" == "false" || "$normalized" == "no" || "$normalized" == "off" ]]; then
+    return 1
+  fi
+
+  local fb_tool_path
+  if ! fb_tool_path="$(command -v codex)"; then
+    return 1
+  fi
+
+  local fb_perm_mode fb_run_as_root
+  fb_perm_mode="$(printf '%s' "${AOE_CODEX_PERMISSION_MODE:-full}" | tr '[:upper:]' '[:lower:]')"
+  fb_run_as_root="$(printf '%s' "${AOE_CODEX_RUN_AS_ROOT:-0}" | tr '[:upper:]' '[:lower:]')"
+
+  local -a fb_cmd fb_args
+  local fb_root_output_mode=0
+  fb_cmd=("$fb_tool_path")
+  fb_args=(exec --skip-git-repo-check --disable multi_agent -C "$WORKDIR" -o "$OUT_FILE")
+  case "$fb_perm_mode" in
+    full|unsafe|bypass|dangerous)
+      fb_args+=(--dangerously-bypass-approvals-and-sandbox)
+      ;;
+    danger|danger-full-access)
+      fb_args+=(--sandbox danger-full-access)
+      ;;
+    workspace|workspace-write|safe|"")
+      fb_args+=(--sandbox workspace-write)
+      ;;
+    read-only|readonly)
+      fb_args+=(--sandbox read-only)
+      ;;
+    *)
+      fb_args+=(--sandbox workspace-write)
+      ;;
+  esac
+
+  if [[ "$fb_run_as_root" == "1" || "$fb_run_as_root" == "true" || "$fb_run_as_root" == "yes" ]]; then
+    if sudo -n true >/dev/null 2>&1; then
+      fb_cmd=(sudo -n env)
+      append_env_exports fb_cmd HOME PATH OPENAI_API_KEY OPENAI_BASE_URL OPENAI_ORG_ID OPENAI_PROJECT_ID HTTP_PROXY HTTPS_PROXY NO_PROXY ALL_PROXY
+      fb_cmd+=("$fb_tool_path")
+      fb_root_output_mode=1
+    fi
+  fi
+
+  echo "[WARN] provider_rate_limit provider=claude fallback=codex role=${ROLE}" >>"$LOG_FILE"
+  if [[ "$fb_root_output_mode" == "1" ]]; then
+    sudo -n rm -f "$OUT_FILE" >/dev/null 2>&1 || true
+  fi
+  rm -f "$OUT_FILE" >/dev/null 2>&1 || true
+  : >"$OUT_FILE"
+  if ! "${fb_cmd[@]}" "${fb_args[@]}" "$(cat "$PROMPT_FILE")" >>"$LOG_FILE" 2>&1; then
+    return 1
+  fi
+
+  if [[ "$fb_root_output_mode" == "1" ]]; then
+    sudo -n test -s "$OUT_FILE" >/dev/null 2>&1 || [[ -s "$OUT_FILE" ]]
+  else
+    [[ -s "$OUT_FILE" ]]
+  fi
+}
+
 extract_request_id() {
   local env_rid="${AOE_REQUEST_ID:-}"
   local body="${AOE_MSG_BODY:-}"
@@ -473,10 +543,15 @@ fi
 echo "[INFO] role=${ROLE} request_id=${REQ_ID:-} tf_id=${TF_ID:-} project=${TF_PROJECT_KEY:-} workdir=${WORKDIR} provider=${WORKER_PROVIDER_KEY} launch=${WORKER_LAUNCH:-$TOOL_BIN} permission_mode=${ACTIVE_PERM_MODE} run_as_root=${ACTIVE_RUN_AS_ROOT:-0}" >>"$LOG_FILE"
 if [[ "$WORKER_PROVIDER_KEY" == "claude" ]]; then
   if ! "${RUN_CMD[@]}" "${RUN_ARGS[@]}" "$(cat "$PROMPT_FILE")" >"$OUT_FILE" 2>>"$LOG_FILE"; then
-    echo "claude exec failed (role=${ROLE})" >&2
-    tail -n 40 "$LOG_FILE" >&2 || true
-    cleanup_temp_files
-    exit 1
+    err_tail="$(tail -n 80 "$LOG_FILE" 2>/dev/null || true)"
+    if is_rate_limited_text "$err_tail" && run_codex_fallback_for_claude_limit; then
+      echo "[INFO] claude rate limit fallback succeeded (role=${ROLE})" >>"$LOG_FILE"
+    else
+      echo "claude exec failed (role=${ROLE})" >&2
+      tail -n 40 "$LOG_FILE" >&2 || true
+      cleanup_temp_files
+      exit 1
+    fi
   fi
 else
   if ! "${RUN_CMD[@]}" "${RUN_ARGS[@]}" "$(cat "$PROMPT_FILE")" >>"$LOG_FILE" 2>&1; then

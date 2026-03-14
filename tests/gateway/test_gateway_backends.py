@@ -2,6 +2,8 @@
 """Gateway backend and integration regression tests."""
 
 from _gateway_test_support import *  # noqa: F401,F403
+
+import subprocess
 def test_tf_backend_normalization_and_labels() -> None:
     assert tf_backend.normalize_tf_backend_name("") == "local"
     assert tf_backend.normalize_tf_backend_name("default") == "local"
@@ -722,6 +724,81 @@ def test_run_claude_exec_can_wrap_with_sudo_when_root_mode_enabled(tmp_path: Pat
     assert wrapped[:3] == ["sudo", "-n", "env"]
     assert "ANTHROPIC_API_KEY=demo-key" in wrapped
     assert "claude" in wrapped
+
+
+def test_worker_handler_falls_back_to_codex_when_claude_is_rate_limited(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    team_dir = project_root / ".aoe-team"
+    bin_dir = tmp_path / "bin"
+    project_root.mkdir(parents=True)
+    team_dir.mkdir(parents=True)
+    bin_dir.mkdir(parents=True)
+
+    (team_dir / "orchestrator.json").write_text(
+        json.dumps(
+            {
+                "agents": [
+                    {
+                        "role": "Claude-Writer",
+                        "provider": "claude",
+                        "launch": "claude",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    claude_bin = bin_dir / "claude"
+    claude_bin.write_text(
+        "#!/usr/bin/env bash\n"
+        "echo '429 rate limit exceeded; retry after 60s' >&2\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    claude_bin.chmod(0o755)
+
+    codex_bin = bin_dir / "codex"
+    codex_bin.write_text(
+        "#!/usr/bin/env bash\n"
+        "out=''\n"
+        "while [[ $# -gt 0 ]]; do\n"
+        "  if [[ \"$1\" == '-o' ]]; then out=\"$2\"; shift 2; continue; fi\n"
+        "  shift\n"
+        "done\n"
+        "printf 'fallback ok\\n' > \"$out\"\n",
+        encoding="utf-8",
+    )
+    codex_bin.chmod(0o755)
+
+    env = dict(os.environ)
+    env.update(
+        {
+            "PATH": f"{bin_dir}:{env.get('PATH', '')}",
+            "AOE_WORKER_ACTOR": "Claude-Writer",
+            "AOE_PROJECT_ROOT": str(project_root),
+            "AOE_TEAM_DIR": str(team_dir),
+            "AOE_MSG_TITLE": "writer task",
+            "AOE_MSG_BODY": "User Request:\n정리 문서를 작성해줘.\n",
+            "AOE_CLAUDE_FALLBACK_TO_CODEX": "1",
+        }
+    )
+
+    proc = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "team" / "runtime" / "worker_codex_handler.sh")],
+        text=True,
+        capture_output=True,
+        env=env,
+        cwd=str(project_root),
+    )
+
+    assert proc.returncode == 0
+    assert "fallback ok" in proc.stdout
+    log_path = team_dir / "logs" / "worker_Claude-Writer_.log"
+    logs = "\n".join(path.read_text(encoding="utf-8") for path in (team_dir / "logs").glob("worker_*.log"))
+    assert "provider_rate_limit provider=claude fallback=codex" in logs
 
 
 def test_local_run_aoe_orch_stages_review_lanes_after_execution(monkeypatch, tmp_path: Path) -> None:

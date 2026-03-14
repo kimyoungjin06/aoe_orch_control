@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 from typing import Any, Callable, Dict, List, Optional
 
+from aoe_tg_provider_fallback import fallback_provider_for, is_rate_limit_error
 from aoe_tg_schema import default_plan_critic_payload, normalize_plan_critic_payload, plan_critic_primary_issue
 
 
@@ -150,6 +151,34 @@ def _run_parallel_calls(
     return [ordered[p] for p in providers if p in ordered]
 
 
+def _run_provider_with_rate_limit_fallback(
+    *,
+    provider: str,
+    run_provider_execs: Dict[str, Callable[[str, int], str]],
+    prompt: str,
+    timeout_sec: int,
+    phase: str,
+    round_no: int,
+    rounds: int,
+    report_progress: Optional[Callable[..., None]],
+) -> tuple[str, str, bool]:
+    try:
+        return run_provider_execs[provider](prompt, timeout_sec), provider, False
+    except Exception as exc:
+        detail = _trim_text(exc, 240)
+        fallback = fallback_provider_for(provider)
+        if fallback and fallback != provider and callable(run_provider_execs.get(fallback)) and is_rate_limit_error(detail):
+            if callable(report_progress):
+                report_progress(
+                    phase=phase,
+                    detail=f"phase1 round {round_no}/{rounds} provider={provider} rate_limited fallback={fallback}",
+                    attempt=round_no,
+                    total=rounds,
+                )
+            return run_provider_execs[fallback](prompt, timeout_sec), fallback, True
+        raise
+
+
 def run_phase1_ensemble_planning(
     *,
     args: Any,
@@ -216,7 +245,16 @@ def run_phase1_ensemble_planning(
                 shared_feedback=shared_feedback,
             )
             try:
-                raw_plan = run_provider_execs[provider](planner_prompt, planner_timeout)
+                raw_plan, executed_provider, used_fallback = _run_provider_with_rate_limit_fallback(
+                    provider=provider,
+                    run_provider_execs=run_provider_execs,
+                    prompt=planner_prompt,
+                    timeout_sec=planner_timeout,
+                    phase="planner",
+                    round_no=round_no,
+                    rounds=rounds,
+                    report_progress=report_progress,
+                )
                 parsed_plan = parse_json_object_from_text(raw_plan)
                 plan = normalize_task_plan_payload(
                     parsed_plan,
@@ -227,6 +265,8 @@ def run_phase1_ensemble_planning(
             except Exception as exc:
                 return {
                     "provider": provider,
+                    "executed_provider": executed_provider,
+                    "rate_limit_fallback": used_fallback,
                     "plan": None,
                     "critic": {
                         "approved": False,
@@ -255,9 +295,23 @@ def run_phase1_ensemble_planning(
                     total_rounds=rounds,
                 )
                 try:
-                    raw_critic = run_provider_execs[critic_provider](critic_prompt, critic_timeout)
+                    raw_critic, executed_critic_provider, used_fallback = _run_provider_with_rate_limit_fallback(
+                        provider=critic_provider,
+                        run_provider_execs=run_provider_execs,
+                        prompt=critic_prompt,
+                        timeout_sec=critic_timeout,
+                        phase="critic",
+                        round_no=round_no,
+                        rounds=rounds,
+                        report_progress=report_progress,
+                    )
                     parsed_critic = parse_json_object_from_text(raw_critic)
-                    return normalize_plan_critic_payload(parsed_critic, max_items=5)
+                    normalized = normalize_plan_critic_payload(parsed_critic, max_items=5)
+                    if used_fallback:
+                        normalized = dict(normalized)
+                        normalized["executed_provider"] = executed_critic_provider
+                        normalized["rate_limit_fallback"] = True
+                    return normalized
                 except Exception as exc:
                     return {
                         "approved": False,
@@ -278,6 +332,8 @@ def run_phase1_ensemble_planning(
             }
             return {
                 "provider": provider,
+                "executed_provider": executed_provider,
+                "rate_limit_fallback": used_fallback,
                 "plan": plan,
                 "critic": aggregate_critic,
             }
