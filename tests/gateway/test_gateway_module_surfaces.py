@@ -168,6 +168,19 @@ def test_orch_roles_canonicalize_legacy_local_roles(tmp_path: Path) -> None:
     assert profiles[1]["mission"] == "Write concise project documents."
 
 
+def test_ensure_verifier_roles_adds_reviewer_pair_for_worklike_team() -> None:
+    selected, verifier_roles, added, available = orch_roles.ensure_verifier_roles(
+        ["Codex-Writer", "Claude-Writer"],
+        ["Codex-Writer", "Claude-Writer", "Codex-Reviewer", "Claude-Reviewer"],
+        ["Codex-Reviewer", "Claude-Reviewer"],
+    )
+
+    assert added is True
+    assert available == ["Codex-Reviewer", "Claude-Reviewer"]
+    assert verifier_roles == ["Codex-Reviewer", "Claude-Reviewer"]
+    assert selected == ["Codex-Writer", "Claude-Writer", "Codex-Reviewer", "Claude-Reviewer"]
+
+
 def test_runtime_seed_migrates_legacy_local_roles_to_codex_names(tmp_path: Path) -> None:
     template_root = ROOT / "templates" / "aoe-team"
     project_root = tmp_path / "project"

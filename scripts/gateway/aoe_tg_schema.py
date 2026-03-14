@@ -143,12 +143,18 @@ def normalize_task_plan_payload(
     raw_phase2 = meta_in.get("phase2_team_spec")
     if raw_phase2 is None and isinstance(parsed, dict):
         raw_phase2 = parsed.get("phase2_team_spec")
+    verifier_roles = [
+        role
+        for role in worker_roles
+        if any(key in str(role).lower() for key in ("review", "critic", "verif", "qa"))
+    ]
+
     plan_payload["meta"]["phase2_team_spec"] = normalize_phase2_team_spec(
         raw_phase2,
         plan=plan_payload,
         roles=worker_roles,
-        verifier_roles=[],
-        require_verifier=False,
+        verifier_roles=verifier_roles,
+        require_verifier=bool(verifier_roles),
     )
     raw_phase2_exec = meta_in.get("phase2_execution_plan")
     if raw_phase2_exec is None and isinstance(parsed, dict):

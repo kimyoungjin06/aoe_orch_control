@@ -2224,7 +2224,7 @@ def test_choose_auto_dispatch_roles_picks_local_analyst_for_analysis_prompt(tmp_
         team_dir=team_dir,
     )
 
-    assert roles == ["Codex-Analyst"]
+    assert roles == ["Codex-Analyst", "Codex-Reviewer"]
 
 
 def test_choose_auto_dispatch_roles_prefers_local_writer_for_doc_request(tmp_path: Path) -> None:
@@ -2276,6 +2276,29 @@ def test_choose_auto_dispatch_roles_adds_claude_writer_and_analyst_companions_wh
 
     assert writer_roles == ["Codex-Writer", "Claude-Writer"]
     assert analyst_roles == ["Codex-Analyst", "Claude-Analyst"]
+
+
+def test_choose_auto_dispatch_roles_uses_writer_and_reviewer_pairs_for_reporting_prompt(tmp_path: Path) -> None:
+    team_dir = tmp_path / ".aoe-team"
+    for role, mission in (
+        ("Codex-Writer", "Write concise project documents and reports."),
+        ("Claude-Writer", "Write concise project documents and reports."),
+        ("Codex-Reviewer", "Find risks and regressions before execution."),
+        ("Claude-Reviewer", "Cross-check review output before execution."),
+    ):
+        (team_dir / "agents" / role).mkdir(parents=True, exist_ok=True)
+        (team_dir / "agents" / role / "AGENTS.md").write_text(
+            f"# AGENTS.md - {role}\n\n## Mission\n{mission}\n",
+            encoding="utf-8",
+        )
+
+    roles = gw.choose_auto_dispatch_roles(
+        "최근 결과 문서를 바탕으로 오늘 밤 필요한 보고/정리 작업 3개를 작성 관점에서 정리해줘.",
+        available_roles=["Codex-Writer", "Claude-Writer", "Codex-Reviewer", "Claude-Reviewer"],
+        team_dir=team_dir,
+    )
+
+    assert roles == ["Codex-Writer", "Claude-Writer", "Codex-Reviewer", "Claude-Reviewer"]
 
 
 def test_choose_auto_dispatch_roles_orders_build_before_review_companions(tmp_path: Path) -> None:

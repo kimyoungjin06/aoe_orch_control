@@ -378,9 +378,10 @@ def test_normalize_task_plan_payload_derives_phase2_team_spec() -> None:
     execution_plan = plan["meta"]["phase2_execution_plan"]
     assert spec["execution_mode"] == "parallel"
     assert [row["role"] for row in spec["execution_groups"]] == ["Codex-Dev", "Codex-Writer"]
-    assert spec["review_groups"] == []
+    assert [row["role"] for row in spec["review_groups"]] == ["Codex-Reviewer"]
     assert execution_plan["execution_mode"] == "parallel"
     assert [row["role"] for row in execution_plan["execution_lanes"]] == ["Codex-Dev", "Codex-Writer"]
+    assert [row["role"] for row in execution_plan["review_lanes"]] == ["Codex-Reviewer"]
     assert execution_plan["parallel_workers"] is True
     assert execution_plan["readonly"] is True
 

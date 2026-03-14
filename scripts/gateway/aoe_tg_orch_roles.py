@@ -29,6 +29,32 @@ CLAUDE_COMPANION_ROLES = {
     "Codex-Analyst": "Claude-Analyst",
 }
 
+REVIEW_SIGNAL_KEYS = (
+    "review", "risk", "regression", "test", "qa", "bug", "verify", "validation", "inspect", "check",
+    "리뷰", "리스크", "회귀", "테스트", "버그", "검증", "점검", "확인", "검토",
+)
+DATA_SIGNAL_KEYS = (
+    "data", "dataset", "etl", "schema", "sql", "table", "column", "csv", "pipeline", "null", "quality",
+    "데이터", "스키마", "결측", "컬럼", "테이블", "적재", "정합성", "품질",
+)
+BUILD_SIGNAL_KEYS = (
+    "implement", "implementation", "build", "code", "fix", "patch", "refactor", "develop",
+    "개발", "구현", "수정", "패치", "리팩토링", "코드",
+)
+DOC_SIGNAL_KEYS = (
+    "document", "documentation", "docs", "summary", "report", "writeup", "guide", "readme", "tutorial", "handoff",
+    "문서", "요약", "보고", "보고서", "가이드", "튜토리얼", "인수인계", "작성",
+)
+ANALYSIS_SIGNAL_KEYS = (
+    "analyze", "analysis", "research", "compare", "benchmark", "investigate",
+    "분석", "조사", "비교", "벤치마크", "리서치", "추천안", "트레이드오프",
+)
+MULTI_SIGNAL_KEYS = (
+    "각각", "둘 다", "둘다", "together", "cross-check", "교차", "병렬", "분리",
+    "tf", "team", "sub-task", "subtask", "역할별",
+)
+SINGLE_ROLE_ONLY_KEYS = (" only ", " solo ", " single ", "단독", "혼자", "하나만")
+
 ROLE_ORDER = {
     "DataEngineer": 10,
     "Codex-Dev": 20,
@@ -133,8 +159,32 @@ def ensure_verifier_roles(
 
     added = False
     if not selected_verifiers and available_verifiers:
-        selected.append(available_verifiers[0])
-        selected_verifiers = [available_verifiers[0]]
+        has_worklike = any(
+            str(role) in {
+                "DataEngineer",
+                "Codex-Dev",
+                "Codex-Writer",
+                "Claude-Writer",
+                "Codex-Analyst",
+                "Claude-Analyst",
+            }
+            for role in selected
+        )
+        if has_worklike:
+            preferred_verifiers: List[str] = []
+            if "Codex-Reviewer" in available_verifiers:
+                preferred_verifiers.append("Codex-Reviewer")
+            if "Claude-Reviewer" in available and "Claude-Reviewer" not in preferred_verifiers:
+                preferred_verifiers.append("Claude-Reviewer")
+            if not preferred_verifiers:
+                preferred_verifiers.append(available_verifiers[0])
+            for role in preferred_verifiers:
+                if role not in selected:
+                    selected.append(role)
+            selected_verifiers = preferred_verifiers
+        else:
+            selected.append(available_verifiers[0])
+            selected_verifiers = [available_verifiers[0]]
         added = True
 
     return dedupe_roles(selected), dedupe_roles(selected_verifiers), added, available_verifiers
@@ -177,13 +227,21 @@ def _ordered_roles(rows: List[str]) -> List[str]:
     )
 
 
+def _has_any(prompt_lower: str, keys: tuple[str, ...]) -> bool:
+    return any(token in prompt_lower for token in keys)
+
+
+def _single_role_only_requested(prompt_lower: str) -> bool:
+    return _has_any(prompt_lower, SINGLE_ROLE_ONLY_KEYS)
+
+
 def _add_companion_roles(
     roles: List[str],
     *,
     available_roles: List[str],
     prompt_lower: str,
 ) -> List[str]:
-    if any(token in prompt_lower for token in (" only ", " solo ", " single ", "단독", "혼자", "하나만")):
+    if _single_role_only_requested(prompt_lower):
         return dedupe_roles(roles)
     available_set = {str(role).strip() for role in available_roles if str(role).strip()}
     expanded = list(roles)
@@ -200,12 +258,12 @@ def _add_default_review_pair(
     available_roles: List[str],
     prompt_lower: str,
 ) -> List[str]:
-    if any(token in prompt_lower for token in ("only ", " solo ", " single ", "단독", "혼자", "하나만", "짧게", "한 문장", "존재 여부", "3개만")):
+    if _single_role_only_requested(prompt_lower):
         return dedupe_roles(canonicalize_roles(roles))
     current = dedupe_roles(canonicalize_roles(roles))
     has_review = any(any(key in str(role).lower() for key in ("review", "critic", "verif")) for role in current)
     has_worklike = any(
-        str(role) in {"Codex-Dev", "Codex-Writer", "Claude-Writer", "Codex-Analyst", "Claude-Analyst"}
+        str(role) in {"DataEngineer", "Codex-Dev", "Codex-Writer", "Claude-Writer", "Codex-Analyst", "Claude-Analyst"}
         for role in current
     )
     if not has_worklike or has_review:
@@ -223,38 +281,20 @@ def _role_score_from_text(prompt_lower: str, role: str, mission: str) -> int:
     mission_lower = str(mission or "").strip().lower()
     score = 0
 
-    review_keys = (
-        "review", "risk", "regression", "test", "qa", "bug", "verify", "validation", "inspect", "check",
-        "리뷰", "리스크", "회귀", "테스트", "버그", "검증", "점검", "확인", "검토",
-    )
-    data_keys = (
-        "data", "dataset", "etl", "schema", "sql", "table", "column", "csv", "pipeline", "null", "quality",
-        "데이터", "스키마", "결측", "컬럼", "테이블", "적재", "정합성", "품질",
-    )
-    build_keys = (
-        "implement", "implementation", "build", "code", "fix", "patch", "refactor", "develop",
-        "개발", "구현", "수정", "패치", "리팩토링", "코드",
-    )
-    doc_keys = (
-        "document", "documentation", "docs", "summary", "report", "writeup", "guide", "readme", "tutorial", "handoff",
-        "문서", "요약", "보고", "보고서", "가이드", "튜토리얼", "인수인계",
-    )
-    analysis_keys = ("analyze", "analysis", "research", "compare", "benchmark", "investigate", "분석", "조사", "비교", "벤치마크", "리서치")
-
-    if any(k in prompt_lower for k in review_keys):
+    if _has_any(prompt_lower, REVIEW_SIGNAL_KEYS):
         if any(k in name_key for k in ("review", "qa", "verif")) or any(k in mission_lower for k in ("risk", "regression", "test", "review")):
             score += 6
-    if any(k in prompt_lower for k in data_keys):
+    if _has_any(prompt_lower, DATA_SIGNAL_KEYS):
         if any(k in name_key for k in ("data", "etl", "sql", "schema")) or any(k in mission_lower for k in ("data", "etl", "schema", "quality")):
             score += 6
-    if any(k in prompt_lower for k in build_keys):
+    if _has_any(prompt_lower, BUILD_SIGNAL_KEYS):
         build_name_hit = any(k in name_key for k in ("dev", "coder", "builder")) or (("engineer" in name_key) and ("data" not in name_key))
         if build_name_hit or any(k in mission_lower for k in ("implement", "build", "code", "develop")):
             score += 5
-    if any(k in prompt_lower for k in doc_keys):
+    if _has_any(prompt_lower, DOC_SIGNAL_KEYS):
         if any(k in name_key for k in ("writer", "doc", "scribe")) or any(k in mission_lower for k in ("document", "report", "summary")):
             score += 4
-    if any(k in prompt_lower for k in analysis_keys):
+    if _has_any(prompt_lower, ANALYSIS_SIGNAL_KEYS):
         if any(k in name_key for k in ("anal", "research", "tuner")) or any(k in mission_lower for k in ("analysis", "research", "compare")):
             score += 4
 
@@ -263,6 +303,50 @@ def _role_score_from_text(prompt_lower: str, role: str, mission: str) -> int:
         score += 2
 
     return score
+
+
+def _build_prompt_role_preset(
+    *,
+    prompt_lower: str,
+    available_roles: List[str],
+    has_review_signal: bool,
+    has_data_signal: bool,
+    has_build_signal: bool,
+    has_doc_signal: bool,
+    has_analysis_signal: bool,
+) -> List[str]:
+    available_set = {str(role).strip() for role in available_roles if str(role).strip()}
+    roles: List[str] = []
+
+    if has_data_signal and "DataEngineer" in available_set:
+        roles.append("DataEngineer")
+    if has_build_signal and "Codex-Dev" in available_set:
+        roles.append("Codex-Dev")
+    if has_doc_signal and "Codex-Writer" in available_set:
+        roles.append("Codex-Writer")
+    if has_analysis_signal and "Codex-Analyst" in available_set:
+        roles.append("Codex-Analyst")
+
+    if not roles:
+        if has_review_signal and "Codex-Reviewer" in available_set:
+            roles.append("Codex-Reviewer")
+        elif has_review_signal and "Claude-Reviewer" in available_set:
+            roles.append("Claude-Reviewer")
+        else:
+            return []
+
+    roles = _add_companion_roles(
+        roles,
+        available_roles=available_roles,
+        prompt_lower=prompt_lower,
+    )
+    if has_review_signal or any((has_data_signal, has_build_signal, has_doc_signal, has_analysis_signal)):
+        roles = _add_default_review_pair(
+            roles,
+            available_roles=available_roles,
+            prompt_lower=prompt_lower,
+        )
+    return roles
 
 
 def choose_auto_dispatch_roles(
@@ -283,16 +367,13 @@ def choose_auto_dispatch_roles(
             for role in DEFAULT_WORKER_ROLE_POOL
         ]
 
-    has_review_signal = any(token in prompt_lower for token in ("review", "risk", "regression", "test", "qa", "verify", "리뷰", "검토", "검증", "테스트", "리스크"))
-    has_data_signal = any(token in prompt_lower for token in ("data", "dataset", "etl", "schema", "sql", "csv", "pipeline", "데이터", "스키마", "결측", "적재", "정합성"))
-    has_build_signal = any(token in prompt_lower for token in ("implement", "build", "code", "fix", "patch", "refactor", "개발", "구현", "수정", "패치", "리팩토링", "코드"))
-    has_doc_signal = any(token in prompt_lower for token in ("document", "documentation", "docs", "summary", "report", "readme", "guide", "tutorial", "문서", "요약", "보고", "보고서", "가이드", "튜토리얼"))
-    has_analysis_signal = any(token in prompt_lower for token in ("analyze", "analysis", "research", "compare", "benchmark", "investigate", "분석", "조사", "비교", "벤치마크", "리서치"))
+    has_review_signal = _has_any(prompt_lower, REVIEW_SIGNAL_KEYS)
+    has_data_signal = _has_any(prompt_lower, DATA_SIGNAL_KEYS)
+    has_build_signal = _has_any(prompt_lower, BUILD_SIGNAL_KEYS)
+    has_doc_signal = _has_any(prompt_lower, DOC_SIGNAL_KEYS)
+    has_analysis_signal = _has_any(prompt_lower, ANALYSIS_SIGNAL_KEYS)
 
-    wants_multi = any(
-        token in prompt_lower
-        for token in ("각각", "둘 다", "둘다", "together", "cross-check", "교차", "병렬", "분리", "tf", "team", "sub-task", "subtask", "역할별")
-    )
+    wants_multi = _has_any(prompt_lower, MULTI_SIGNAL_KEYS)
     category_hits = sum(1 for flag in (has_review_signal, has_data_signal, has_build_signal, has_doc_signal, has_analysis_signal) if flag)
     if category_hits >= 2:
         wants_multi = True
@@ -322,6 +403,18 @@ def choose_auto_dispatch_roles(
             )
         return chosen
 
+    preset_roles = _build_prompt_role_preset(
+        prompt_lower=prompt_lower,
+        available_roles=[str(profile.get("role", "")).strip() for profile in profiles],
+        has_review_signal=has_review_signal,
+        has_data_signal=has_data_signal,
+        has_build_signal=has_build_signal,
+        has_doc_signal=has_doc_signal,
+        has_analysis_signal=has_analysis_signal,
+    )
+    if preset_roles:
+        return preset_roles
+
     scored: List[Tuple[int, str]] = []
     for profile in profiles:
         role = str(profile.get("role", "")).strip()
@@ -332,27 +425,22 @@ def choose_auto_dispatch_roles(
             scored.append((score, role))
 
     if not scored:
-        data_keys = ("data", "dataset", "etl", "schema", "sql", "pipeline", "품질", "데이터", "스키마", "적재", "정합성", "검증")
-        review_keys = ("review", "risk", "regression", "test", "qa", "bug", "리뷰", "리스크", "회귀", "테스트", "버그", "검토")
-        build_keys = ("implement", "build", "code", "fix", "patch", "refactor", "개발", "구현", "수정", "패치", "리팩토링", "코드")
-        doc_keys = ("document", "documentation", "docs", "summary", "report", "guide", "readme", "tutorial", "문서", "요약", "보고", "보고서", "가이드", "튜토리얼")
-        analysis_keys = ("analyze", "analysis", "research", "compare", "benchmark", "investigate", "분석", "조사", "비교", "벤치마크", "리서치")
         both_keys = ("both", "둘 다", "둘다", "각각", "cross-check", "교차")
         roles: List[str] = []
         available_set = {str(profile.get("role", "")).strip() for profile in profiles if str(profile.get("role", "")).strip()}
-        if any(k in prompt_lower for k in data_keys):
+        if _has_any(prompt_lower, DATA_SIGNAL_KEYS):
             roles.append("DataEngineer")
-        if any(k in prompt_lower for k in review_keys):
+        if _has_any(prompt_lower, REVIEW_SIGNAL_KEYS):
             roles.append("Codex-Reviewer")
             if "Claude-Reviewer" in available_set:
                 roles.append("Claude-Reviewer")
-        if any(k in prompt_lower for k in build_keys):
+        if _has_any(prompt_lower, BUILD_SIGNAL_KEYS):
             roles.append("Codex-Dev")
-        if any(k in prompt_lower for k in doc_keys):
+        if _has_any(prompt_lower, DOC_SIGNAL_KEYS):
             roles.append("Codex-Writer")
             if "Claude-Writer" in available_set:
                 roles.append("Claude-Writer")
-        if any(k in prompt_lower for k in analysis_keys):
+        if _has_any(prompt_lower, ANALYSIS_SIGNAL_KEYS):
             roles.append("Codex-Analyst")
             if "Claude-Analyst" in available_set:
                 roles.append("Claude-Analyst")
@@ -365,7 +453,7 @@ def choose_auto_dispatch_roles(
             available_roles=[str(profile.get("role", "")).strip() for profile in profiles],
             prompt_lower=prompt_lower,
         )
-        if wants_multi or any(k in prompt_lower for k in build_keys + doc_keys + analysis_keys):
+        if wants_multi or any(flag for flag in (has_build_signal, has_doc_signal, has_analysis_signal, has_data_signal)):
             roles = _add_default_review_pair(
                 roles,
                 available_roles=[str(profile.get("role", "")).strip() for profile in profiles],
