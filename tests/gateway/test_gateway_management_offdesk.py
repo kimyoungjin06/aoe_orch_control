@@ -2576,12 +2576,14 @@ def test_offdesk_prepare_shows_rate_limited_and_degraded_active_task(tmp_path: P
     entry["display_name"] = "Demo"
     entry["ops_hidden"] = False
     entry["system_project"] = False
+    entry["runtime_ready"] = True
     project_root = Path(str(entry["project_root"]))
     team_dir = Path(str(entry["team_dir"]))
     project_root.mkdir(parents=True, exist_ok=True)
     team_dir.mkdir(parents=True, exist_ok=True)
     (project_root / "TODO.md").write_text("# TODO\n", encoding="utf-8")
     (team_dir / "AOE_TODO.md").write_text(f"@include {project_root / 'TODO.md'}\n", encoding="utf-8")
+    entry["todos"] = [{"id": "TODO-001", "summary": "resume task", "priority": "P1", "status": "open"}]
     entry["tasks"] = {
         "r_demo": {
             "request_id": "r_demo",
@@ -2617,6 +2619,59 @@ def test_offdesk_prepare_shows_rate_limited_and_degraded_active_task(tmp_path: P
     assert "active_task_degraded_by: claude_rate_limit->codex" in text
     assert "active_task_rate_limit: mode=blocked providers=codex,claude retry_after=180s retry_at=2026-03-14T01:23:00+09:00" in text
     assert "provider_capacity: providers=codex,claude retry_at=2026-03-14T01:23:00+09:00 degraded=claude_rate_limit->codex" in text
+
+
+def test_offdesk_review_surfaces_provider_capacity_for_rate_limited_task(tmp_path: Path) -> None:
+    state = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+    entry = state["projects"]["default"]
+    entry["project_alias"] = "O1"
+    entry["display_name"] = "Demo"
+    entry["ops_hidden"] = False
+    entry["system_project"] = False
+    entry["runtime_ready"] = True
+    project_root = Path(str(entry["project_root"]))
+    team_dir = Path(str(entry["team_dir"]))
+    project_root.mkdir(parents=True, exist_ok=True)
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (project_root / "TODO.md").write_text("# TODO\n", encoding="utf-8")
+    (team_dir / "AOE_TODO.md").write_text(f"@include {project_root / 'TODO.md'}\n", encoding="utf-8")
+    entry["todos"] = [{"id": "TODO-001", "summary": "resume task", "priority": "P1", "status": "open"}]
+    entry["tasks"] = {
+        "r_demo": {
+            "request_id": "r_demo",
+            "label": "T-001",
+            "short_id": "T-001",
+            "status": "running",
+            "roles": ["Codex-Writer", "Codex-Reviewer"],
+            "rate_limit": {
+                "mode": "blocked",
+                "limited_providers": ["codex", "claude"],
+                "retry_after_sec": 180,
+                "retry_at": "2026-03-14T01:23:00+09:00",
+            },
+            "result": {
+                "degraded_by": ["claude_rate_limit->codex"],
+                "requested_roles": ["Codex-Writer", "Codex-Reviewer"],
+                "executed_roles": ["Codex-Writer", "Codex-Reviewer"],
+            },
+            "updated_at": "2026-03-14T01:20:00+0900",
+        }
+    }
+
+    body, markup = _call_management_status_with_markup(
+        tmp_path=tmp_path,
+        manager_state=state,
+        cmd="offdesk",
+        rest="review O1",
+    )
+
+    assert "offdesk review" in body
+    assert "task:rate_limited" in body
+    assert "capacity:codex,claude" in body
+    assert "first: /task T-001 | active task is waiting for provider capacity until 2026-03-14T01:23:00+09:00" in body
+    assert "provider_capacity: providers=codex,claude retry_at=2026-03-14T01:23:00+09:00 degraded=claude_rate_limit->codex" in body
+    buttons = _button_texts(markup)
+    assert "/task T-001" in buttons
 
 
 def test_next_resumes_parked_rate_limited_todo_after_retry_at(tmp_path: Path) -> None:
