@@ -56,6 +56,12 @@ def task_priority_action_snapshot(
             "reason": "active task is still planning",
         }
 
+    if safe_label and safe_phase == "rate_limited":
+        return {
+            "action": f"/task {safe_label}",
+            "reason": "active task is waiting for provider capacity",
+        }
+
     if safe_label and safe_phase in {"needs_retry", "critic_review"}:
         lane_bits: List[str] = []
         if rerun_exec:

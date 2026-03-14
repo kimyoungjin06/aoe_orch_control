@@ -3262,3 +3262,42 @@ def test_runtime_core_matches_gateway_default_project_registration(tmp_path: Pat
     assert saves == [team_dir / "orch_manager_state.json"]
     assert entry["last_sync_at"] == "2026-03-06T12:00:00+0900"
     assert entry["last_sync_mode"] == "scenario"
+
+
+def test_task_lifecycle_and_monitor_show_rate_limit_and_degraded_state() -> None:
+    task = {
+        "request_id": "r_demo",
+        "label": "T-001",
+        "short_id": "T-001",
+        "status": "running",
+        "roles": ["Codex-Writer", "Codex-Reviewer"],
+        "rate_limit": {
+            "mode": "blocked",
+            "limited_providers": ["codex", "claude"],
+            "retry_after_sec": 180,
+        },
+        "result": {
+            "degraded_by": ["claude_rate_limit->codex"],
+            "requested_roles": ["Codex-Writer", "Codex-Reviewer"],
+            "executed_roles": ["Codex-Writer", "Codex-Reviewer"],
+        },
+        "updated_at": "2026-03-14T01:20:00+0900",
+    }
+    entry = {"tasks": {"r_demo": task}}
+
+    lifecycle = task_view.summarize_task_lifecycle("Demo", task)
+    monitor = task_state.summarize_task_monitor(
+        "Demo",
+        entry,
+        limit=5,
+        normalize_task_status=gw.normalize_task_status,
+        dedupe_roles=gw.dedupe_roles,
+        task_display_label=gw.task_display_label,
+        lifecycle_stages=gw.LIFECYCLE_STAGES,
+    )
+
+    assert "tf_phase: rate_limited" in lifecycle
+    assert "rate_limit: mode=blocked providers=codex, claude retry_after=180s" in lifecycle
+    assert "degraded_by: claude_rate_limit->codex" in lifecycle
+    assert "rate_limit providers=codex,claude retry=180s" in monitor
+    assert "degraded=claude_rate_limit->codex" in monitor

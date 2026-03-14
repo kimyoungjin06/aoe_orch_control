@@ -148,6 +148,78 @@ def test_phase1_ensemble_falls_back_to_codex_when_claude_is_rate_limited() -> No
     assert result["plan_data"]["summary"] == "plan from codex"
     assert calls.count("claude") >= 1
     assert calls.count("codex") >= 2
+    assert result["rate_limit"]["mode"] == "degraded"
+    assert result["rate_limit"]["degraded_by"] == ["claude_rate_limit->codex"]
+
+
+def test_phase1_ensemble_falls_back_to_claude_when_codex_is_rate_limited() -> None:
+    calls: list[str] = []
+
+    def _codex(prompt: str, timeout_sec: int) -> str:
+        calls.append("codex")
+        raise RuntimeError("429 rate limit exceeded; retry after 120s")
+
+    def _claude(prompt: str, timeout_sec: int) -> str:
+        calls.append("claude")
+        if "critic이다" in prompt:
+            return '{"approved": true, "issues": [], "recommendations": []}'
+        return '{"summary":"plan from claude","subtasks":[{"id":"S1","title":"Draft","goal":"Write the plan","owner_role":"Codex-Writer","acceptance":["has a concise plan"]}]}'
+
+    args = SimpleNamespace(
+        plan_phase1_providers="codex,claude",
+        plan_phase1_rounds=3,
+        plan_max_subtasks=3,
+        orch_command_timeout_sec=120,
+        plan_block_on_critic=True,
+    )
+
+    result = ensemble_mod.run_phase1_ensemble_planning(
+        args=args,
+        user_prompt="Prepare a stable execution plan",
+        available_roles=["Codex-Writer", "Codex-Reviewer"],
+        normalize_task_plan_payload=gw.normalize_task_plan_payload,
+        parse_json_object_from_text=gw.parse_json_object_from_text,
+        run_provider_execs={"codex": _codex, "claude": _claude},
+        plan_roles_from_subtasks=gw.plan_roles_from_subtasks,
+        report_progress=None,
+    )
+
+    assert result["plan_gate_blocked"] is False
+    assert result["plan_data"]["summary"] == "plan from claude"
+    assert calls.count("codex") >= 1
+    assert calls.count("claude") >= 2
+    assert result["rate_limit"]["mode"] == "degraded"
+    assert result["rate_limit"]["degraded_by"] == ["codex_rate_limit->claude"]
+
+
+def test_phase1_ensemble_blocks_when_all_providers_are_rate_limited() -> None:
+    def _limited(prompt: str, timeout_sec: int) -> str:
+        raise RuntimeError("429 rate limit exceeded; retry after 180s")
+
+    args = SimpleNamespace(
+        plan_phase1_providers="codex,claude",
+        plan_phase1_rounds=3,
+        plan_max_subtasks=3,
+        orch_command_timeout_sec=120,
+        plan_block_on_critic=True,
+    )
+
+    result = ensemble_mod.run_phase1_ensemble_planning(
+        args=args,
+        user_prompt="Prepare a stable execution plan",
+        available_roles=["Codex-Writer", "Codex-Reviewer"],
+        normalize_task_plan_payload=gw.normalize_task_plan_payload,
+        parse_json_object_from_text=gw.parse_json_object_from_text,
+        run_provider_execs={"codex": _limited, "claude": _limited},
+        plan_roles_from_subtasks=gw.plan_roles_from_subtasks,
+        report_progress=None,
+    )
+
+    assert result["plan_gate_blocked"] is True
+    assert result["plan_data"] is None
+    assert result["rate_limit"]["mode"] == "blocked"
+    assert sorted(result["rate_limit"]["limited_providers"]) == ["claude", "codex"]
+    assert result["rate_limit"]["retry_after_sec"] == 180
 
 
 def test_resolve_dispatch_mode_defaults_to_tf_dispatch_when_not_forced_direct() -> None:

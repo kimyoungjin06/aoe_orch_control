@@ -1106,6 +1106,8 @@ def summarize_task_monitor(
         linked_request_count = len([str(item).strip() for item in linked_request_ids if str(item).strip()])
         dropped_roles = [str(x).strip() for x in (result.get("dropped_roles") or []) if str(x).strip()]
         added_roles = [str(x).strip() for x in (result.get("added_roles") or []) if str(x).strip()]
+        degraded_by = [str(x).strip() for x in (result.get("degraded_by") or []) if str(x).strip()]
+        rate_limit = task.get("rate_limit") if isinstance(task.get("rate_limit"), dict) else {}
         if exec_request_count or review_request_count or linked_request_count or bool(result.get("phase2_parallelized", False)):
             request_parts = [f"reqs E{exec_request_count}/R{review_request_count}"]
             if linked_request_count:
@@ -1137,6 +1139,17 @@ def summarize_task_monitor(
                 "roles drop:{dropped} add:{added}".format(
                     dropped=",".join(dropped_roles) if dropped_roles else "-",
                     added=",".join(added_roles) if added_roles else "-",
+                )
+            )
+        if degraded_by:
+            target_parts.append("degraded=" + ",".join(degraded_by))
+        if tf_phase == "rate_limited" and rate_limit:
+            providers = [str(x).strip() for x in (rate_limit.get("limited_providers") or []) if str(x).strip()]
+            retry_after = int(rate_limit.get("retry_after_sec", 0) or 0)
+            target_parts.append(
+                "rate_limit {providers} {retry}".format(
+                    providers="providers=" + ",".join(providers) if providers else "providers=-",
+                    retry=(f"retry={retry_after}s" if retry_after > 0 else "retry=-"),
                 )
             )
         if target_parts:
@@ -1446,6 +1459,18 @@ def sync_task_lifecycle(
         "failed_roles": sorted(failed_roles),
         "pending_roles": sorted(pending_roles),
     }
+    rate_limit = request_data.get("rate_limit") if isinstance(request_data.get("rate_limit"), dict) else {}
+    if rate_limit:
+        task["rate_limit"] = dict(rate_limit)
+        task["result"]["rate_limit"] = dict(rate_limit)
+    else:
+        task.pop("rate_limit", None)
+        task["result"].pop("rate_limit", None)
+    degraded_by = [str(x).strip() for x in (request_data.get("degraded_by") or []) if str(x).strip()]
+    if degraded_by:
+        task["result"]["degraded_by"] = degraded_by
+    else:
+        task["result"].pop("degraded_by", None)
     requested_roles = request_data.get("requested_roles") if isinstance(request_data.get("requested_roles"), list) else roles
     executed_roles = request_data.get("executed_roles") if isinstance(request_data.get("executed_roles"), list) else inferred_roles
     task["result"].update(

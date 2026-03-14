@@ -801,6 +801,94 @@ def test_worker_handler_falls_back_to_codex_when_claude_is_rate_limited(tmp_path
     assert "provider_rate_limit provider=claude fallback=codex" in logs
 
 
+def test_worker_handler_falls_back_to_claude_when_codex_is_rate_limited(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    team_dir = project_root / ".aoe-team"
+    bin_dir = tmp_path / "bin"
+    project_root.mkdir(parents=True)
+    team_dir.mkdir(parents=True)
+    bin_dir.mkdir(parents=True)
+
+    (team_dir / "orchestrator.json").write_text(
+        json.dumps(
+            {
+                "agents": [
+                    {
+                        "role": "Codex-Writer",
+                        "provider": "codex",
+                        "launch": "codex",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    codex_bin = bin_dir / "codex"
+    codex_bin.write_text(
+        "#!/usr/bin/env bash\n"
+        "echo '429 rate limit exceeded; retry after 120s' >&2\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    codex_bin.chmod(0o755)
+
+    claude_bin = bin_dir / "claude"
+    claude_bin.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf 'fallback via claude\\n'\n",
+        encoding="utf-8",
+    )
+    claude_bin.chmod(0o755)
+
+    env = dict(os.environ)
+    env.update(
+        {
+            "PATH": f"{bin_dir}:{env.get('PATH', '')}",
+            "AOE_WORKER_ACTOR": "Codex-Writer",
+            "AOE_PROJECT_ROOT": str(project_root),
+            "AOE_TEAM_DIR": str(team_dir),
+            "AOE_MSG_TITLE": "writer task",
+            "AOE_MSG_BODY": "User Request:\n정리 문서를 작성해줘.\n",
+            "AOE_CODEX_FALLBACK_TO_CLAUDE": "1",
+        }
+    )
+
+    proc = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "team" / "runtime" / "worker_codex_handler.sh")],
+        text=True,
+        capture_output=True,
+        env=env,
+        cwd=str(project_root),
+    )
+
+    assert proc.returncode == 0
+    assert "fallback via claude" in proc.stdout
+    logs = "\n".join(path.read_text(encoding="utf-8") for path in (team_dir / "logs").glob("worker_*.log"))
+    assert "provider_rate_limit provider=codex fallback=claude" in logs
+
+
+def test_degraded_by_from_worker_sessions_reads_rate_limit_fallback_markers(tmp_path: Path) -> None:
+    log_path = tmp_path / "worker.log"
+    log_path.write_text(
+        "[WARN] provider_rate_limit provider=claude fallback=codex role=Claude-Writer\n"
+        "[WARN] provider_rate_limit provider=codex fallback=claude role=Codex-Writer\n",
+        encoding="utf-8",
+    )
+
+    degraded = tf_exec.degraded_by_from_worker_sessions(
+        {
+            "sessions": [
+                {"log_file": str(log_path)},
+            ]
+        }
+    )
+
+    assert degraded == ["claude_rate_limit->codex", "codex_rate_limit->claude"]
+
+
 def test_local_run_aoe_orch_stages_review_lanes_after_execution(monkeypatch, tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     team_dir = project_root / ".aoe-team"

@@ -479,7 +479,7 @@ def _handle_offdesk_command(
                 actions.append(f"/todo {alias} followup")
             active_task_label = str(row.get("active_task_label", "")).strip()
             active_task_tf_phase = str(row.get("active_task_tf_phase", "")).strip()
-            if active_task_label and active_task_tf_phase in {"needs_retry", "manual_intervention", "critic_review", "blocked"}:
+            if active_task_label and active_task_tf_phase in {"needs_retry", "manual_intervention", "critic_review", "blocked", "rate_limited"}:
                 actions.append(f"/task {active_task_label}")
             if bool(row.get("bootstrap_recommended", False)):
                 actions.append(f"/sync bootstrap {alias} 24h")

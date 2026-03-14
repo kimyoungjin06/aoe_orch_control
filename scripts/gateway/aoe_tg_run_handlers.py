@@ -795,6 +795,15 @@ def _finalize_provisional_task(
     if not isinstance(task, dict):
         return
     note = str(reason or "").strip()[:240]
+    rate_limit = task.get("rate_limit") if isinstance(task.get("rate_limit"), dict) else {}
+    if outcome == "blocked" and str(rate_limit.get("mode", "")).strip().lower() == "blocked":
+        lifecycle_set_stage(task, "planning", "running", note=note or "waiting for provider capacity")
+        lifecycle_set_stage(task, "close", "pending", note="rate-limited")
+        task["status"] = "running"
+        task["tf_phase"] = "rate_limited"
+        task["tf_phase_reason"] = note or "waiting for provider capacity"
+        task["updated_at"] = now_iso()
+        return
     if outcome == "blocked":
         task["plan_gate_passed"] = False
         if note:
@@ -1765,6 +1774,12 @@ def handle_run_or_unknown_command(
             phase1_mode = str(plan_meta.phase1_mode or "")
             phase1_rounds = max(0, int(plan_meta.phase1_rounds or 0))
             phase1_providers = [str(item).strip() for item in (plan_meta.phase1_providers or []) if str(item).strip()]
+            rate_limit_meta = dict(plan_meta.rate_limit or {}) if isinstance(plan_meta.rate_limit, dict) else {}
+            if provisional_task is not None:
+                if rate_limit_meta:
+                    provisional_task["rate_limit"] = rate_limit_meta
+                else:
+                    provisional_task.pop("rate_limit", None)
 
             policy = _enforce_dispatch_policies(
                 dispatch_mode=dispatch_mode,
@@ -2008,6 +2023,15 @@ def handle_run_or_unknown_command(
                     task["tf_phase_reason"] = tf_phase_reason
                 else:
                     task.pop("tf_phase_reason", None)
+                if rate_limit_meta:
+                    task["rate_limit"] = dict(rate_limit_meta)
+                    if rate_limit_meta.get("degraded_by"):
+                        task.setdefault("result", {})
+                        task["result"]["degraded_by"] = [
+                            str(item).strip()
+                            for item in (rate_limit_meta.get("degraded_by") or [])
+                            if str(item).strip()
+                        ]
 
             if local_todo_id:
                 _attach_todo_to_task_and_entry(

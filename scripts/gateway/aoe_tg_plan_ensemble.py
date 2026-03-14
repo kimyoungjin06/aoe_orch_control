@@ -13,7 +13,12 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 from typing import Any, Callable, Dict, List, Optional
 
-from aoe_tg_provider_fallback import fallback_provider_for, is_rate_limit_error
+from aoe_tg_provider_fallback import (
+    build_rate_limit_snapshot,
+    extract_retry_after_sec,
+    fallback_provider_for,
+    is_rate_limit_error,
+)
 from aoe_tg_schema import default_plan_critic_payload, normalize_plan_critic_payload, plan_critic_primary_issue
 
 
@@ -225,9 +230,13 @@ def run_phase1_ensemble_planning(
     best_roles: List[str] = []
     shared_feedback = ""
     plan_replans: List[Dict[str, Any]] = []
+    degraded_by: List[str] = []
+    retry_after_sec = 60
 
     for round_no in range(1, rounds + 1):
         def _run_planner_provider(provider: str) -> Dict[str, Any]:
+            executed_provider = provider
+            used_fallback = False
             if callable(report_progress):
                 report_progress(
                     phase="planner",
@@ -278,7 +287,10 @@ def run_phase1_ensemble_planning(
             issues: List[str] = []
             recommendations: List[str] = []
             approvals: List[bool] = []
+
             def _run_critic_provider(critic_provider: str) -> Dict[str, Any]:
+                executed_critic_provider = critic_provider
+                used_fallback = False
                 if callable(report_progress):
                     report_progress(
                         phase="critic",
@@ -339,9 +351,25 @@ def run_phase1_ensemble_planning(
             }
 
         round_candidates = _run_parallel_calls(providers, _run_planner_provider)
+        for row in round_candidates:
+            if bool(row.get("rate_limit_fallback")):
+                origin = str(row.get("provider", "")).strip().lower()
+                executed = str(row.get("executed_provider", "")).strip().lower()
+                token = f"{origin}_rate_limit->{executed}"
+                if origin and executed and token not in degraded_by:
+                    degraded_by.append(token)
 
         viable = [row for row in round_candidates if isinstance(row.get("plan"), dict)]
         if not viable:
+            limited: List[str] = []
+            for row in round_candidates:
+                critic = row.get("critic") if isinstance(row.get("critic"), dict) else {}
+                issues = [str(item).strip() for item in (critic.get("issues") or []) if str(item).strip()]
+                if issues and all(is_rate_limit_error(item) for item in issues):
+                    provider = str(row.get("provider", "")).strip().lower()
+                    if provider and provider not in limited:
+                        limited.append(provider)
+                    retry_after_sec = max(retry_after_sec, max(extract_retry_after_sec(item) for item in issues))
             return {
                 "plan_data": None,
                 "plan_critic": default_plan_critic_payload(),
@@ -349,10 +377,23 @@ def run_phase1_ensemble_planning(
                 "plan_replans": plan_replans,
                 "plan_error": f"phase1 round {round_no}: no valid planner output",
                 "plan_gate_blocked": True,
-                "plan_gate_reason": f"phase1 round {round_no}: no valid planner output",
+                "plan_gate_reason": (
+                    f"phase1 providers rate limited: {', '.join(limited)}"
+                    if limited
+                    else f"phase1 round {round_no}: no valid planner output"
+                ),
                 "phase1_rounds": round_no,
                 "phase1_mode": "ensemble",
                 "phase1_providers": providers,
+                "rate_limit": (
+                    build_rate_limit_snapshot(
+                        mode="blocked",
+                        limited_providers=limited,
+                        retry_after_sec=retry_after_sec,
+                    )
+                    if limited
+                    else {}
+                ),
             }
 
         scored = sorted(
@@ -388,4 +429,14 @@ def run_phase1_ensemble_planning(
         "phase1_rounds": rounds,
         "phase1_mode": "ensemble",
         "phase1_providers": providers,
+        "rate_limit": (
+            build_rate_limit_snapshot(
+                mode="degraded",
+                limited_providers=[token.split("_rate_limit->", 1)[0] for token in degraded_by],
+                degraded_by=degraded_by,
+                retry_after_sec=retry_after_sec,
+            )
+            if degraded_by
+            else {}
+        ),
     }

@@ -452,6 +452,9 @@ def merge_request_states(execution_state: Dict[str, Any], review_state: Optional
     merged["done_roles"] = [role for role in done_roles if role not in failed_roles and role not in pending_roles]
     merged["failed_roles"] = failed_roles
     merged["pending_roles"] = [role for role in pending_roles if role not in failed_roles]
+    degraded_by = dedupe_roles(list(exec_data.get("degraded_by") or []) + list(review_data.get("degraded_by") or []))
+    if degraded_by:
+        merged["degraded_by"] = degraded_by
 
     exec_counts = exec_data.get("counts") if isinstance(exec_data.get("counts"), dict) else {}
     review_counts = review_data.get("counts") if isinstance(review_data.get("counts"), dict) else {}
@@ -568,6 +571,14 @@ def aggregate_parallel_stage_states(
     aggregate["done_roles"] = [role for role in dedupe_roles(done_roles) if role not in dedupe_roles(failed_roles + pending_roles)]
     aggregate["failed_roles"] = dedupe_roles(failed_roles)
     aggregate["pending_roles"] = [role for role in dedupe_roles(pending_roles) if role not in aggregate["failed_roles"]]
+    degraded_by = dedupe_roles(
+        token
+        for row in ordered_states
+        for token in (row.get("degraded_by") or [])
+        if str(token).strip()
+    )
+    if degraded_by:
+        aggregate["degraded_by"] = degraded_by
     return aggregate
 
 
@@ -598,6 +609,37 @@ def annotate_lane_role_rows(state: Dict[str, Any], *, lane_id: str, phase2_stage
             new_roles.append(item)
         annotated["roles"] = new_roles
     return annotated
+
+
+def _tail_text(path: str, *, max_bytes: int = 8192) -> str:
+    token = str(path or "").strip()
+    if not token:
+        return ""
+    try:
+        raw = Path(token).expanduser().read_bytes()
+    except Exception:
+        return ""
+    if len(raw) > max_bytes:
+        raw = raw[-max_bytes:]
+    return raw.decode("utf-8", errors="ignore")
+
+
+def degraded_by_from_worker_sessions(worker_sessions: Any) -> List[str]:
+    sessions = worker_sessions.get("sessions") if isinstance(worker_sessions, dict) else None
+    if not isinstance(sessions, list):
+        return []
+    tokens: List[str] = []
+    for row in sessions:
+        if not isinstance(row, dict):
+            continue
+        text = _tail_text(str(row.get("log_file", "")).strip())
+        if not text:
+            continue
+        if "provider_rate_limit provider=claude fallback=codex" in text and "claude_rate_limit->codex" not in tokens:
+            tokens.append("claude_rate_limit->codex")
+        if "provider_rate_limit provider=codex fallback=claude" in text and "codex_rate_limit->claude" not in tokens:
+            tokens.append("codex_rate_limit->claude")
+    return tokens
 
 
 def parse_json_object_from_text(text: str) -> Optional[Dict[str, Any]]:
@@ -1300,6 +1342,9 @@ def run_aoe_orch(
             data["gateway_request_id"] = request_id
         data["phase2_stage"] = stage_name
         data["tf_workers"] = worker_sessions
+        degraded_by = degraded_by_from_worker_sessions(worker_sessions)
+        if degraded_by:
+            data["degraded_by"] = degraded_by
         data["planned_roles"] = dedupe_roles(worker_roles)
         if stage_lane_summary["planned_roles"]:
             data["planned_roles_from_lanes"] = list(stage_lane_summary["planned_roles"])

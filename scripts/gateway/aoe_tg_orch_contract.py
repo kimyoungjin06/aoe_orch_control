@@ -14,6 +14,7 @@ TASK_APPROVAL_MODES = ("policy", "confirm", "none")
 TASK_STATUSES = (
     "queued",
     "planning",
+    "rate_limited",
     "running",
     "critic_review",
     "needs_retry",
@@ -92,9 +93,13 @@ def derive_tf_phase(task: Any) -> str:
     plan_gate_reason = _trim_text(data.get("plan_gate_reason", ""), 240)
     exec_critic = data.get("exec_critic") if isinstance(data.get("exec_critic"), dict) else {}
     exec_verdict = _normalize_choice(exec_critic.get("verdict"), VERDICT_STATUSES, "")
+    rate_limit = data.get("rate_limit") if isinstance(data.get("rate_limit"), dict) else {}
+    rate_limit_mode = str(rate_limit.get("mode", "")).strip().lower()
 
     if status == "completed":
         return "completed"
+    if rate_limit_mode == "blocked":
+        return "rate_limited"
     if plan_gate_passed is False or plan_gate_reason:
         return "blocked"
     if exec_verdict == "retry":
@@ -131,6 +136,16 @@ def derive_tf_phase_reason(task: Any) -> str:
     exec_critic = data.get("exec_critic") if isinstance(data.get("exec_critic"), dict) else {}
     exec_reason = _trim_text(exec_critic.get("reason", exec_critic.get("fix", "")), 240)
     plan_gate_reason = _trim_text(data.get("plan_gate_reason", ""), 240)
+    rate_limit = data.get("rate_limit") if isinstance(data.get("rate_limit"), dict) else {}
+    if str(rate_limit.get("mode", "")).strip().lower() == "blocked":
+        providers = [str(x).strip() for x in (rate_limit.get("limited_providers") or []) if str(x).strip()]
+        retry_after = int(rate_limit.get("retry_after_sec", 0) or 0)
+        parts = []
+        if providers:
+            parts.append("providers=" + ",".join(providers))
+        if retry_after > 0:
+            parts.append(f"retry_after={retry_after}s")
+        return "provider capacity unavailable" + (f" ({' '.join(parts)})" if parts else "")
     if plan_gate_reason:
         return plan_gate_reason
     if exec_reason:

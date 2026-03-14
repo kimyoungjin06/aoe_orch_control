@@ -234,6 +234,20 @@ def summarize_task_lifecycle(project_name: str, task: Dict[str, Any]) -> str:
         )
     if phase1_candidate_roles:
         lines.append("phase1_candidate_roles: " + ", ".join(phase1_candidate_roles))
+    rate_limit = task.get("rate_limit") if isinstance(task.get("rate_limit"), dict) else {}
+    degraded_by = [str(x).strip() for x in ((task.get("result") or {}).get("degraded_by") or []) if str(x).strip()] if isinstance(task.get("result"), dict) else []
+    if rate_limit:
+        providers = [str(x).strip() for x in (rate_limit.get("limited_providers") or []) if str(x).strip()]
+        retry_after = int(rate_limit.get("retry_after_sec", 0) or 0)
+        lines.append(
+            "rate_limit: mode={mode} providers={providers} retry_after={retry}".format(
+                mode=str(rate_limit.get("mode", "")).strip() or "-",
+                providers=", ".join(providers) if providers else "-",
+                retry=(f"{retry_after}s" if retry_after > 0 else "-"),
+            )
+        )
+    if degraded_by:
+        lines.append("degraded_by: " + ", ".join(degraded_by))
 
     context = build_task_context(request_id=request_id, task=task)
     if context:

@@ -2517,3 +2517,51 @@ def test_sync_records_last_sync_even_when_queue_is_unchanged(tmp_path: Path) -> 
     assert saves == [team_dir / "orch_manager_state.json"]
     assert entry["last_sync_at"] == "2026-03-06T12:00:00+0900"
     assert entry["last_sync_mode"] == "scenario"
+
+
+def test_offdesk_prepare_shows_rate_limited_and_degraded_active_task(tmp_path: Path) -> None:
+    state = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+    entry = state["projects"]["default"]
+    entry["project_alias"] = "O1"
+    entry["display_name"] = "Demo"
+    entry["ops_hidden"] = False
+    entry["system_project"] = False
+    project_root = Path(str(entry["project_root"]))
+    team_dir = Path(str(entry["team_dir"]))
+    project_root.mkdir(parents=True, exist_ok=True)
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (project_root / "TODO.md").write_text("# TODO\n", encoding="utf-8")
+    (team_dir / "AOE_TODO.md").write_text(f"@include {project_root / 'TODO.md'}\n", encoding="utf-8")
+    entry["tasks"] = {
+        "r_demo": {
+            "request_id": "r_demo",
+            "label": "T-001",
+            "short_id": "T-001",
+            "status": "running",
+            "roles": ["Codex-Writer", "Codex-Reviewer"],
+            "rate_limit": {
+                "mode": "blocked",
+                "limited_providers": ["codex", "claude"],
+                "retry_after_sec": 180,
+            },
+            "result": {
+                "degraded_by": ["claude_rate_limit->codex"],
+                "requested_roles": ["Codex-Writer", "Codex-Reviewer"],
+                "executed_roles": ["Codex-Writer", "Codex-Reviewer"],
+            },
+            "updated_at": "2026-03-14T01:20:00+0900",
+        }
+    }
+
+    text = _call_management_status(
+        tmp_path=tmp_path,
+        manager_state=state,
+        cmd="offdesk",
+        rest="prepare O1",
+    )
+
+    assert "task:rate_limited" in text
+    assert "task:degraded" in text
+    assert "first: /task T-001 | active task is waiting for provider capacity" in text
+    assert "active_task_degraded_by: claude_rate_limit->codex" in text
+    assert "active_task_rate_limit: mode=blocked providers=codex,claude retry_after=180s" in text

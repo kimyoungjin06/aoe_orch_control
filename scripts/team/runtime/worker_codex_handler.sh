@@ -171,6 +171,80 @@ run_codex_fallback_for_claude_limit() {
   fi
 }
 
+run_claude_fallback_for_codex_limit() {
+  local allow="${AOE_CODEX_FALLBACK_TO_CLAUDE:-1}"
+  local normalized
+  normalized="$(printf '%s' "$allow" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$normalized" == "0" || "$normalized" == "false" || "$normalized" == "no" || "$normalized" == "off" ]]; then
+    return 1
+  fi
+
+  local fb_tool_path
+  if ! fb_tool_path="$(command -v claude)"; then
+    return 1
+  fi
+
+  local fb_perm_mode fb_run_as_root
+  fb_perm_mode="$(printf '%s' "${AOE_CLAUDE_PERMISSION_MODE:-${AOE_CODEX_PERMISSION_MODE:-full}}" | tr '[:upper:]' '[:lower:]')"
+  fb_run_as_root="$(printf '%s' "${AOE_CLAUDE_RUN_AS_ROOT:-${AOE_CODEX_RUN_AS_ROOT:-0}}" | tr '[:upper:]' '[:lower:]')"
+
+  local -a fb_cmd fb_args
+  local fb_root_output_mode=0
+  fb_cmd=("$fb_tool_path")
+  fb_args=(-p --output-format text --add-dir "$WORKDIR")
+  case "$fb_perm_mode" in
+    full|unsafe|bypass|dangerous|danger|danger-full-access)
+      fb_args+=(--dangerously-skip-permissions --permission-mode bypassPermissions)
+      ;;
+    workspace|workspace-write|safe|"")
+      fb_args+=(--permission-mode acceptEdits)
+      ;;
+    read-only|readonly)
+      fb_args+=(--permission-mode plan)
+      ;;
+    auto|default|dontask|dont-ask|acceptedits|bypasspermissions|plan)
+      case "$fb_perm_mode" in
+        dontask|dont-ask) fb_perm_mode="dontAsk" ;;
+        acceptedits) fb_perm_mode="acceptEdits" ;;
+        bypasspermissions) fb_perm_mode="bypassPermissions" ;;
+      esac
+      fb_args+=(--permission-mode "$fb_perm_mode")
+      ;;
+    *)
+      fb_args+=(--dangerously-skip-permissions --permission-mode bypassPermissions)
+      ;;
+  esac
+
+  if [[ "$fb_run_as_root" == "1" || "$fb_run_as_root" == "true" || "$fb_run_as_root" == "yes" ]]; then
+    if sudo -n true >/dev/null 2>&1; then
+      fb_cmd=(sudo -n env)
+      append_env_exports fb_cmd \
+        HOME PATH ANTHROPIC_API_KEY ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN \
+        CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CONFIG_DIR \
+        AWS_REGION AWS_DEFAULT_REGION AWS_PROFILE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN \
+        HTTP_PROXY HTTPS_PROXY NO_PROXY ALL_PROXY
+      fb_cmd+=("$fb_tool_path")
+      fb_root_output_mode=1
+    fi
+  fi
+
+  echo "[WARN] provider_rate_limit provider=codex fallback=claude role=${ROLE}" >>"$LOG_FILE"
+  if [[ "$fb_root_output_mode" == "1" ]]; then
+    sudo -n rm -f "$OUT_FILE" >/dev/null 2>&1 || true
+  fi
+  rm -f "$OUT_FILE" >/dev/null 2>&1 || true
+  : >"$OUT_FILE"
+  if ! "${fb_cmd[@]}" "${fb_args[@]}" "$(cat "$PROMPT_FILE")" >"$OUT_FILE" 2>>"$LOG_FILE"; then
+    return 1
+  fi
+
+  if [[ "$fb_root_output_mode" == "1" ]]; then
+    sudo -n test -s "$OUT_FILE" >/dev/null 2>&1 || [[ -s "$OUT_FILE" ]]
+  else
+    [[ -s "$OUT_FILE" ]]
+  fi
+}
+
 extract_request_id() {
   local env_rid="${AOE_REQUEST_ID:-}"
   local body="${AOE_MSG_BODY:-}"
@@ -555,10 +629,15 @@ if [[ "$WORKER_PROVIDER_KEY" == "claude" ]]; then
   fi
 else
   if ! "${RUN_CMD[@]}" "${RUN_ARGS[@]}" "$(cat "$PROMPT_FILE")" >>"$LOG_FILE" 2>&1; then
-    echo "${WORKER_PROVIDER_KEY} exec failed (role=${ROLE})" >&2
-    tail -n 40 "$LOG_FILE" >&2 || true
-    cleanup_temp_files
-    exit 1
+    err_tail="$(tail -n 80 "$LOG_FILE" 2>/dev/null || true)"
+    if [[ "$WORKER_PROVIDER_KEY" == "codex" ]] && is_rate_limited_text "$err_tail" && run_claude_fallback_for_codex_limit; then
+      echo "[INFO] codex rate limit fallback succeeded (role=${ROLE})" >>"$LOG_FILE"
+    else
+      echo "${WORKER_PROVIDER_KEY} exec failed (role=${ROLE})" >&2
+      tail -n 40 "$LOG_FILE" >&2 || true
+      cleanup_temp_files
+      exit 1
+    fi
   fi
 fi
 

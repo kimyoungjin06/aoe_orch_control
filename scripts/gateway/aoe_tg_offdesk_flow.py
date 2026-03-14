@@ -309,6 +309,8 @@ def _latest_task_snapshot(entry: Dict[str, Any]) -> Dict[str, Any]:
     executed_roles = [str(x).strip() for x in (result.get("executed_roles") or []) if str(x).strip()]
     dropped_roles = [str(x).strip() for x in (result.get("dropped_roles") or []) if str(x).strip()]
     added_roles = [str(x).strip() for x in (result.get("added_roles") or []) if str(x).strip()]
+    degraded_by = [str(x).strip() for x in (result.get("degraded_by") or []) if str(x).strip()]
+    rate_limit = best_task.get("rate_limit") if isinstance(best_task.get("rate_limit"), dict) else {}
     return {
         "request_id": best_req,
         "label": label,
@@ -329,6 +331,8 @@ def _latest_task_snapshot(entry: Dict[str, Any]) -> Dict[str, Any]:
         "dropped_roles": dropped_roles,
         "added_roles": added_roles,
         "role_mismatch": bool(result.get("role_mismatch", False)),
+        "degraded_by": degraded_by,
+        "rate_limit": dict(rate_limit),
         "phase2_execution_request_count": _request_bucket_count(phase2_request_ids.get("execution")),
         "phase2_review_request_count": _request_bucket_count(phase2_request_ids.get("review")),
         "linked_request_count": len([str(item).strip() for item in linked_request_ids if str(item).strip()]),
@@ -609,11 +613,22 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
         notes.append(f"active task needs attention ({task_tf_phase})")
         attention.append(f"task:{task_tf_phase}")
         severity_score += 60
+    elif task_tf_phase == "rate_limited":
+        status = "warn" if status == "ready" else status
+        notes.append("active task is waiting for provider capacity")
+        attention.append("task:rate_limited")
+        severity_score += 40
     elif task_status in {"running", "pending"}:
         status = "warn" if status == "ready" else status
         notes.append(f"active task in progress ({task_tf_phase or task_status})")
         attention.append(f"task:{task_tf_phase or task_status}")
         severity_score += 15
+    degraded_by = list(latest_task.get("degraded_by") or [])
+    if degraded_by:
+        status = "warn" if status == "ready" else status
+        notes.append("active task degraded by " + ",".join(degraded_by))
+        attention.append("task:degraded")
+        severity_score += 10
     if bool(latest_task.get("role_mismatch", False)):
         status = "warn" if status == "ready" else status
         dropped = list(latest_task.get("dropped_roles") or [])
@@ -747,6 +762,19 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
                 "  active_task_role_mismatch: dropped={dropped} added={added}".format(
                     dropped=",".join(latest_task.get("dropped_roles") or []) or "-",
                     added=",".join(latest_task.get("added_roles") or []) or "-",
+                )
+            )
+        if degraded_by:
+            lines.append("  active_task_degraded_by: " + ",".join(degraded_by))
+        active_rate_limit = latest_task.get("rate_limit") if isinstance(latest_task.get("rate_limit"), dict) else {}
+        if active_rate_limit:
+            providers = [str(x).strip() for x in (active_rate_limit.get("limited_providers") or []) if str(x).strip()]
+            retry_after = int(active_rate_limit.get("retry_after_sec", 0) or 0)
+            lines.append(
+                "  active_task_rate_limit: mode={mode} providers={providers} retry_after={retry}".format(
+                    mode=str(active_rate_limit.get("mode", "")).strip() or "-",
+                    providers=",".join(providers) if providers else "-",
+                    retry=(f"{retry_after}s" if retry_after > 0 else "-"),
                 )
             )
         lines.append("  active_task_lanes: " + " | ".join(lane_parts))
@@ -887,7 +915,7 @@ def offdesk_review_reply_markup(flagged: List[Dict[str, Any]], *, clean: bool = 
 
         active_task_label = str(row.get("active_task_label", "")).strip()
         active_task_tf_phase = str(row.get("active_task_tf_phase", "")).strip()
-        if active_task_label and active_task_tf_phase in {"needs_retry", "manual_intervention", "critic_review", "blocked"}:
+        if active_task_label and active_task_tf_phase in {"needs_retry", "manual_intervention", "critic_review", "blocked", "rate_limited"}:
             tertiary.append({"text": f"/task {active_task_label}"})
 
         if int(row.get("blocked_count", 0) or 0) > 0 or int(row.get("open", 0) or 0) == 0:
@@ -970,7 +998,7 @@ def offdesk_prepare_reply_markup(
 
         active_task_label = str(row.get("active_task_label", "")).strip()
         active_task_tf_phase = str(row.get("active_task_tf_phase", "")).strip()
-        if active_task_label and active_task_tf_phase in {"needs_retry", "manual_intervention", "critic_review", "blocked"}:
+        if active_task_label and active_task_tf_phase in {"needs_retry", "manual_intervention", "critic_review", "blocked", "rate_limited"}:
             tertiary.append({"text": f"/task {active_task_label}"})
 
         if bool(row.get("bootstrap_recommended", False)):
