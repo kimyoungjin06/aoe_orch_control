@@ -65,6 +65,29 @@ def _next_rate_limited_task_snapshot(manager_state: Dict[str, Any]) -> Dict[str,
     return best_row
 
 
+def _rate_limited_project_aliases(manager_state: Dict[str, Any]) -> List[str]:
+    projects = manager_state.get("projects") if isinstance(manager_state, dict) else {}
+    if not isinstance(projects, dict):
+        return []
+    aliases: set[str] = set()
+    for key, entry in projects.items():
+        if not isinstance(entry, dict):
+            continue
+        alias = str(entry.get("project_alias", "")).strip().upper() or str(key or "").strip().upper()
+        tasks = entry.get("tasks")
+        if not isinstance(tasks, dict):
+            continue
+        for task in tasks.values():
+            if not isinstance(task, dict):
+                continue
+            rate_limit = task.get("rate_limit") if isinstance(task.get("rate_limit"), dict) else {}
+            if str(rate_limit.get("mode", "")).strip().lower() == "blocked":
+                if alias:
+                    aliases.add(alias)
+                break
+    return sorted(aliases)
+
+
 def _next_rate_limited_retry_at(manager_state: Dict[str, Any], *, now: Optional[datetime] = None) -> str:
     projects = manager_state.get("projects") if isinstance(manager_state, dict) else {}
     if not isinstance(projects, dict):
@@ -169,7 +192,7 @@ def _rate_limited_capacity_summary_for_reports(reports: List[Dict[str, Any]]) ->
     }
 
 
-def _provider_capacity_policy(summary: Dict[str, Any]) -> Dict[str, str]:
+def _provider_capacity_policy(summary: Dict[str, Any], recovery_repeat: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
     if not isinstance(summary, dict):
         return {}
     try:
@@ -185,6 +208,19 @@ def _provider_capacity_policy(summary: Dict[str, Any]) -> Dict[str, str]:
     if task_count <= 0:
         return {}
     both_primary = {"codex", "claude"}.issubset(provider_names)
+    repeat_summary = str((recovery_repeat or {}).get("summary", "")).strip()
+    if repeat_summary:
+        if both_primary:
+            return {
+                "level": "critical",
+                "reason": f"same recovered project hit both primary providers again after recovery grace ({repeat_summary})",
+                "operator_action": "/auto off",
+            }
+        return {
+            "level": "elevated",
+            "reason": f"same recovered project hit provider cooldown again after recovery grace ({repeat_summary})",
+            "operator_action": "/offdesk review",
+        }
     if both_primary and (task_count >= 2 or project_count >= 2):
         return {
             "level": "critical",
@@ -299,6 +335,36 @@ def _capacity_recovery_action(
     return {
         "action": "/auto recover",
         "reason": "capacity cooldown has cleared; resume the auto scheduler",
+    }
+
+
+def _recovery_repeat_snapshot(
+    auto_state: Dict[str, Any],
+    manager_state: Dict[str, Any],
+    *,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    grace_until = _parse_iso_datetime(auto_state.get("recovery_grace_until"))
+    if grace_until is None or grace_until > current.astimezone(timezone.utc):
+        return {}
+    prior = {
+        str(raw or "").strip().upper()
+        for raw in (auto_state.get("recovery_project_aliases") or [])
+        if str(raw or "").strip()
+    }
+    if not prior:
+        return {}
+    current_aliases = set(_rate_limited_project_aliases(manager_state))
+    repeated = sorted(prior & current_aliases)
+    if not repeated:
+        return {}
+    return {
+        "project_count": len(repeated),
+        "aliases": repeated,
+        "summary": ",".join(repeated),
     }
 
 
@@ -780,7 +846,8 @@ def _handle_offdesk_command(
             return True
         if not targets:
             capacity_summary = _rate_limited_capacity_summary(manager_state)
-            capacity_policy = _provider_capacity_policy(capacity_summary)
+            recovery_repeat = _recovery_repeat_snapshot(auto_state, manager_state)
+            capacity_policy = _provider_capacity_policy(capacity_summary, recovery_repeat)
             recovery_action = _capacity_recovery_action(auto_state, provider_state, manager_state)
             recovery_grace_until = str(auto_state.get("recovery_grace_until", "")).strip()
             recovery_target = _capacity_recovery_target(
@@ -806,6 +873,8 @@ def _handle_offdesk_command(
                     )
                 )
                 lines.append(f"- capacity_operator_action: {capacity_policy.get('operator_action', '-')}")
+            if recovery_repeat:
+                lines.append(f"- capacity_recovery_repeat: {recovery_repeat.get('summary', '-')}")
             if recovery_action:
                 lines.append(f"- capacity_recovery_action: {recovery_action.get('action', '-')}")
                 lines.append(f"- capacity_recovery_reason: {recovery_action.get('reason', '-')}")
@@ -832,7 +901,8 @@ def _handle_offdesk_command(
         reports = sort_offdesk_reports(reports)
         flagged = [row for row in reports if str(row.get("status", "")).strip().lower() in {"warn", "blocked"}]
         capacity_summary = _rate_limited_capacity_summary_for_reports(reports)
-        capacity_policy = _provider_capacity_policy(capacity_summary)
+        recovery_repeat = _recovery_repeat_snapshot(auto_state, manager_state)
+        capacity_policy = _provider_capacity_policy(capacity_summary, recovery_repeat)
         recovery_action = _capacity_recovery_action(auto_state, provider_state, manager_state)
         recovery_grace_until = str(auto_state.get("recovery_grace_until", "")).strip()
         recovery_target = _capacity_recovery_target(
@@ -862,6 +932,8 @@ def _handle_offdesk_command(
                 )
             )
             lines.append(f"- capacity_operator_action: {capacity_policy.get('operator_action', '-')}")
+        if recovery_repeat:
+            lines.append(f"- capacity_recovery_repeat: {recovery_repeat.get('summary', '-')}")
         if recovery_action:
             lines.append(f"- capacity_recovery_action: {recovery_action.get('action', '-')}")
             lines.append(f"- capacity_recovery_reason: {recovery_action.get('reason', '-')}")
@@ -1260,6 +1332,7 @@ def _handle_auto_command(
             normalize_prefetch_token=normalize_prefetch_token,
             prefetch_display=prefetch_display,
         )
+        recovery_repeat = _recovery_repeat_snapshot(current, manager_state)
         chat_ref = str(current.get("chat_id", "")).strip() or "-"
         eff_force = bool(current.get("force", False))
         eff_command = str(current.get("command", "next")).strip().lower() or "next"
@@ -1280,7 +1353,7 @@ def _handle_auto_command(
         recovery_grace_until = str(current.get("recovery_grace_until", "")).strip()
         next_retry_target = _next_rate_limited_task_snapshot(manager_state)
         capacity_summary = _rate_limited_capacity_summary(manager_state)
-        capacity_policy = _provider_capacity_policy(capacity_summary)
+        capacity_policy = _provider_capacity_policy(capacity_summary, recovery_repeat)
         stuck_candidate = str(current.get("stuck_candidate", "")).strip()
         stuck_count = int(current.get("stuck_count") or 0)
         fail_count = int(current.get("fail_count") or 0)
@@ -1326,6 +1399,8 @@ def _handle_auto_command(
                 )
             )
             lines.append(f"- capacity_operator_action: {capacity_policy.get('operator_action', '-')}")
+        if recovery_repeat:
+            lines.append(f"- capacity_recovery_repeat: {recovery_repeat.get('summary', '-')}")
         if recovery_action:
             lines.append(f"- capacity_recovery_action: {recovery_action.get('action', '-')}")
             lines.append(f"- capacity_recovery_reason: {recovery_action.get('reason', '-')}")
@@ -1474,6 +1549,7 @@ def _handle_auto_command(
         current["recovery_grace_until"] = (
             now_dt.astimezone(timezone.utc) + timedelta(seconds=_PROVIDER_RECOVERY_GRACE_SEC)
         ).replace(microsecond=0).isoformat()
+        current["recovery_project_aliases"] = _rate_limited_project_aliases(manager_state)
         current.pop("stopped_at", None)
         current.pop("next_retry_at", None)
         current.pop("stuck_candidate", None)
@@ -1532,6 +1608,7 @@ def _handle_auto_command(
         current["started_at"] = now_iso()
     current["command"] = effective_command
     current.pop("recovery_grace_until", None)
+    current.pop("recovery_project_aliases", None)
     if prefetch is not None:
         current["prefetch"] = prefetch
     elif "prefetch" not in current:

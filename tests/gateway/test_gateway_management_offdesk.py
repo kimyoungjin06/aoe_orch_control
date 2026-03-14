@@ -2478,6 +2478,114 @@ def test_offdesk_review_shows_recovery_grace_until_when_auto_recently_recovered(
     assert "- recovery_grace_until: 2026-03-14T03:41:00+00:00" in body
 
 
+def test_auto_status_escalates_when_same_recovered_project_blocks_again_after_grace(tmp_path: Path) -> None:
+    team_dir = tmp_path / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (team_dir / "auto_scheduler.json").write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "chat_id": "939062873",
+                "command": "next",
+                "recovered_at": "2026-03-14T03:31:00+09:00",
+                "recovery_grace_until": "2000-01-01T00:00:00+00:00",
+                "recovery_project_aliases": ["O1"],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    state = gw.default_manager_state(tmp_path, team_dir)
+    entry = state["projects"]["default"]
+    entry["project_alias"] = "O1"
+    entry["display_name"] = "Demo"
+    entry["ops_hidden"] = False
+    entry["system_project"] = False
+    entry["runtime_ready"] = True
+    entry["tasks"] = {
+        "r_demo": {
+            "request_id": "r_demo",
+            "label": "T-001",
+            "short_id": "T-001",
+            "status": "running",
+            "rate_limit": {
+                "mode": "blocked",
+                "limited_providers": ["codex", "claude"],
+                "retry_after_sec": 180,
+                "retry_at": "2026-03-14T01:23:00+09:00",
+            },
+        }
+    }
+
+    text = _call_management_status(tmp_path=tmp_path, manager_state=state, cmd="auto", rest="status")
+
+    assert "- capacity_recovery_repeat: O1" in text
+    assert "- capacity_policy: critical | same recovered project hit both primary providers again after recovery grace (O1)" in text
+    assert "- capacity_operator_action: /auto off" in text
+
+
+def test_offdesk_review_escalates_when_same_recovered_project_blocks_again_after_grace(tmp_path: Path) -> None:
+    state = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+    team_dir = tmp_path / ".aoe-team"
+    team_dir.mkdir(parents=True, exist_ok=True)
+    (team_dir / "auto_scheduler.json").write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "chat_id": "939062873",
+                "command": "next",
+                "recovered_at": "2026-03-14T03:31:00+09:00",
+                "recovery_grace_until": "2000-01-01T00:00:00+00:00",
+                "recovery_project_aliases": ["O1"],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    entry = state["projects"]["default"]
+    entry["project_alias"] = "O1"
+    entry["display_name"] = "Demo"
+    entry["ops_hidden"] = False
+    entry["system_project"] = False
+    entry["runtime_ready"] = True
+    project_root = Path(str(entry["project_root"]))
+    team_dir2 = Path(str(entry["team_dir"]))
+    project_root.mkdir(parents=True, exist_ok=True)
+    team_dir2.mkdir(parents=True, exist_ok=True)
+    (project_root / "TODO.md").write_text("# TODO\n", encoding="utf-8")
+    (team_dir2 / "AOE_TODO.md").write_text(f"@include {project_root / 'TODO.md'}\n", encoding="utf-8")
+    entry["todos"] = [{"id": "TODO-001", "summary": "resume task", "priority": "P1", "status": "open"}]
+    entry["tasks"] = {
+        "r_demo": {
+            "request_id": "r_demo",
+            "label": "T-001",
+            "short_id": "T-001",
+            "status": "running",
+            "rate_limit": {
+                "mode": "blocked",
+                "limited_providers": ["codex", "claude"],
+                "retry_after_sec": 180,
+                "retry_at": "2026-03-14T01:23:00+09:00",
+            },
+        }
+    }
+
+    body, _markup = _call_management_status_with_markup(
+        tmp_path=tmp_path,
+        manager_state=state,
+        cmd="offdesk",
+        rest="review O1",
+    )
+
+    assert "- capacity_recovery_repeat: O1" in body
+    assert "- capacity_policy: critical | same recovered project hit both primary providers again after recovery grace (O1)" in body
+    assert "- capacity_operator_action: /auto off" in body
+
+
 def _write_tf_exec_map(team_dir: Path, req_id: str, *, mode: str, workdir: Path, run_dir: Path) -> None:
     m = gw.load_tf_exec_map(team_dir)
     m[req_id] = {
