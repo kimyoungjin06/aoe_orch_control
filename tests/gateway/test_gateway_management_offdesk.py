@@ -1900,6 +1900,30 @@ def test_auto_prefetch_plan_uses_incremental_files_and_recent_when_replace_disab
     ]
 
 
+def test_auto_scheduler_tracks_next_rate_limited_retry_at() -> None:
+    state = {
+        "projects": {
+            "o3": {"tasks": {"r1": {"rate_limit": {"mode": "blocked", "retry_at": "2026-03-14T03:40:00+09:00"}}}},
+            "o4": {"tasks": {"r2": {"rate_limit": {"mode": "blocked", "retry_at": "2026-03-14T03:10:00+09:00"}}}},
+        }
+    }
+
+    next_retry_at = auto_sched._next_rate_limited_retry_at(
+        state,
+        now=auto_sched._parse_iso_dt("2026-03-14T03:00:00+09:00"),
+    )
+    assert next_retry_at == "2026-03-13T18:10:00+00:00"
+
+
+def test_auto_scheduler_adjusts_idle_to_upcoming_retry_at() -> None:
+    sleep_sec = auto_sched._adjust_idle_for_retry_at(
+        20.0,
+        "2026-03-14T03:00:05+09:00",
+        now=auto_sched._parse_iso_dt("2026-03-14T03:00:00+09:00"),
+    )
+    assert 4.0 <= sleep_sec <= 5.0
+
+
 def _write_tf_exec_map(team_dir: Path, req_id: str, *, mode: str, workdir: Path, run_dir: Path) -> None:
     m = gw.load_tf_exec_map(team_dir)
     m[req_id] = {

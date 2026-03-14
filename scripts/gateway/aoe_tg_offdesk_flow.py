@@ -704,6 +704,7 @@ def offdesk_prepare_project_report(manager_state: Dict[str, Any], key: str, entr
         active_task_label=str(latest_task.get("label", "")).strip(),
         active_task_tf_phase=task_tf_phase,
         active_task_targets=latest_task.get("lane_targets") if isinstance(latest_task.get("lane_targets"), dict) else None,
+        active_task_rate_limit=latest_task.get("rate_limit") if isinstance(latest_task.get("rate_limit"), dict) else None,
         syncback_pending=syncback_pending,
         followup_count=manual_followup_count,
         proposal_count=open_proposals,

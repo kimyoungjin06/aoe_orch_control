@@ -1165,6 +1165,7 @@ def summarize_task_monitor(
             rerun_review_lane_ids=rerun_review,
             manual_followup_execution_lane_ids=manual_exec,
             manual_followup_review_lane_ids=manual_review,
+            rate_limit=rate_limit,
         )
         first_action = str(priority_action.get("action", "")).strip()
         if first_action:

@@ -1879,11 +1879,25 @@ def test_priority_actions_module_matches_task_and_offdesk_policies() -> None:
         "action": "/task T-002 | gather-latest-docs",
         "reason": "active task is still planning",
     }
+    rate_limited_priority = priority_actions.task_priority_action_snapshot(
+        label="T-003 | blocked-by-capacity",
+        tf_phase="rate_limited",
+        rerun_execution_lane_ids=[],
+        rerun_review_lane_ids=[],
+        manual_followup_execution_lane_ids=[],
+        manual_followup_review_lane_ids=[],
+        rate_limit={"mode": "blocked", "retry_at": "2026-03-14T03:40:00+09:00"},
+    )
+    assert rate_limited_priority == {
+        "action": "/task T-003 | blocked-by-capacity",
+        "reason": "active task is waiting for provider capacity until 2026-03-14T03:40:00+09:00",
+    }
     offdesk_priority = priority_actions.offdesk_priority_action_snapshot(
         alias="O4",
         active_task_label="",
         active_task_tf_phase="queued",
         active_task_targets=None,
+        active_task_rate_limit=None,
         syncback_pending=False,
         followup_count=0,
         proposal_count=0,
