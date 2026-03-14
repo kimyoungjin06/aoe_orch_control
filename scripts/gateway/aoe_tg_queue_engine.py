@@ -3,16 +3,19 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from aoe_tg_ops_policy import (
     find_pending_todo_for_chat as find_ops_pending_todo_for_chat,
     linked_task_blocks_todo,
+    linked_tasks_for_todo,
     list_ops_projects,
     priority_rank as ops_priority_rank,
     project_alias as ops_project_alias,
     project_queue_snapshot,
 )
+from aoe_tg_provider_fallback import parse_retry_at, rate_limit_retry_active
 from aoe_tg_project_runtime import project_hidden_from_ops, project_runtime_issue
 
 _STATUS_OPEN = "open"
@@ -20,6 +23,71 @@ _STATUS_RUNNING = "running"
 _STATUS_BLOCKED = "blocked"
 _STATUS_DONE = "done"
 _STATUS_CANCELED = "canceled"
+
+
+def _rate_limited_pending_todo(entry: Dict[str, Any], todo_id: str) -> bool:
+    token = str(todo_id or "").strip()
+    if not token:
+        return False
+    for task in linked_tasks_for_todo(entry, token):
+        if not isinstance(task, dict):
+            continue
+        status = str(task.get("status", "")).strip().lower()
+        if status not in {"pending", "running"}:
+            continue
+        rate_limit = task.get("rate_limit") if isinstance(task.get("rate_limit"), dict) else {}
+        if not rate_limit_retry_active(rate_limit):
+            continue
+        tf_phase = str(task.get("tf_phase", "")).strip().lower()
+        if tf_phase == "rate_limited" or str(rate_limit.get("mode", "")).strip().lower() == "blocked":
+            return True
+    return False
+
+
+def project_capacity_snapshot(entry: Dict[str, Any], *, now: Optional[datetime] = None) -> Dict[str, Any]:
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    tasks = entry.get("tasks") if isinstance(entry, dict) else None
+    if not isinstance(tasks, dict):
+        return {
+            "penalty_rank": 0,
+            "active_count": 0,
+            "provider_count": 0,
+            "next_retry_at": "",
+            "limited_providers": [],
+        }
+
+    active_count = 0
+    limited_providers: set[str] = set()
+    next_retry_dt: Optional[datetime] = None
+    for row in tasks.values():
+        if not isinstance(row, dict):
+            continue
+        status = str(row.get("status", "")).strip().lower()
+        if status not in {"pending", "running"}:
+            continue
+        rate_limit = row.get("rate_limit") if isinstance(row.get("rate_limit"), dict) else {}
+        if not rate_limit_retry_active(rate_limit, now=current):
+            continue
+        active_count += 1
+        for provider in rate_limit.get("limited_providers", []):
+            token = str(provider or "").strip().lower()
+            if token:
+                limited_providers.add(token)
+        parsed = parse_retry_at(rate_limit.get("retry_at"))
+        if parsed is None:
+            continue
+        if next_retry_dt is None or parsed < next_retry_dt:
+            next_retry_dt = parsed
+
+    return {
+        "penalty_rank": 1 if active_count > 0 else 0,
+        "active_count": active_count,
+        "provider_count": len(limited_providers),
+        "next_retry_at": next_retry_dt.isoformat() if next_retry_dt else "",
+        "limited_providers": sorted(limited_providers),
+    }
 
 
 def sorted_active_todos(todos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -108,6 +176,7 @@ def pick_global_next_candidate(
         item = resume_item if isinstance(resume_item, dict) else snap["best_open"]
         if not isinstance(item, dict):
             continue
+        capacity = project_capacity_snapshot(entry)
         candidates.append(
             {
                 "project_key": str(key),
@@ -115,6 +184,11 @@ def pick_global_next_candidate(
                 "todo": item,
                 "selection_kind": "resume" if isinstance(resume_item, dict) and item is resume_item else "open",
                 "priority_rank": ops_priority_rank(str(item.get("priority", "P2"))),
+                "capacity_penalty_rank": int(capacity.get("penalty_rank", 0) or 0),
+                "capacity_active_count": int(capacity.get("active_count", 0) or 0),
+                "capacity_provider_count": int(capacity.get("provider_count", 0) or 0),
+                "capacity_next_retry_at": str(capacity.get("next_retry_at", "")),
+                "capacity_limited_providers": list(capacity.get("limited_providers", [])),
                 "created_at": str(item.get("created_at", "")),
                 "todo_id": str(item.get("id", "")).strip(),
             }
@@ -123,7 +197,11 @@ def pick_global_next_candidate(
         return None
     candidates.sort(
         key=lambda c: (
-            int(c.get("priority_rank", 9) or 9),
+            int(c.get("priority_rank", 9) if c.get("priority_rank", None) is not None else 9),
+            int(c.get("capacity_penalty_rank", 9) if c.get("capacity_penalty_rank", None) is not None else 9),
+            str(c.get("capacity_next_retry_at", "") or "9999-12-31T23:59:59+00:00"),
+            int(c.get("capacity_active_count", 0) if c.get("capacity_active_count", None) is not None else 0),
+            int(c.get("capacity_provider_count", 0) if c.get("capacity_provider_count", None) is not None else 0),
             str(c.get("created_at", "")),
             str(c.get("project_alias", "")),
             str(c.get("todo_id", "")),
@@ -150,22 +228,29 @@ def drain_peek_next_todo(
 
     if not force:
         pending_hit = find_ops_pending_todo_for_chat(projects, cid, skip_paused=True, require_ready=True)
+        pending_blocked_by_rate_limit = False
         if pending_hit:
             p_key, entry, pending = pending_hit
             p_todo = str(pending.get("todo_id", "")).strip()
             if has_task_linked_to_todo(entry if isinstance(entry, dict) else {}, p_todo):
-                return "", "", "pending_has_active_task"
+                if _rate_limited_pending_todo(entry if isinstance(entry, dict) else {}, p_todo):
+                    pending_blocked_by_rate_limit = True
+                else:
+                    return "", "", "pending_has_active_task"
             snap = project_queue_snapshot(entry if isinstance(entry, dict) else {})
             for row in snap["todos"]:
                 if str(row.get("id", "")).strip() != p_todo:
                     continue
+                if pending_blocked_by_rate_limit:
+                    break
                 summary = str(row.get("summary", "")).strip()
                 if not summary:
                     return "", "", "pending_missing_summary"
                 return p_key, p_todo, "resume_pending"
-            return "", "", "pending_not_found"
+            if not pending_blocked_by_rate_limit:
+                return "", "", "pending_not_found"
 
-    candidates: List[Tuple[int, str, str, str, str]] = []
+    candidates: List[Tuple[int, int, str, int, int, str, str, str]] = []
     skipped_unready = 0
     for key, entry in projects.items():
         if not isinstance(entry, dict):
@@ -188,9 +273,14 @@ def drain_peek_next_todo(
         if not todo_id or not summary:
             continue
         alias = ops_project_alias(entry, str(key))
+        capacity = project_capacity_snapshot(entry)
         candidates.append(
             (
                 ops_priority_rank(str(best.get("priority", "P2"))),
+                int(capacity.get("penalty_rank", 0) or 0),
+                str(capacity.get("next_retry_at", "") or "9999-12-31T23:59:59+00:00"),
+                int(capacity.get("active_count", 0) or 0),
+                int(capacity.get("provider_count", 0) or 0),
                 str(best.get("created_at", "")),
                 str(alias),
                 str(todo_id),
@@ -200,7 +290,9 @@ def drain_peek_next_todo(
     if not candidates:
         if skipped_unready > 0:
             return "", "", "unready_project"
+        if not force and 'pending_blocked_by_rate_limit' in locals() and pending_blocked_by_rate_limit:
+            return "", "", "pending_rate_limited"
         return "", "", "no_runnable_open_todo"
     candidates.sort()
-    _rank, _created_at, _alias, todo_id, project_key = candidates[0]
+    _rank, _penalty, _retry_at, _blocked, _providers, _created_at, _alias, todo_id, project_key = candidates[0]
     return project_key, todo_id, "candidate"

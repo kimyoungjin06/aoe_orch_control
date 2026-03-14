@@ -3176,6 +3176,64 @@ def test_queue_engine_matches_gateway_and_scheduler_next_selection(tmp_path: Pat
     assert gw_pick == ("local", "TODO-002", "candidate")
 
 
+def test_next_selection_deprioritizes_project_with_active_provider_capacity_block(tmp_path: Path) -> None:
+    state = _empty_state()
+    blocked_team = tmp_path / "Blocked" / ".aoe-team"
+    ready_team = tmp_path / "Ready" / ".aoe-team"
+    blocked_team.mkdir(parents=True, exist_ok=True)
+    ready_team.mkdir(parents=True, exist_ok=True)
+    (blocked_team / "orchestrator.json").write_text("{}", encoding="utf-8")
+    (ready_team / "orchestrator.json").write_text("{}", encoding="utf-8")
+
+    state["projects"]["blocked"] = {
+        "name": "blocked",
+        "display_name": "Blocked",
+        "project_alias": "O2",
+        "project_root": str(tmp_path / "Blocked"),
+        "team_dir": str(blocked_team),
+        "todos": [
+            {"id": "TODO-001", "summary": "parked current", "priority": "P1", "status": "running"},
+            {"id": "TODO-002", "summary": "new blocked project work", "priority": "P1", "status": "open", "created_at": "2026-03-13T00:00:00+09:00"},
+        ],
+        "tasks": {
+            "r1": {
+                "request_id": "r1",
+                "todo_id": "TODO-001",
+                "status": "running",
+                "tf_phase": "rate_limited",
+                "rate_limit": {
+                    "mode": "blocked",
+                    "limited_providers": ["claude"],
+                    "retry_after_sec": 180,
+                    "retry_at": "2999-01-01T00:00:00+00:00",
+                },
+            }
+        },
+    }
+    state["projects"]["ready"] = {
+        "name": "ready",
+        "display_name": "Ready",
+        "project_alias": "O3",
+        "project_root": str(tmp_path / "Ready"),
+        "team_dir": str(ready_team),
+        "todos": [
+            {"id": "TODO-010", "summary": "ready work", "priority": "P1", "status": "open", "created_at": "2026-03-14T00:00:00+09:00"},
+        ],
+    }
+
+    queue_pick = queue_engine.pick_global_next_candidate(state["projects"], ignore_busy=False, skip_paused=True)
+    sched_pick = sched._pick_global_next_candidate(state["projects"], ignore_busy=False, skip_paused=True)
+    gw_pick = gw._drain_peek_next_todo(state, "939062873", force=False)
+
+    assert isinstance(queue_pick, dict)
+    assert queue_pick["project_key"] == "ready"
+    assert queue_pick["todo"]["id"] == "TODO-010"
+    assert queue_pick["capacity_penalty_rank"] == 0
+    assert isinstance(sched_pick, dict)
+    assert sched_pick["project_key"] == "ready"
+    assert gw_pick == ("ready", "TODO-010", "candidate")
+
+
 def test_queue_snapshot_treats_future_rate_limited_task_as_parked_not_busy(tmp_path: Path) -> None:
     state = _empty_state()
     team = tmp_path / "Local" / ".aoe-team"
@@ -3275,6 +3333,59 @@ def test_drain_peek_resumes_pending_todo_after_rate_limit_retry_at_passes(tmp_pa
     }
 
     assert gateway_batch_ops.drain_peek_next_todo(state, "939062873", force=False) == ("local", "TODO-001", "resume_pending")
+
+
+def test_drain_peek_skips_pending_rate_limited_project_and_selects_other_candidate(tmp_path: Path) -> None:
+    state = _empty_state()
+    blocked_team = tmp_path / "Blocked" / ".aoe-team"
+    ready_team = tmp_path / "Ready" / ".aoe-team"
+    blocked_team.mkdir(parents=True, exist_ok=True)
+    ready_team.mkdir(parents=True, exist_ok=True)
+    (blocked_team / "orchestrator.json").write_text("{}", encoding="utf-8")
+    (ready_team / "orchestrator.json").write_text("{}", encoding="utf-8")
+
+    state["projects"]["blocked"] = {
+        "name": "blocked",
+        "display_name": "Blocked",
+        "project_alias": "O2",
+        "project_root": str(tmp_path / "Blocked"),
+        "team_dir": str(blocked_team),
+        "todos": [
+            {"id": "TODO-001", "summary": "blocked pending", "priority": "P1", "status": "running"},
+            {"id": "TODO-002", "summary": "other blocked work", "priority": "P1", "status": "open"},
+        ],
+        "pending_todo": {
+            "todo_id": "TODO-001",
+            "chat_id": "939062873",
+            "selected_at": "2026-03-14T01:00:00+09:00",
+        },
+        "tasks": {
+            "r1": {
+                "request_id": "r1",
+                "todo_id": "TODO-001",
+                "status": "running",
+                "tf_phase": "rate_limited",
+                "rate_limit": {
+                    "mode": "blocked",
+                    "limited_providers": ["codex", "claude"],
+                    "retry_after_sec": 180,
+                    "retry_at": "2999-01-01T00:00:00+00:00",
+                },
+            }
+        },
+    }
+    state["projects"]["ready"] = {
+        "name": "ready",
+        "display_name": "Ready",
+        "project_alias": "O3",
+        "project_root": str(tmp_path / "Ready"),
+        "team_dir": str(ready_team),
+        "todos": [
+            {"id": "TODO-010", "summary": "ready candidate", "priority": "P1", "status": "open"},
+        ],
+    }
+
+    assert gateway_batch_ops.drain_peek_next_todo(state, "939062873", force=False) == ("ready", "TODO-010", "candidate")
 
 
 def test_transport_module_matches_gateway_transport_exports() -> None:

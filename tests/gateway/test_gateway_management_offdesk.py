@@ -558,6 +558,61 @@ def test_scheduler_control_module_matches_management_offdesk_prepare_and_panic(t
     assert sent_panic_a == sent_panic_b
 
 
+def test_offdesk_prepare_targets_deprioritize_rate_limited_project_capacity(tmp_path: Path) -> None:
+    state = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+    blocked_root = tmp_path / "Blocked"
+    ready_root = tmp_path / "Ready"
+    blocked_team = blocked_root / ".aoe-team"
+    ready_team = ready_root / ".aoe-team"
+    blocked_team.mkdir(parents=True, exist_ok=True)
+    ready_team.mkdir(parents=True, exist_ok=True)
+    (blocked_team / "orchestrator.json").write_text("{}", encoding="utf-8")
+    (ready_team / "orchestrator.json").write_text("{}", encoding="utf-8")
+
+    state["projects"]["blocked"] = {
+        "name": "blocked",
+        "display_name": "Blocked",
+        "project_alias": "O2",
+        "project_root": str(blocked_root),
+        "team_dir": str(blocked_team),
+        "todos": [
+            {"id": "TODO-001", "summary": "parked current", "priority": "P1", "status": "running"},
+            {"id": "TODO-002", "summary": "open but capacity heavy", "priority": "P1", "status": "open"},
+        ],
+        "tasks": {
+            "r1": {
+                "request_id": "r1",
+                "todo_id": "TODO-001",
+                "status": "running",
+                "tf_phase": "rate_limited",
+                "rate_limit": {
+                    "mode": "blocked",
+                    "limited_providers": ["codex", "claude"],
+                    "retry_after_sec": 180,
+                    "retry_at": "2999-01-01T00:00:00+00:00",
+                },
+            }
+        },
+    }
+    state["projects"]["ready"] = {
+        "name": "ready",
+        "display_name": "Ready",
+        "project_alias": "O3",
+        "project_root": str(ready_root),
+        "team_dir": str(ready_team),
+        "todos": [{"id": "TODO-010", "summary": "ready work", "priority": "P1", "status": "open"}],
+    }
+
+    rows = offdesk_flow.offdesk_prepare_targets(
+        state,
+        "all",
+        project_lock_row=mgmt_handlers._project_lock_row,
+        resolve_project_entry=mgmt_handlers._resolve_project_entry,
+    )
+
+    assert [key for key, _entry in rows][:2] == ["ready", "blocked"]
+
+
 def test_management_chat_module_matches_management_handler_modes(tmp_path: Path) -> None:
     state_a = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
     state_b = copy.deepcopy(state_a)

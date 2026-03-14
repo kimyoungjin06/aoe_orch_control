@@ -26,6 +26,7 @@ from aoe_tg_priority_actions import (
     task_lane_target_snapshot,
 )
 from aoe_tg_project_runtime import project_runtime_issue, project_runtime_label
+from aoe_tg_queue_engine import project_capacity_snapshot
 from aoe_tg_task_view import task_display_label
 from aoe_tg_todo_policy import (
     normalize_proposal_kind,
@@ -462,6 +463,18 @@ def offdesk_prepare_targets(
     project_lock_row: Callable[[Dict[str, Any]], Dict[str, Any]],
     resolve_project_entry: Callable[[Dict[str, Any], str], Tuple[str, Dict[str, Any]]],
 ) -> List[Tuple[str, Dict[str, Any]]]:
+    def _sort_key(row: Tuple[str, Dict[str, Any]]) -> Tuple[int, str, int, int, int]:
+        key, entry = row
+        capacity = project_capacity_snapshot(entry if isinstance(entry, dict) else {})
+        alias = str(entry.get("project_alias", "")).strip() if isinstance(entry, dict) else str(key)
+        return (
+            int(capacity.get("penalty_rank", 0) or 0),
+            str(capacity.get("next_retry_at", "") or "9999-12-31T23:59:59+00:00"),
+            int(capacity.get("active_count", 0) or 0),
+            int(capacity.get("provider_count", 0) or 0),
+            alias_index(alias or str(key)),
+        )
+
     token = str(raw_target or "").strip()
     locked = project_lock_row(manager_state)
     if token:
@@ -473,7 +486,7 @@ def offdesk_prepare_targets(
                 return [(key, entry)] if isinstance(entry, dict) else []
             projects = manager_state.get("projects") if isinstance(manager_state, dict) else {}
             rows = list_ops_projects(projects)
-            rows.sort(key=lambda kv: alias_index(str(kv[1].get("project_alias", "")).strip() or str(kv[0])))
+            rows.sort(key=_sort_key)
             return rows
         key, entry = resolve_project_entry(manager_state, token)
         return [(key, entry)]
@@ -486,7 +499,7 @@ def offdesk_prepare_targets(
 
     projects = manager_state.get("projects") if isinstance(manager_state, dict) else {}
     rows = list_ops_projects(projects)
-    rows.sort(key=lambda kv: alias_index(str(kv[1].get("project_alias", "")).strip() or str(kv[0])))
+    rows.sort(key=_sort_key)
     return rows
 
 
