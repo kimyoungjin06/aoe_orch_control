@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
 """Scheduler-control command handlers extracted from management handlers."""
 
-from datetime import datetime, timezone
+import os
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
+
+
+_PROVIDER_RECOVERY_GRACE_SEC = max(
+    60,
+    int(str(os.environ.get("AOE_PROVIDER_RECOVERY_GRACE_SEC", "600") or "600").strip() or "600"),
+)
 
 
 def _parse_iso_datetime(raw: Any) -> Optional[datetime]:
@@ -1264,6 +1271,7 @@ def _handle_auto_command(
         last_prefetch_reason = str(current.get("last_prefetch_reason", "")).strip()
         last_prefetch_mode = str(current.get("last_prefetch_mode", "")).strip()
         next_retry_at = str(current.get("next_retry_at", "")).strip()
+        recovery_grace_until = str(current.get("recovery_grace_until", "")).strip()
         next_retry_target = _next_rate_limited_task_snapshot(manager_state)
         capacity_summary = _rate_limited_capacity_summary(manager_state)
         capacity_policy = _provider_capacity_policy(capacity_summary)
@@ -1294,6 +1302,8 @@ def _handle_auto_command(
             lines.append(f"- last_reason: {compact_reason(last_reason, 120)}")
         if next_retry_at:
             lines.append(f"- next_retry_at: {next_retry_at}")
+        if recovery_grace_until:
+            lines.append(f"- recovery_grace_until: {recovery_grace_until}")
         if capacity_summary:
             lines.append(
                 "- provider_capacity: tasks={tasks} projects={projects} providers={providers}".format(
@@ -1455,6 +1465,9 @@ def _handle_auto_command(
         current["chat_id"] = str(current.get("chat_id", "")).strip() or str(chat_id)
         current["command"] = effective_command
         current["recovered_at"] = now_iso()
+        current["recovery_grace_until"] = (
+            now_dt.astimezone(timezone.utc) + timedelta(seconds=_PROVIDER_RECOVERY_GRACE_SEC)
+        ).replace(microsecond=0).isoformat()
         current.pop("stopped_at", None)
         current.pop("next_retry_at", None)
         current.pop("stuck_candidate", None)
@@ -1476,6 +1489,7 @@ def _handle_auto_command(
             f"- command: {effective_command}\n"
             f"- resume_target: {recovery_target.get('target', '-')}\n"
             + (f"- resume_note: {recovery_target.get('adjusted_reason', '-')}\n" if recovery_target.get("adjusted_reason") else "")
+            + f"- recovery_grace_until: {current.get('recovery_grace_until', '-')}\n"
             +
             f"- force: {'yes' if force_recover else 'no'}\n"
             f"- tmux: {'started' if ok else 'start_failed'}\n"
@@ -1511,6 +1525,7 @@ def _handle_auto_command(
     if "started_at" not in current:
         current["started_at"] = now_iso()
     current["command"] = effective_command
+    current.pop("recovery_grace_until", None)
     if prefetch is not None:
         current["prefetch"] = prefetch
     elif "prefetch" not in current:

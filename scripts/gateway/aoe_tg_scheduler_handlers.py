@@ -86,6 +86,7 @@ _DISCOVERY_EXCLUDE_DIRS = {
 }
 
 _LAST_CMD_ARGS_KEY = "last_cmd_args"
+_AUTO_STATE_FILENAME = "auto_scheduler.json"
 
 from aoe_tg_sync_sources import (
     _apply_sync_policy,
@@ -572,12 +573,33 @@ def _pick_global_next_candidate(
     *,
     ignore_busy: bool = False,
     skip_paused: bool = False,
+    recovery_grace_until: Any = None,
 ) -> Optional[Dict[str, Any]]:
     return queue_pick_global_next_candidate(
         projects,
         ignore_busy=ignore_busy,
         skip_paused=skip_paused,
+        recovery_grace_until=recovery_grace_until,
     )
+
+
+def _auto_state_path(args: Any) -> Path:
+    return Path(str(getattr(args, "team_dir", "."))).expanduser().resolve() / _AUTO_STATE_FILENAME
+
+
+def _load_auto_state(path: Path) -> Dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _auto_recovery_grace_until(args: Any) -> str:
+    state = _load_auto_state(_auto_state_path(args))
+    if not bool(state.get("enabled", False)):
+        return ""
+    return str(state.get("recovery_grace_until", "")).strip()
 
 
 def handle_scheduler_command(
@@ -1963,7 +1985,13 @@ def handle_scheduler_command(
         }
 
     # 1) Pick a candidate across all projects.
-    candidate = _pick_global_next_candidate(candidate_projects, ignore_busy=force, skip_paused=not force)
+    recovery_grace_until = _auto_recovery_grace_until(args)
+    candidate = _pick_global_next_candidate(
+        candidate_projects,
+        ignore_busy=force,
+        skip_paused=not force,
+        recovery_grace_until=recovery_grace_until,
+    )
     if not candidate:
         body = build_no_runnable_todo_message(
             focus_label=focus_alias or focus_key,

@@ -3388,6 +3388,65 @@ def test_drain_peek_skips_pending_rate_limited_project_and_selects_other_candida
     assert gateway_batch_ops.drain_peek_next_todo(state, "939062873", force=False) == ("ready", "TODO-010", "candidate")
 
 
+def test_queue_pick_penalizes_recently_recovered_rate_limited_project_during_recovery_grace(tmp_path: Path) -> None:
+    state = _empty_state()
+    recovering_team = tmp_path / "Recovering" / ".aoe-team"
+    ready_team = tmp_path / "Ready" / ".aoe-team"
+    recovering_team.mkdir(parents=True, exist_ok=True)
+    ready_team.mkdir(parents=True, exist_ok=True)
+    (recovering_team / "orchestrator.json").write_text("{}", encoding="utf-8")
+    (ready_team / "orchestrator.json").write_text("{}", encoding="utf-8")
+
+    state["projects"]["recovering"] = {
+        "name": "recovering",
+        "display_name": "Recovering",
+        "project_alias": "O2",
+        "project_root": str(tmp_path / "Recovering"),
+        "team_dir": str(recovering_team),
+        "todos": [
+            {"id": "TODO-001", "summary": "recovering work", "priority": "P1", "status": "open", "created_at": "2026-03-14T00:00:00+09:00"},
+        ],
+        "tasks": {
+            "r1": {
+                "request_id": "r1",
+                "todo_id": "TODO-001",
+                "status": "running",
+                "tf_phase": "rate_limited",
+                "rate_limit": {
+                    "mode": "blocked",
+                    "limited_providers": ["claude"],
+                    "retry_after_sec": 180,
+                    "retry_at": "2000-01-01T00:00:00+00:00",
+                },
+            }
+        },
+    }
+    state["projects"]["ready"] = {
+        "name": "ready",
+        "display_name": "Ready",
+        "project_alias": "O3",
+        "project_root": str(tmp_path / "Ready"),
+        "team_dir": str(ready_team),
+        "todos": [
+            {"id": "TODO-010", "summary": "ready work", "priority": "P1", "status": "open", "created_at": "2026-03-14T00:00:00+09:00"},
+        ],
+    }
+
+    recovering_pick = queue_engine.pick_global_next_candidate(state["projects"], ignore_busy=False, skip_paused=True)
+    assert isinstance(recovering_pick, dict)
+    assert recovering_pick["project_key"] == "recovering"
+
+    grace_pick = queue_engine.pick_global_next_candidate(
+        state["projects"],
+        ignore_busy=False,
+        skip_paused=True,
+        recovery_grace_until="2999-01-01T00:00:00+00:00",
+    )
+    assert isinstance(grace_pick, dict)
+    assert grace_pick["project_key"] == "ready"
+    assert grace_pick["capacity_penalty_rank"] == 0
+
+
 def test_transport_module_matches_gateway_transport_exports() -> None:
     previous = os.environ.get("AOE_TG_COMMAND_PREFIXES")
     os.environ["AOE_TG_COMMAND_PREFIXES"] = "!/"

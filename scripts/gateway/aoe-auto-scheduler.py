@@ -441,8 +441,16 @@ def _build_gateway_args(gw: Any, project_root: Path, team_dir: Path, verbose: bo
 
 def _peek_next(gw: Any, args: argparse.Namespace, chat_id: str, force: bool) -> Tuple[str, str, str]:
     state = gw.load_manager_state(args.manager_state_file, args.project_root, args.team_dir)
+    recovery_grace_until = ""
     try:
-        return gw._drain_peek_next_todo(state, chat_id, force=force)
+        auto_state_path = Path(str(getattr(args, "team_dir", "."))).expanduser().resolve() / "auto_scheduler.json"
+        auto_state = _load_json(auto_state_path)
+        if bool(auto_state.get("enabled", False)):
+            recovery_grace_until = str(auto_state.get("recovery_grace_until", "")).strip()
+    except Exception:
+        recovery_grace_until = ""
+    try:
+        return gw._drain_peek_next_todo(state, chat_id, force=force, recovery_grace_until=recovery_grace_until)
     except Exception:
         return "", "", "peek_error"
 

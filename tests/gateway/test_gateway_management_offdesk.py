@@ -2400,6 +2400,7 @@ def test_auto_recover_reenables_scheduler_and_records_override_history(tmp_path:
     assert auto_state["enabled"] is True
     assert auto_state["command"] == "next"
     assert auto_state["recovered_at"] == "2026-03-14T03:31:00+09:00"
+    assert str(auto_state.get("recovery_grace_until", "")).strip()
     history = provider_state.get("override_history")
     assert isinstance(history, list) and history
     assert history[-1]["action"] == "/auto recover"
@@ -2407,6 +2408,7 @@ def test_auto_recover_reenables_scheduler_and_records_override_history(tmp_path:
     assert sent
     assert "auto scheduler recovered" in sent[-1][0]
     assert "- resume_target: next" in sent[-1][0]
+    assert "- recovery_grace_until:" in sent[-1][0]
 
 
 def test_offdesk_review_clean_keyboard_includes_auto_recover_when_available(tmp_path: Path) -> None:
