@@ -645,7 +645,7 @@ def _handle_offdesk_command(
                 "\n".join(lines).strip(),
                 context="offdesk-review clean",
                 with_menu=True,
-                reply_markup=offdesk_review_reply_markup([], True),
+                reply_markup=offdesk_review_reply_markup([], clean=True),
             )
             return True
 
@@ -723,7 +723,11 @@ def _handle_offdesk_command(
             "\n".join(lines).strip(),
             context="offdesk-review",
             with_menu=True,
-            reply_markup=offdesk_review_reply_markup(flagged, False),
+            reply_markup=offdesk_review_reply_markup(
+                flagged,
+                clean=False,
+                capacity_operator_action=str(capacity_policy.get("operator_action", "")).strip() if capacity_policy else "",
+            ),
         )
         return True
 

@@ -894,7 +894,12 @@ def sort_offdesk_reports(reports: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     )
 
 
-def offdesk_review_reply_markup(flagged: List[Dict[str, Any]], *, clean: bool = False) -> Dict[str, Any]:
+def offdesk_review_reply_markup(
+    flagged: List[Dict[str, Any]],
+    *,
+    clean: bool = False,
+    capacity_operator_action: str = "",
+) -> Dict[str, Any]:
     keyboard: List[List[Dict[str, str]]] = []
     if clean:
         keyboard.extend(
@@ -909,6 +914,13 @@ def offdesk_review_reply_markup(flagged: List[Dict[str, Any]], *, clean: bool = 
             "one_time_keyboard": False,
             "input_field_placeholder": "예: /offdesk on",
         }
+
+    override_action = str(capacity_operator_action or "").strip()
+    if override_action:
+        row = [{"text": override_action}]
+        if override_action != "/auto status":
+            row.append({"text": "/auto status"})
+        keyboard.append(row[:3])
 
     for row in flagged[:3]:
         alias = str(row.get("alias", "")).strip() or "-"

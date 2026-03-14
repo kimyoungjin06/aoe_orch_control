@@ -142,8 +142,17 @@ def _sort_offdesk_reports(reports: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     return offdesk_flow_mod.sort_offdesk_reports(reports)
 
 
-def _offdesk_review_reply_markup(flagged: List[Dict[str, Any]], *, clean: bool = False) -> Dict[str, Any]:
-    return offdesk_flow_mod.offdesk_review_reply_markup(flagged, clean=clean)
+def _offdesk_review_reply_markup(
+    flagged: List[Dict[str, Any]],
+    *,
+    clean: bool = False,
+    capacity_operator_action: str = "",
+) -> Dict[str, Any]:
+    return offdesk_flow_mod.offdesk_review_reply_markup(
+        flagged,
+        clean=clean,
+        capacity_operator_action=capacity_operator_action,
+    )
 
 
 def _offdesk_prepare_reply_markup(
@@ -622,7 +631,11 @@ def handle_management_command(
             offdesk_prepare_targets=_offdesk_prepare_targets,
             offdesk_prepare_project_report=_offdesk_prepare_project_report,
             sort_offdesk_reports=_sort_offdesk_reports,
-            offdesk_review_reply_markup=lambda flagged, clean=False: _offdesk_review_reply_markup(flagged, clean=clean),
+            offdesk_review_reply_markup=lambda flagged, clean=False, capacity_operator_action="": _offdesk_review_reply_markup(
+                flagged,
+                clean=clean,
+                capacity_operator_action=capacity_operator_action,
+            ),
             offdesk_prepare_reply_markup=lambda reports, blocked_count=0, clean=False: _offdesk_prepare_reply_markup(
                 reports, blocked_count=blocked_count, clean=clean
             ),

@@ -179,8 +179,8 @@ def _management_control_kwargs(
         sort_offdesk_reports=mgmt_handlers._sort_offdesk_reports,
         offdesk_prepare_targets=mgmt_handlers._offdesk_prepare_targets,
         offdesk_prepare_project_report=mgmt_handlers._offdesk_prepare_project_report,
-        offdesk_review_reply_markup=lambda flagged, clean=False: mgmt_handlers._offdesk_review_reply_markup(
-            flagged, clean=clean
+        offdesk_review_reply_markup=lambda flagged, clean=False, capacity_operator_action="": mgmt_handlers._offdesk_review_reply_markup(
+            flagged, clean=clean, capacity_operator_action=capacity_operator_action
         ),
         offdesk_prepare_reply_markup=lambda reports, blocked_count=0, clean=False: mgmt_handlers._offdesk_prepare_reply_markup(
             reports, blocked_count=blocked_count, clean=clean
@@ -2715,6 +2715,59 @@ def test_offdesk_review_surfaces_provider_capacity_for_rate_limited_task(tmp_pat
     assert "do: /task T-001, /auto status" in body
     buttons = _button_texts(markup)
     assert "/task T-001" in buttons
+    assert "/auto status" in buttons
+
+
+def test_offdesk_review_promotes_auto_off_when_capacity_policy_is_critical(tmp_path: Path) -> None:
+    state = gw.default_manager_state(tmp_path, tmp_path / ".aoe-team")
+
+    for key, alias in [("p1", "O1"), ("p2", "O2")]:
+        project_root = tmp_path / key
+        team_dir = project_root / ".aoe-team"
+        team_dir.mkdir(parents=True, exist_ok=True)
+        (project_root / "TODO.md").write_text("# TODO\n", encoding="utf-8")
+        (team_dir / "AOE_TODO.md").write_text(f"@include {project_root / 'TODO.md'}\n", encoding="utf-8")
+        state["projects"][key] = {
+            "name": key,
+            "display_name": key.upper(),
+            "project_alias": alias,
+            "project_root": str(project_root),
+            "team_dir": str(team_dir),
+            "runtime_ready": True,
+            "todos": [{"id": "TODO-001", "summary": "resume task", "priority": "P1", "status": "open"}],
+            "tasks": {
+                f"req-{key}": {
+                    "request_id": f"req-{key}",
+                    "label": f"T-{alias[-1]}01",
+                    "short_id": f"T-{alias[-1]}01",
+                    "status": "running",
+                    "roles": ["Codex-Writer", "Codex-Reviewer"],
+                    "rate_limit": {
+                        "mode": "blocked",
+                        "limited_providers": ["codex", "claude"],
+                        "retry_after_sec": 180,
+                        "retry_at": "2026-03-14T01:23:00+09:00",
+                    },
+                    "result": {
+                        "degraded_by": ["claude_rate_limit->codex"],
+                    },
+                    "updated_at": "2026-03-14T01:20:00+0900",
+                }
+            },
+        }
+
+    body, markup = _call_management_status_with_markup(
+        tmp_path=tmp_path,
+        manager_state=state,
+        cmd="offdesk",
+        rest="review all",
+    )
+
+    assert "- provider_capacity: tasks=2 projects=2 providers=claude=2, codex=2" in body
+    assert "- capacity_policy: critical | both primary providers are blocked across multiple tasks/projects" in body
+    assert "- capacity_operator_action: /auto off" in body
+    buttons = _button_texts(markup)
+    assert "/auto off" in buttons
     assert "/auto status" in buttons
 
 
