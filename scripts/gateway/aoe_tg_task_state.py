@@ -1070,6 +1070,7 @@ def summarize_task_monitor(
         phase1_current_provider = str(task.get("phase1_current_provider", "")).strip()
         phase1_current_planner = str(task.get("phase1_current_planner", "")).strip()
         phase1_current_critic = str(task.get("phase1_current_critic", "")).strip()
+        phase1_role_preset = str(task.get("phase1_role_preset", "")).strip()
         if tf_phase == "planning" and (phase1_mode or phase1_rounds or phase1_providers):
             phase1_token = "phase1 {mode} {rounds}".format(
                 mode=phase1_mode or "single",
@@ -1087,6 +1088,8 @@ def summarize_task_monitor(
                 phase1_parts.append("now=" + current_actor)
             if phase1_current_phase:
                 phase1_parts.append("step=" + phase1_current_phase)
+            if phase1_role_preset:
+                phase1_parts.append("preset=" + phase1_role_preset)
         if exec_summary:
             lane_parts.append("exec " + ",".join(f"{key}={value}" for key, value in sorted(exec_summary.items())))
         if review_summary:

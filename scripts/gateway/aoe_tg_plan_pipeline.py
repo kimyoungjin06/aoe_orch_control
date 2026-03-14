@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from aoe_tg_orch_contract import derive_tf_phase, derive_tf_phase_reason, normalize_tf_phase
+from aoe_tg_orch_roles import classify_dispatch_role_preset, normalize_role_preset
 from aoe_tg_schema import default_plan_critic_payload, normalize_plan_critic_payload, plan_critic_primary_issue
 
 
@@ -32,6 +33,8 @@ class PlanMeta:
     phase1_mode: str = ""
     phase1_rounds: int = 0
     phase1_providers: List[str] = field(default_factory=list)
+    phase1_role_preset: str = ""
+    phase2_team_preset: str = ""
     rate_limit: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -176,6 +179,8 @@ def compute_dispatch_plan(
     phase1_mode = ""
     phase1_rounds = 0
     phase1_providers: List[str] = []
+    role_preset = classify_dispatch_role_preset(prompt, selected_roles=selected_roles)
+    team_preset = normalize_role_preset(role_preset)
     rate_limit: Dict[str, Any] = {}
 
     if dispatch_mode and (planning_enabled or reuse_source_plan) and not args.dry_run:
@@ -189,6 +194,11 @@ def compute_dispatch_plan(
                     user_prompt=prompt,
                     workers=available_worker_roles(available_roles),
                     max_subtasks=max(1, int(args.plan_max_subtasks)),
+                    meta_overrides={
+                        "worker_roles": list(selected_roles or []),
+                        "phase1_role_preset": role_preset,
+                        "phase2_team_preset": team_preset,
+                    },
                 )
                 raw_critic = run_source_task.get("plan_critic")
                 plan_critic = normalize_plan_critic_payload(raw_critic, max_items=8)
@@ -199,6 +209,8 @@ def compute_dispatch_plan(
                         p_args,
                         prompt,
                         available_roles,
+                        selected_roles=selected_roles,
+                        role_preset=role_preset,
                         report_progress=report_progress,
                     )
                     plan_data = ensemble.get("plan_data")
@@ -221,6 +233,14 @@ def compute_dispatch_plan(
                         available_roles=available_roles,
                         max_subtasks=max(1, int(args.plan_max_subtasks)),
                     )
+                    if isinstance(plan_data, dict):
+                        meta = plan_data.get("meta") if isinstance(plan_data.get("meta"), dict) else {}
+                        meta = dict(meta)
+                        if selected_roles:
+                            meta["worker_roles"] = list(selected_roles)
+                        meta["phase1_role_preset"] = role_preset
+                        meta["phase2_team_preset"] = team_preset
+                        plan_data["meta"] = meta
                     if callable(report_progress):
                         report_progress(phase="critic", detail="reviewing generated plan")
                     plan_critic = critique_task_execution_plan(p_args, prompt, plan_data)
@@ -301,6 +321,8 @@ def compute_dispatch_plan(
         phase1_mode=phase1_mode,
         phase1_rounds=phase1_rounds,
         phase1_providers=phase1_providers,
+        phase1_role_preset=role_preset,
+        phase2_team_preset=team_preset,
         rate_limit=rate_limit,
     )
 
@@ -371,6 +393,8 @@ def apply_plan_and_lineage(
     phase1_mode: str = "",
     phase1_rounds: int = 0,
     phase1_providers: Optional[List[str]] = None,
+    phase1_role_preset: str = "",
+    phase2_team_preset: str = "",
     critic_has_blockers: Callable[[Dict[str, Any]], bool],
     lifecycle_set_stage: Callable[..., None],
     run_control_mode: str,
@@ -383,6 +407,9 @@ def apply_plan_and_lineage(
         return
 
     if isinstance(plan_data, dict):
+        meta = plan_data.get("meta") if isinstance(plan_data.get("meta"), dict) else {}
+        role_preset = normalize_role_preset(meta.get("phase1_role_preset") or phase1_role_preset)
+        team_preset = normalize_role_preset(meta.get("phase2_team_preset") or phase2_team_preset or role_preset)
         task["plan"] = plan_data
         task["plan_critic"] = plan_critic
         task["plan_roles"] = plan_roles
@@ -393,6 +420,8 @@ def apply_plan_and_lineage(
             task["phase1_rounds"] = int(phase1_rounds)
         if phase1_providers:
             task["phase1_providers"] = [str(item).strip() for item in phase1_providers if str(item).strip()]
+        task["phase1_role_preset"] = role_preset
+        task["phase2_team_preset"] = team_preset
         task["plan_gate_passed"] = not critic_has_blockers(plan_critic)
         task["plan_gate_reason"] = plan_critic_primary_issue(plan_critic, limit=240)
         lifecycle_set_stage(

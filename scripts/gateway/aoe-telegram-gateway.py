@@ -1553,6 +1553,16 @@ def choose_auto_dispatch_roles(
     )
 
 
+def classify_dispatch_role_preset(
+    prompt: str,
+    selected_roles: Optional[List[str]] = None,
+) -> str:
+    return orch_roles_mod.classify_dispatch_role_preset(
+        prompt,
+        selected_roles=selected_roles,
+    )
+
+
 def run_codex_exec(args: argparse.Namespace, prompt: str, timeout_sec: int = 480) -> str:
     fd, out_path_raw = tempfile.mkstemp(prefix="aoe_tg_", suffix=".txt")
     os.close(fd)
@@ -1760,12 +1770,14 @@ def normalize_task_plan_payload(
     user_prompt: str,
     workers: List[str],
     max_subtasks: int,
+    meta_overrides: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     return normalize_task_plan_schema(
         parsed,
         user_prompt=user_prompt,
         workers=workers,
         max_subtasks=max_subtasks,
+        meta_overrides=meta_overrides,
     )
 
 
@@ -2014,6 +2026,8 @@ def run_phase1_ensemble_planning(
     args: argparse.Namespace,
     user_prompt: str,
     available_roles: List[str],
+    selected_roles: Optional[List[str]] = None,
+    role_preset: str = "",
     report_progress: Optional[Callable[..., None]] = None,
 ) -> Dict[str, Any]:
     providers_csv = str(getattr(args, "plan_phase1_providers", "codex,claude") or "codex,claude")
@@ -2078,6 +2092,8 @@ def run_phase1_ensemble_planning(
         args=args,
         user_prompt=user_prompt,
         available_roles=available_roles,
+        selected_roles=selected_roles,
+        role_preset=role_preset,
         normalize_task_plan_payload=normalize_task_plan_payload,
         parse_json_object_from_text=parse_json_object_from_text,
         run_provider_execs=available_execs,

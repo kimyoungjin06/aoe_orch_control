@@ -199,6 +199,8 @@ def summarize_task_lifecycle(project_name: str, task: Dict[str, Any]) -> str:
     phase1_rounds = max(0, int(task.get("phase1_rounds", 0) or 0))
     phase1_providers = dedupe_roles(task.get("phase1_providers") or [])
     phase1_candidate_roles = dedupe_roles(task.get("phase1_candidate_roles") or [])
+    phase1_role_preset = str(task.get("phase1_role_preset", "")).strip()
+    phase2_team_preset = str(task.get("phase2_team_preset", "")).strip()
     phase1_current_phase = str(task.get("phase1_current_phase", "")).strip()
     phase1_current_round = max(0, int(task.get("phase1_current_round", 0) or 0))
     phase1_current_total = max(0, int(task.get("phase1_current_total_rounds", 0) or 0))
@@ -228,6 +230,13 @@ def summarize_task_lifecycle(project_name: str, task: Dict[str, Any]) -> str:
         lines.append("phase1_progress: " + " ".join(progress_parts))
     if phase1_candidate_roles:
         lines.append("phase1_candidate_roles: " + ", ".join(phase1_candidate_roles))
+    if phase1_role_preset or phase2_team_preset:
+        lines.append(
+            "team_preset: phase1={phase1} phase2={phase2}".format(
+                phase1=phase1_role_preset or "-",
+                phase2=phase2_team_preset or phase1_role_preset or "-",
+            )
+        )
     rate_limit = task.get("rate_limit") if isinstance(task.get("rate_limit"), dict) else {}
     degraded_by = [str(x).strip() for x in ((task.get("result") or {}).get("degraded_by") or []) if str(x).strip()] if isinstance(task.get("result"), dict) else []
     if rate_limit:
