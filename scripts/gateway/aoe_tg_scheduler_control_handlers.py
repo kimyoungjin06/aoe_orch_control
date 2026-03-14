@@ -172,6 +172,33 @@ def _provider_capacity_policy(summary: Dict[str, Any]) -> Dict[str, str]:
     }
 
 
+def _provider_capacity_memory_lines(memory_state: Dict[str, Any]) -> List[str]:
+    if not isinstance(memory_state, dict):
+        return []
+    lines: List[str] = []
+    updated_at = str(memory_state.get("updated_at", "")).strip()
+    providers = memory_state.get("providers") if isinstance(memory_state.get("providers"), dict) else {}
+    history = memory_state.get("override_history") if isinstance(memory_state.get("override_history"), list) else []
+    if updated_at:
+        lines.append(f"- capacity_memory_updated_at: {updated_at}")
+    if providers:
+        parts: List[str] = []
+        for name in sorted(str(key).strip().lower() for key in providers.keys() if str(key).strip()):
+            row = providers.get(name) if isinstance(providers.get(name), dict) else {}
+            blocked_count = int(row.get("blocked_count", 0) or 0)
+            level = str(row.get("cooldown_level", "")).strip() or "cooldown"
+            parts.append(f"{name}(blocked={blocked_count} level={level})")
+        if parts:
+            lines.append(f"- provider_memory: {', '.join(parts)}")
+    if history:
+        last = history[-1] if isinstance(history[-1], dict) else {}
+        action = str(last.get("action", "")).strip() or "-"
+        at = str(last.get("at", "")).strip() or "-"
+        level = str(last.get("policy_level", "")).strip() or "-"
+        lines.append(f"- capacity_override_last: {action} @ {at} ({level})")
+    return lines
+
+
 def _handle_focus_command(
     *,
     args: Any,
@@ -438,10 +465,13 @@ def _handle_offdesk_command(
     offdesk_prepare_reply_markup: Callable[[List[Dict[str, Any]], int, bool], Dict[str, Any]],
     auto_state_path: Callable[[Any], Any],
     offdesk_state_path: Callable[[Any], Any],
+    provider_capacity_state_path: Callable[[Any], Any],
     load_auto_state: Callable[[Any], Dict[str, Any]],
     save_auto_state: Callable[[Any, Dict[str, Any]], None],
     load_offdesk_state: Callable[[Any], Dict[str, Any]],
     save_offdesk_state: Callable[[Any, Dict[str, Any]], None],
+    load_provider_capacity_state: Callable[[Any], Dict[str, Any]],
+    save_provider_capacity_state: Callable[[Any, Dict[str, Any]], None],
     tmux_auto_command: Callable[[Any, str], tuple[bool, str]],
     now_iso: Callable[[], str],
     default_offdesk_command: str,
@@ -913,6 +943,9 @@ def _handle_auto_command(
     auto_state_path: Callable[[Any], Any],
     load_auto_state: Callable[[Any], Dict[str, Any]],
     save_auto_state: Callable[[Any, Dict[str, Any]], None],
+    provider_capacity_state_path: Callable[[Any], Any],
+    load_provider_capacity_state: Callable[[Any], Dict[str, Any]],
+    save_provider_capacity_state: Callable[[Any, Dict[str, Any]], None],
     scheduler_session_name: Callable[[], str],
     tmux_has_session: Callable[[str], bool],
     tmux_auto_command: Callable[[Any, str], tuple[bool, str]],
@@ -1001,6 +1034,8 @@ def _handle_auto_command(
 
     path = auto_state_path(args)
     current = load_auto_state(path)
+    provider_state_path = provider_capacity_state_path(args)
+    provider_state = load_provider_capacity_state(provider_state_path)
     enabled = bool(current.get("enabled", False))
     session = scheduler_session_name()
     sess_up = tmux_has_session(session)
@@ -1074,6 +1109,7 @@ def _handle_auto_command(
                 )
             )
             lines.append(f"- capacity_operator_action: {capacity_policy.get('operator_action', '-')}")
+        lines.extend(_provider_capacity_memory_lines(provider_state))
         if next_retry_target:
             lines.append(
                 "- next_retry_target: {alias} {task_ref} providers={providers} degraded={degraded}".format(
@@ -1132,11 +1168,25 @@ def _handle_auto_command(
         return True
 
     if sub in {"off", "stop"}:
+        capacity_summary = _rate_limited_capacity_summary(manager_state)
+        capacity_policy = _provider_capacity_policy(capacity_summary)
+        override_history = provider_state.get("override_history") if isinstance(provider_state.get("override_history"), list) else []
+        override_entry = {
+            "at": now_iso(),
+            "action": "/auto off",
+            "source": "operator",
+            "policy_level": str(capacity_policy.get("level", "")).strip() or "manual",
+            "policy_reason": str(capacity_policy.get("reason", "")).strip(),
+            "providers": str(capacity_summary.get("provider_summary", "")).strip(),
+        }
+        override_history = [row for row in override_history if isinstance(row, dict)][-9:] + [override_entry]
+        provider_state["override_history"] = override_history
         current["enabled"] = False
         current["chat_id"] = str(current.get("chat_id", "")).strip() or str(chat_id)
         current["stopped_at"] = now_iso()
         if not args.dry_run:
             save_auto_state(path, current)
+            save_provider_capacity_state(provider_state_path, provider_state)
         if args.dry_run:
             ok, out = True, "dry-run: skipped tmux auto off"
         else:
@@ -1274,10 +1324,13 @@ def handle_scheduler_control_command(
     offdesk_prepare_reply_markup: Callable[[List[Dict[str, Any]], int, bool], Dict[str, Any]],
     auto_state_path: Callable[[Any], Any],
     offdesk_state_path: Callable[[Any], Any],
+    provider_capacity_state_path: Callable[[Any], Any],
     load_auto_state: Callable[[Any], Dict[str, Any]],
     save_auto_state: Callable[[Any, Dict[str, Any]], None],
     load_offdesk_state: Callable[[Any], Dict[str, Any]],
     save_offdesk_state: Callable[[Any, Dict[str, Any]], None],
+    load_provider_capacity_state: Callable[[Any], Dict[str, Any]],
+    save_provider_capacity_state: Callable[[Any, Dict[str, Any]], None],
     scheduler_session_name: Callable[[], str],
     tmux_has_session: Callable[[str], bool],
     tmux_auto_command: Callable[[Any, str], tuple[bool, str]],
@@ -1365,10 +1418,13 @@ def handle_scheduler_control_command(
             offdesk_prepare_reply_markup=offdesk_prepare_reply_markup,
             auto_state_path=auto_state_path,
             offdesk_state_path=offdesk_state_path,
+            provider_capacity_state_path=provider_capacity_state_path,
             load_auto_state=load_auto_state,
             save_auto_state=save_auto_state,
             load_offdesk_state=load_offdesk_state,
             save_offdesk_state=save_offdesk_state,
+            load_provider_capacity_state=load_provider_capacity_state,
+            save_provider_capacity_state=save_provider_capacity_state,
             tmux_auto_command=tmux_auto_command,
             now_iso=now_iso,
             default_offdesk_command=default_offdesk_command,
@@ -1400,6 +1456,9 @@ def handle_scheduler_control_command(
             auto_state_path=auto_state_path,
             load_auto_state=load_auto_state,
             save_auto_state=save_auto_state,
+            provider_capacity_state_path=provider_capacity_state_path,
+            load_provider_capacity_state=load_provider_capacity_state,
+            save_provider_capacity_state=save_provider_capacity_state,
             scheduler_session_name=scheduler_session_name,
             tmux_has_session=tmux_has_session,
             tmux_auto_command=tmux_auto_command,

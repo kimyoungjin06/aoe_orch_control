@@ -740,13 +740,17 @@ def test_offdesk_flow_module_matches_management_prefetch_and_state_helpers(tmp_p
         assert offdesk_flow.status_report_level(["status", "long"], "short") == mgmt_handlers._status_report_level(["status", "long"], "short")
         assert offdesk_flow.auto_state_path(args, filename=mgmt_handlers.AUTO_STATE_FILENAME) == mgmt_handlers._auto_state_path(args)
         assert offdesk_flow.offdesk_state_path(args, filename=mgmt_handlers.OFFDESK_STATE_FILENAME) == mgmt_handlers._offdesk_state_path(args)
+        assert offdesk_flow.provider_capacity_state_path(args, filename=mgmt_handlers.PROVIDER_CAPACITY_STATE_FILENAME) == mgmt_handlers._provider_capacity_state_path(args)
 
         state_a = tmp_path / "a.json"
         state_b = tmp_path / "b.json"
+        state_c = tmp_path / "c.json"
         payload = {"enabled": True, "chat_id": "939062873"}
         mgmt_handlers._save_auto_state(state_a, payload)
         offdesk_flow.save_auto_state(state_b, payload)
         assert mgmt_handlers._load_auto_state(state_a) == offdesk_flow.load_auto_state(state_b)
+        mgmt_handlers._save_provider_capacity_state(state_c, payload)
+        assert mgmt_handlers._load_provider_capacity_state(state_c) == offdesk_flow.load_provider_capacity_state(state_c)
     finally:
         if previous is None:
             os.environ.pop("AOE_TG_COMMAND_PREFIXES", None)

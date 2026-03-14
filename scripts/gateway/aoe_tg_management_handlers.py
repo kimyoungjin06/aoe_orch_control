@@ -25,6 +25,7 @@ from aoe_tg_project_state import (
 
 AUTO_STATE_FILENAME = "auto_scheduler.json"
 OFFDESK_STATE_FILENAME = "offdesk_state.json"
+PROVIDER_CAPACITY_STATE_FILENAME = "provider_capacity.json"
 DEFAULT_AUTO_INTERVAL_SEC = 2
 DEFAULT_AUTO_IDLE_SEC = 20
 DEFAULT_AUTO_MAX_FAILURES = 3
@@ -323,6 +324,10 @@ def _offdesk_state_path(args: Any) -> Path:
     return offdesk_flow_mod.offdesk_state_path(args, filename=OFFDESK_STATE_FILENAME)
 
 
+def _provider_capacity_state_path(args: Any) -> Path:
+    return offdesk_flow_mod.provider_capacity_state_path(args, filename=PROVIDER_CAPACITY_STATE_FILENAME)
+
+
 def _load_auto_state(path: Path) -> Dict[str, Any]:
     return offdesk_flow_mod.load_auto_state(path)
 
@@ -337,6 +342,14 @@ def _load_offdesk_state(path: Path) -> Dict[str, Any]:
 
 def _save_offdesk_state(path: Path, state: Dict[str, Any]) -> None:
     return offdesk_flow_mod.save_offdesk_state(path, state)
+
+
+def _load_provider_capacity_state(path: Path) -> Dict[str, Any]:
+    return offdesk_flow_mod.load_provider_capacity_state(path)
+
+
+def _save_provider_capacity_state(path: Path, state: Dict[str, Any]) -> None:
+    return offdesk_flow_mod.save_provider_capacity_state(path, state)
 
 
 def _scheduler_session_name() -> str:
@@ -641,10 +654,13 @@ def handle_management_command(
             ),
             auto_state_path=_auto_state_path,
             offdesk_state_path=_offdesk_state_path,
+            provider_capacity_state_path=_provider_capacity_state_path,
             load_auto_state=_load_auto_state,
             save_auto_state=_save_auto_state,
             load_offdesk_state=_load_offdesk_state,
             save_offdesk_state=_save_offdesk_state,
+            load_provider_capacity_state=_load_provider_capacity_state,
+            save_provider_capacity_state=_save_provider_capacity_state,
             scheduler_session_name=_scheduler_session_name,
             tmux_has_session=_tmux_has_session,
             tmux_auto_command=_tmux_auto_command,
