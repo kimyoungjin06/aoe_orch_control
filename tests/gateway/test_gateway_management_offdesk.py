@@ -1074,6 +1074,12 @@ def test_auto_status_shows_next_retry_at_when_rate_limited_work_is_waiting(tmp_p
         json.dumps(
             {
                 "updated_at": "2026-03-14T03:00:30+09:00",
+                "recovery_repeat_count": 2,
+                "recovery_repeat_last_at": "2026-03-14T03:29:00+09:00",
+                "recovery_repeat_history": [
+                    {"at": "2026-03-14T03:11:00+09:00", "summary": "O2", "aliases": ["O2"]},
+                    {"at": "2026-03-14T03:29:00+09:00", "summary": "O1", "aliases": ["O1"]},
+                ],
                 "providers": {
                     "claude": {
                         "blocked_count": 2,
@@ -1146,6 +1152,7 @@ def test_auto_status_shows_next_retry_at_when_rate_limited_work_is_waiting(tmp_p
     assert "- provider_capacity: tasks=2 projects=2 providers=claude=2, codex=1" in text
     assert "- capacity_policy: critical | both primary providers are blocked across multiple tasks/projects" in text
     assert "- capacity_operator_action: /auto off" in text
+    assert "- capacity_recovery_repeat_summary: count=2 latest=O1 last=2026-03-14T03:29:00+09:00" in text
     assert "- capacity_memory_updated_at: 2026-03-14T03:00:30+09:00" in text
     assert "- provider_memory: claude(blocked=2 projects=2 level=critical wait=medium retry=2026-03-14T03:10:00+09:00), codex(blocked=1 projects=1 level=elevated wait=medium retry=2026-03-14T03:10:00+09:00)" in text
     assert "- capacity_override_last: /auto off @ 2026-03-14T02:59:00+09:00 (critical)" in text
@@ -3467,6 +3474,12 @@ def test_offdesk_review_surfaces_provider_capacity_for_rate_limited_task(tmp_pat
         json.dumps(
             {
                 "updated_at": "2026-03-14T01:21:00+09:00",
+                "recovery_repeat_count": 2,
+                "recovery_repeat_last_at": "2026-03-14T01:19:00+09:00",
+                "recovery_repeat_history": [
+                    {"at": "2026-03-14T01:10:00+09:00", "summary": "O2", "aliases": ["O2"]},
+                    {"at": "2026-03-14T01:19:00+09:00", "summary": "O1", "aliases": ["O1"]},
+                ],
                 "providers": {
                     "claude": {
                         "blocked_count": 1,
@@ -3539,8 +3552,9 @@ def test_offdesk_review_surfaces_provider_capacity_for_rate_limited_task(tmp_pat
 
     assert "offdesk review" in body
     assert "- provider_capacity: tasks=1 projects=1 providers=claude=1, codex=1" in body
-    assert "- capacity_policy: elevated | both primary providers are blocked" in body
-    assert "- capacity_operator_action: /auto status" in body
+    assert "- capacity_policy: critical | both primary providers are blocked with recent repeat history count=2 latest=O1" in body
+    assert "- capacity_operator_action: /auto off" in body
+    assert "- capacity_recovery_repeat_summary: count=2 latest=O1 last=2026-03-14T01:19:00+09:00" in body
     assert "- capacity_memory_updated_at: 2026-03-14T01:21:00+09:00" in body
     assert "- provider_memory: claude(blocked=1 projects=1 level=cooldown wait=short retry=2026-03-14T01:23:00+09:00), codex(blocked=1 projects=1 level=elevated wait=short retry=2026-03-14T01:23:00+09:00)" in body
     assert "- capacity_override_last: /auto status @ 2026-03-14T01:20:00+09:00 (elevated)" in body
@@ -3551,7 +3565,7 @@ def test_offdesk_review_surfaces_provider_capacity_for_rate_limited_task(tmp_pat
     assert "do: /task T-001, /auto status" in body
     buttons = _button_texts(markup)
     assert "/task T-001" in buttons
-    assert "/auto status" in buttons
+    assert "/auto off" in buttons
 
 
 def test_offdesk_review_promotes_auto_off_when_capacity_policy_is_critical(tmp_path: Path) -> None:

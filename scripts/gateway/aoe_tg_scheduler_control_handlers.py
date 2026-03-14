@@ -212,6 +212,19 @@ def _provider_capacity_repeat_memory(memory_state: Dict[str, Any]) -> Dict[str, 
     }
 
 
+def _provider_capacity_repeat_summary_line(memory_state: Dict[str, Any]) -> str:
+    repeat_memory = _provider_capacity_repeat_memory(memory_state)
+    count = int(repeat_memory.get("count", 0) or 0)
+    if count <= 0:
+        return ""
+    latest = str(repeat_memory.get("latest_summary", "")).strip() or "-"
+    last_at = str(repeat_memory.get("last_at", "")).strip()
+    detail = f"count={count} latest={latest}"
+    if last_at:
+        detail += f" last={last_at}"
+    return f"- capacity_recovery_repeat_summary: {detail}"
+
+
 def _provider_repeat_count_map(memory_state: Dict[str, Any]) -> Dict[str, int]:
     result: Dict[str, int] = {}
     history = memory_state.get("recovery_repeat_history") if isinstance(memory_state, dict) else None
@@ -1015,6 +1028,9 @@ def _handle_offdesk_command(
                     lines.append(f"- capacity_recovery_note: {recovery_target.get('adjusted_reason', '-')}")
             if recovery_grace_until:
                 lines.append(f"- recovery_grace_until: {recovery_grace_until}")
+            repeat_summary_line = _provider_capacity_repeat_summary_line(provider_state)
+            if repeat_summary_line:
+                lines.append(repeat_summary_line)
             lines.extend(_provider_capacity_memory_lines(provider_state))
             send(
                 "\n".join(lines).strip(),
@@ -1076,6 +1092,9 @@ def _handle_offdesk_command(
                 lines.append(f"- capacity_recovery_note: {recovery_target.get('adjusted_reason', '-')}")
         if recovery_grace_until:
             lines.append(f"- recovery_grace_until: {recovery_grace_until}")
+        repeat_summary_line = _provider_capacity_repeat_summary_line(provider_state)
+        if repeat_summary_line:
+            lines.append(repeat_summary_line)
         lines.extend(_provider_capacity_memory_lines(provider_state))
         if not flagged:
             lines.extend(["- status: clean", "", "next:", "- /offdesk on", "- /auto status"])
@@ -1542,6 +1561,9 @@ def _handle_auto_command(
             lines.append(f"- capacity_recovery_target: {recovery_target.get('target', '-')}")
             if recovery_target.get("adjusted_reason"):
                 lines.append(f"- capacity_recovery_note: {recovery_target.get('adjusted_reason', '-')}")
+        repeat_summary_line = _provider_capacity_repeat_summary_line(provider_state)
+        if repeat_summary_line:
+            lines.append(repeat_summary_line)
         lines.extend(_provider_capacity_memory_lines(provider_state))
         if next_retry_target:
             lines.append(
