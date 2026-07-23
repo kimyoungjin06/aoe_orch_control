@@ -335,6 +335,68 @@ def inspect_project_workspace(
     return report
 
 
+def _resolve_inside(project_dir: pathlib.Path, rel: str) -> pathlib.Path | None:
+    """Resolve a relative path and refuse anything that escapes the project."""
+
+    rel = str(rel or "").strip().lstrip("/")
+    try:
+        base = project_dir.resolve()
+        candidate = (project_dir / rel).resolve() if rel else base
+    except OSError:
+        return None
+    if candidate != base and base not in candidate.parents:
+        return None
+    return candidate
+
+
+def list_project_dir(
+    project_dir: pathlib.Path, rel: str, *, max_entries: int = 40
+) -> dict[str, Any]:
+    """Read-only chat tool: entries of one directory inside the project."""
+
+    target = _resolve_inside(project_dir, rel)
+    if target is None or not target.is_dir():
+        return {"status": "not_a_directory", "path": rel}
+    try:
+        children = sorted(target.iterdir(), key=lambda c: (c.is_file(), c.name.lower()))
+    except OSError:
+        return {"status": "unreadable", "path": rel}
+    entries: list[dict[str, Any]] = []
+    truncated = False
+    for child in children:
+        if child.name.startswith(".") or child.name in SKIP_DIR_NAMES:
+            continue
+        if len(entries) >= max_entries:
+            truncated = True
+            break
+        entries.append({"name": child.name, "kind": "dir" if child.is_dir() else "file"})
+    return {"status": "ok", "path": rel, "entries": entries, "truncated": truncated}
+
+
+def read_project_file(
+    project_dir: pathlib.Path, rel: str, *, max_chars: int = 4000
+) -> dict[str, Any]:
+    """Read-only chat tool: bounded head of one text file inside the project.
+
+    Content is handed only to the local chat model as grounding; it is not
+    echoed into adapter results or Telegram messages.
+    """
+
+    target = _resolve_inside(project_dir, rel)
+    if target is None or not target.is_file():
+        return {"status": "not_a_file", "path": rel}
+    try:
+        with target.open("rb") as handle:
+            raw = handle.read(max_chars * 4 + 1)
+    except OSError:
+        return {"status": "unreadable", "path": rel}
+    if b"\x00" in raw[:1024]:
+        return {"status": "binary_file", "path": rel}
+    text = raw.decode("utf-8", errors="replace")
+    truncated = len(raw) > max_chars * 4 or len(text) > max_chars
+    return {"status": "ok", "path": rel, "content": text[:max_chars], "truncated": truncated}
+
+
 def inspection_summary_lines(inspection: dict[str, Any]) -> list[str]:
     """Deterministic short summary of an inspection, for the no-agent fallback."""
 

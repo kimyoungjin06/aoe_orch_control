@@ -7576,7 +7576,7 @@ fn remote_operator_telegram_agent_chat_intent_overrides_planning_keywords() -> R
 
 #[test]
 #[serial]
-fn remote_operator_telegram_inspect_intent_probes_workspace_and_answers() -> Result<()> {
+fn remote_operator_telegram_chat_tools_probe_workspace_and_answer() -> Result<()> {
     let temp = tempdir()?;
     let env_path = temp.path().join("telegram.env");
     write_env_file(&env_path)?;
@@ -7584,7 +7584,10 @@ fn remote_operator_telegram_inspect_intent_probes_workspace_and_answers() -> Res
     let workspace_root = temp.path().join("workspace");
     let project_dir = workspace_root.join("1.2.8.TwinPaper");
     fs::create_dir_all(project_dir.join("modules"))?;
-    fs::write(project_dir.join("PROJECT_STATE.md"), "current state\n")?;
+    fs::write(
+        project_dir.join("PROJECT_STATE.md"),
+        "focus is module two\n",
+    )?;
     fs::write(project_dir.join("README.md"), "TwinPaper\n")?;
     fs::write(
         project_dir.join("modules").join("next.md"),
@@ -7596,29 +7599,30 @@ fn remote_operator_telegram_inspect_intent_probes_workspace_and_answers() -> Res
     let (base_url, server) = spawn_fake_ollama_with_sequence(
         body_dir.clone(),
         vec![
+            // Legacy intent shape must still map to a workspace_overview call.
             json!({
                 "intent": "inspect_project",
-                "delegation_goal": null,
-                "confidence": 0.9,
-                "requires_clarification": false,
-                "clarifying_question": null,
                 "assistant_reply": null,
-                "reason": "Operator asked for the project's local file state.",
-                "non_authorized": ["execution", "approval", "shell"]
+                "reason": "Operator asked for the project's local file state."
             }),
             json!({
-                "intent": "chat",
-                "delegation_goal": null,
+                "action": "tool",
+                "tool": "read_file",
+                "project": "twinpaper",
+                "path": "PROJECT_STATE.md",
+                "reason": "Read the state document surfaced by the overview."
+            }),
+            json!({
+                "action": "answer",
+                "assistant_reply": "PROJECT_STATE.md 기준 현재 초점은 module two입니다.",
                 "confidence": 0.9,
                 "requires_clarification": false,
                 "clarifying_question": null,
-                "assistant_reply": "PROJECT_STATE.md와 README.md가 확인됩니다. git 저장소는 아닙니다.",
-                "reason": "Answered from local_inspection.",
-                "non_authorized": ["execution", "approval", "shell"]
+                "reason": "Answered from tool_results."
             }),
         ],
     )?;
-    let out = temp.path().join("inspect_result.json");
+    let out = temp.path().join("tools_result.json");
 
     let output = remote_operator_command(temp.path())
         .arg("--dry-run")
@@ -7649,19 +7653,120 @@ fn remote_operator_telegram_inspect_intent_probes_workspace_and_answers() -> Res
     );
     let result: Value = serde_json::from_slice(&fs::read(&out)?)?;
     assert_eq!(result["status"], "rendered");
-    assert_eq!(result["local_inspection"]["status"], "ok");
-    assert_eq!(result["local_inspection"]["project_key"], "twinpaper");
     assert_eq!(result["project_focus"]["key"], "twinpaper");
+    assert_eq!(result["chat_tools_used"][0]["tool"], "workspace_overview");
+    assert_eq!(result["chat_tools_used"][0]["status"], "ok");
+    assert_eq!(result["chat_tools_used"][1]["tool"], "read_file");
+    assert_eq!(result["chat_tools_used"][1]["status"], "ok");
     let preview = result["message_preview"].as_str().expect("message preview");
-    assert!(preview.contains("PROJECT_STATE.md와 README.md가 확인됩니다."));
+    assert!(preview.contains("현재 초점은 module two입니다."));
 
-    // The second agent call must carry the probe results as ground truth.
+    // Round 2 sees the overview results; round 3 sees the file content.
     let second_request: Value =
         serde_json::from_slice(&fs::read(body_dir.join("generate_1.json"))?)?;
     let second_prompt = second_request["prompt"].as_str().expect("second prompt");
-    assert!(second_prompt.contains("local_inspection"));
+    assert!(second_prompt.contains("tool_results"));
     assert!(second_prompt.contains("PROJECT_STATE.md"));
     assert!(second_prompt.contains("modules/next.md"));
+    let third_request: Value =
+        serde_json::from_slice(&fs::read(body_dir.join("generate_2.json"))?)?;
+    let third_prompt = third_request["prompt"].as_str().expect("third prompt");
+    assert!(third_prompt.contains("focus is module two"));
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_chat_tools_then_propose_plan_offers_capture() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    write_project_registry(temp.path())?;
+    let workspace_root = temp.path().join("workspace");
+    let project_dir = workspace_root.join("1.2.8.TwinPaper");
+    fs::create_dir_all(&project_dir)?;
+    fs::write(project_dir.join("NEXT_ACTIONS.md"), "P1: rerun baseline\n")?;
+
+    let body_dir = temp.path().join("agent_requests");
+    fs::create_dir_all(&body_dir)?;
+    let (base_url, server) = spawn_fake_ollama_with_sequence(
+        body_dir.clone(),
+        vec![
+            json!({
+                "action": "tool",
+                "tool": "read_file",
+                "project": "twinpaper",
+                "path": "NEXT_ACTIONS.md",
+                "reason": "Diagnose before planning."
+            }),
+            json!({
+                "action": "propose_plan",
+                "delegation_goal": "P1 기준 재실행을 반영해 TwinPaper 실행 계획을 새로 수립한다",
+                "assistant_reply": "진단 결과를 반영한 계획을 제안합니다.",
+                "confidence": 0.9,
+                "reason": "Operator asked to diagnose and replan."
+            }),
+        ],
+    )?;
+
+    let update_path = temp.path().join("diagnose_update.json");
+    write_text_update(
+        &update_path,
+        740,
+        920,
+        "twinpaper의 현재 프로젝트 상태를 진단하고 새로 계획을 세워봐",
+    )?;
+    let state_path = temp.path().join("telegram_state.json");
+    let out = temp.path().join("diagnose_result.json");
+
+    let output = remote_operator_command(temp.path())
+        .arg("--dry-run")
+        .arg("--once")
+        .arg("--replay-update-file")
+        .arg(&update_path)
+        .arg("--forager-bin")
+        .arg(env!("CARGO_BIN_EXE_forager"))
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--state-file")
+        .arg(&state_path)
+        .arg("--feedback-file")
+        .arg(temp.path().join("feedback.jsonl"))
+        .arg("--feedback-ingest-dir")
+        .arg(temp.path().join("feedback_ingest"))
+        .arg("--workspace-root")
+        .arg(&workspace_root)
+        .arg("--agent-intent-mode")
+        .arg("required")
+        .arg("--agent-base-url")
+        .arg(&base_url)
+        .arg("--agent-model")
+        .arg("qwen3-coder-next:latest")
+        .arg("--out")
+        .arg(&out)
+        .output()?;
+
+    server.join().expect("fake ollama server panicked")?;
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&fs::read(&out)?)?;
+    assert_eq!(result["status"], "rendered");
+    assert_eq!(result["chat_tools_used"][0]["tool"], "read_file");
+    assert_eq!(result["plan_capture_offered"], true);
+    let preview = result["message_preview"].as_str().expect("message preview");
+    assert!(preview.contains("<b>계획 후보로 등록할까요?</b>"));
+    // The card carries the diagnosis-informed goal.
+    assert!(preview.contains("P1 기준 재실행을 반영해"));
+    let state: Value = serde_json::from_slice(&fs::read(&state_path)?)?;
+    let chat_hash = result["target_chat_id_hash"].as_str().expect("chat hash");
+    assert_eq!(
+        state["pending_dispatch_confirmations_by_chat"][chat_hash]["kind"],
+        "plan_capture"
+    );
     Ok(())
 }
 

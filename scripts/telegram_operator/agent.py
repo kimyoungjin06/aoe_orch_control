@@ -203,6 +203,8 @@ def build_agent_chat_prompt(
     feedback_context: dict[str, Any] | None,
     chat_history: list[dict[str, Any]] | None = None,
     operator_snapshot: dict[str, Any] | None = None,
+    tool_results: list[dict[str, Any]] | None = None,
+    tool_calls_left: int = 0,
 ) -> str:
     context = feedback_context if isinstance(feedback_context, dict) else {}
     history = [
@@ -217,6 +219,7 @@ def build_agent_chat_prompt(
         "telegram_text": sanitize_text(chat_text, max_chars=1200),
         "last_interaction_context": context,
         "recent_chat_history": history[-8:],
+        "tool_results": tool_results or [],
     }
     ground_truth = {
         "operator_snapshot": operator_snapshot if isinstance(operator_snapshot, dict) else {},
@@ -224,49 +227,43 @@ def build_agent_chat_prompt(
             {"usage": usage, "desc": desc} for usage, desc, _group in COMMAND_SURFACE
         ],
     }
+    if tool_calls_left > 0:
+        tool_budget_line = (
+            f"You have {tool_calls_left} tool calls left for this message. Use one only when "
+            "the ground truth and tool_results do not already answer the operator."
+        )
+    else:
+        tool_budget_line = (
+            "You have 0 tool calls left. You MUST finish now with 'answer' or 'propose_plan'."
+        )
     return "\n".join(
         [
             "You are the Telegram chat assistant for a generic Offdesk remote operator harness.",
-            "Answer the operator's plain Telegram message directly. Keep the answer short, useful, and in the same language as telegram_text.",
+            "Work out what the operator needs, use the read-only tools when the ground truth is not enough, then finish with exactly one terminal action. Keep the final answer short, useful, and in the same language as telegram_text.",
             "recent_chat_history lists earlier turns in this Telegram chat, oldest first. Use it ONLY to resolve follow-up questions and pronouns; telegram_text is the message to answer now.",
             "Never repeat one of your earlier replies verbatim. If the operator follows up on the same topic, add new detail, answer the follow-up directly, or state plainly that you have nothing new to add.",
             "You are read-only. You are not allowed to approve, launch, dispatch, run shell commands, mutate files, resolve approvals, or retarget providers.",
-            "FIRST decide what the operator's message IS, and return that decision as intent:",
-            "intent 'delegate_work': the operator is handing the harness work to do -- plan, review, investigate, build, fix, run something ('~해줘', '~해볼까', '~하자', imperatives, requests). Set delegation_goal to their request restated as ONE actionable goal in the same language. The harness will show a confirm card that captures it as a plan candidate; do NOT tell the operator to type /plan and do NOT answer with inspection commands. assistant_reply may be a one-line acknowledgment.",
-            "intent 'inspect_project': the operator wants you to actually look at a project's CURRENT local state -- files, git, recent changes ('로컬 상태 확인해', '파일 좀 봐줘', '새로 에이전트 만들어서 확인해') -- and the answer is not already in operator_snapshot. The harness will run a read-only workspace inspection and call you again with local_inspection filled; answer from it then. Set delegation_goal to null.",
-            "intent 'chat': everything else -- questions, status checks, opinions, thanks, small talk. A question ABOUT work in progress ('지금 뭐 처리하고 있어?') is chat, even when it contains words like 계획/처리/진행. Set delegation_goal to null and answer directly.",
-            "For pure inspection questions, recommend the matching supported command instead of asking the operator for file paths or treating the chat as authorization.",
+            "Respond with EXACTLY ONE JSON object per turn, no markdown. Three forms:",
+            '{"action": "tool", "tool": "workspace_overview | list_dir | read_file", "project": "<registered project key>", "path": "<relative path, list_dir/read_file only>", "reason": "short"}',
+            '{"action": "answer", "assistant_reply": "short direct read-only reply", "confidence": 0.9, "requires_clarification": false, "clarifying_question": null, "reason": "short"}',
+            '{"action": "propose_plan", "delegation_goal": "the request restated as ONE actionable goal, same language", "assistant_reply": "one-line acknowledgment", "confidence": 0.9, "reason": "short"}',
+            "Terminal action guide: 'propose_plan' when the operator hands the harness work to do -- plan, build, fix, diagnose-and-replan ('~해줘', '~해볼까', '~하자', '계획 세워'). The harness shows a confirm card capturing delegation_goal as a plan candidate; never tell the operator to type /plan. When you inspected files first, fold what you found into delegation_goal so the plan reflects the actual current state. 'answer' for everything else: questions, status checks, opinions, small talk. A question ABOUT work ('지금 뭐 처리하고 있어?') is an 'answer', even when it contains words like 계획/처리/진행.",
+            "Read-only tools (run against a registered project's working tree):",
+            "- workspace_overview(project): git branch, dirty files, recent commits, key document timestamps, recently modified files",
+            "- list_dir(project, path): entries of one directory ('' or omitted = project root)",
+            "- read_file(project, path): first 4000 characters of one text file",
+            tool_budget_line,
+            "Use tools when the operator asks about local files or current project contents, or wants a diagnosis before planning; skip them when operator_snapshot/project_focus already answer the question. When no project is named, use the project_focus project; when there is none either, finish with 'answer' and requires_clarification=true asking which registered project they mean.",
+            "tool_results in the conversation input lists what your tool calls THIS message returned, oldest first. Trust them over recent_chat_history.",
             "Conversation input:",
             json.dumps(conversation, ensure_ascii=False, sort_keys=True),
             "CURRENT GROUND TRUTH (read this last, trust it over everything above):",
             "operator_snapshot is the live read-only workstation state as of THIS message: attention counts, health, open decisions, running-capacity, registered_projects (key, display name, wiki profile), workspace_projects (folder hints), and autonomy_armed.",
-            "Every number or state claim in your reply MUST come from operator_snapshot, never from recent_chat_history. If history mentions counts that the snapshot no longer shows, the snapshot is right and the old counts are resolved.",
+            "Every number or state claim in your reply MUST come from operator_snapshot or tool_results, never from recent_chat_history. If history mentions counts that the snapshot no longer shows, the snapshot is right and the old counts are resolved.",
             "When the operator names a project, resolve it against registered_projects keys and display names first; unregistered folders are context, not managed projects.",
-            "project_focus, when present, is the live state of the ONE project this conversation is about (focus_source 'mention' = named in this message, 'sticky' = carried over from an earlier message): its sessions with tool and status, session_counts, and its adaptive-wiki entry_count plus recent_claims. Answer project questions from these concrete facts (which sessions exist, what state they are in, what was recently learned), never with a generic 'the project is registered' line.",
-            "When project_focus is absent and the operator asks about 'the project' without naming one, ask which registered project they mean.",
-            "local_inspection, when present, is the fresh read-only workspace probe you requested via inspect_project: working-tree path, git branch, dirty files, recent commits, key document timestamps, recently modified files. Answer NOW from it and never return intent inspect_project again in this turn. If local_inspection.status is 'no_project', ask which registered project to inspect; if 'workspace_not_found', say the project folder was not found.",
+            "project_focus, when present, is the live state of the ONE project this conversation is about (focus_source 'mention' = named in this message, 'sticky' = carried over from an earlier message): its sessions with tool and status, session_counts, and its adaptive-wiki entry_count plus recent_claims. Answer project questions from these concrete facts, never with a generic 'the project is registered' line.",
             "supported_commands is the COMPLETE slash-command surface. Never mention, suggest, or invent a slash command that is not listed there.",
             json.dumps(ground_truth, ensure_ascii=False, sort_keys=True),
-            "Return exactly one JSON object. Do not include markdown.",
-            "JSON schema:",
-            json.dumps(
-                {
-                    "intent": "chat | delegate_work | inspect_project",
-                    "delegation_goal": None,
-                    "confidence": 0.0,
-                    "requires_clarification": False,
-                    "clarifying_question": None,
-                    "assistant_reply": "short direct read-only reply for the operator",
-                    "reason": "short reason",
-                    "non_authorized": [
-                        "execution",
-                        "approval",
-                        "shell",
-                        "git mutation",
-                    ],
-                },
-                ensure_ascii=False,
-            ),
         ]
     )
 
@@ -387,13 +384,19 @@ def normalize_agent_chat(parsed: dict[str, Any], *, runtime: dict[str, Any]) -> 
         list(parsed.get("non_authorized") if isinstance(parsed.get("non_authorized"), list) else [])
         + ["execution", "approval", "shell", "git mutation"]
     )
-    # The chat agent owns the routing decision (function-calling style):
-    # 'delegate_work' triggers the plan-capture confirm card, and
-    # 'inspect_project' triggers a read-only workspace probe plus a second
-    # agent call; anything unrecognized degrades to plain chat.
-    intent = str(parsed.get("intent") or "").strip().lower()
-    if intent not in {"delegate_work", "inspect_project"}:
+    # The chat agent owns the routing decision. Terminal action
+    # 'propose_plan' maps to the delegate_work intent that triggers the
+    # plan-capture confirm card; everything else (including the legacy
+    # intent-form output of older models) degrades to plain chat.
+    action = str(parsed.get("action") or "").strip().lower()
+    if action == "propose_plan":
+        intent = "delegate_work"
+    elif action == "answer":
         intent = "chat"
+    else:
+        intent = str(parsed.get("intent") or "").strip().lower()
+        if intent != "delegate_work":
+            intent = "chat"
     return {
         "schema": AGENT_INTENT_SCHEMA,
         "status": "classified",
@@ -420,6 +423,25 @@ def normalize_agent_chat(parsed: dict[str, Any], *, runtime: dict[str, Any]) -> 
     }
 
 
+MAX_CHAT_TOOL_CALLS = 3
+
+
+def extract_tool_request(parsed: dict[str, Any]) -> dict[str, str] | None:
+    """Return a normalized tool request when the model asked for one."""
+
+    action = str(parsed.get("action") or "").strip().lower()
+    if action == "tool":
+        return {
+            "tool": str(parsed.get("tool") or "").strip().lower(),
+            "project": str(parsed.get("project") or "").strip(),
+            "path": str(parsed.get("path") or "").strip(),
+        }
+    # Legacy shape from the previous prompt generation.
+    if str(parsed.get("intent") or "").strip().lower() == "inspect_project":
+        return {"tool": "workspace_overview", "project": "", "path": ""}
+    return None
+
+
 def chat_with_agent(
     args: Any,
     chat_text: str,
@@ -427,29 +449,66 @@ def chat_with_agent(
     feedback_context: dict[str, Any] | None = None,
     chat_history: list[dict[str, Any]] | None = None,
     operator_snapshot: dict[str, Any] | None = None,
+    tool_executor: Any = None,
 ) -> dict[str, Any] | None:
+    """Agentic chat loop: the model may call read-only tools before finishing.
+
+    tool_executor is a callable(dict) -> dict provided by the adapter; it runs
+    one read-only tool request and returns its result. Without it the model
+    gets no tool budget and must answer in one shot.
+    """
+
     agent_config = resolve_agent_config(args)
     if agent_config.get("mode") == "off":
         return fallback_agent_chat(reason="local_agent_disabled", agent_config=agent_config)
     runtime = select_agent_runtime(agent_config)
     if not runtime:
         return fallback_agent_chat(reason="local_agent_unavailable", agent_config=agent_config)
-    prompt = build_agent_chat_prompt(
-        chat_text=chat_text,
-        feedback_context=feedback_context,
-        chat_history=chat_history,
-        operator_snapshot=operator_snapshot,
-    )
-    try:
-        parsed = call_ollama_intent_agent(runtime, prompt)
-    except (OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError, ValueError) as error:
-        if agent_config.get("mode") == "required":
-            raise RemoteOperatorTelegramError(f"local agent chat failed: {error}") from error
-        return fallback_agent_chat(
-            reason=f"local_agent_failed:{type(error).__name__}",
-            agent_config=agent_config,
+    tool_results: list[dict[str, Any]] = []
+    tools_used: list[dict[str, Any]] = []
+    while True:
+        calls_left = (
+            MAX_CHAT_TOOL_CALLS - len(tool_results) if callable(tool_executor) else 0
         )
-    return normalize_agent_chat(parsed, runtime=runtime)
+        prompt = build_agent_chat_prompt(
+            chat_text=chat_text,
+            feedback_context=feedback_context,
+            chat_history=chat_history,
+            operator_snapshot=operator_snapshot,
+            tool_results=tool_results,
+            tool_calls_left=calls_left,
+        )
+        try:
+            parsed = call_ollama_intent_agent(runtime, prompt)
+        except (OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError, ValueError) as error:
+            if agent_config.get("mode") == "required":
+                raise RemoteOperatorTelegramError(f"local agent chat failed: {error}") from error
+            return fallback_agent_chat(
+                reason=f"local_agent_failed:{type(error).__name__}",
+                agent_config=agent_config,
+            )
+        request = extract_tool_request(parsed)
+        if request and callable(tool_executor) and calls_left > 0:
+            try:
+                outcome = tool_executor(request)
+            except Exception as error:  # noqa: BLE001 - poll loop must never crash here
+                outcome = {"status": "tool_failed", "error": str(error)[:120]}
+            if not isinstance(outcome, dict):
+                outcome = {"status": "tool_failed"}
+            tool_results.append({"request": request, "result": outcome})
+            tools_used.append(
+                {
+                    "tool": request.get("tool"),
+                    "project": request.get("project") or None,
+                    "path": request.get("path") or None,
+                    "status": outcome.get("status"),
+                }
+            )
+            continue
+        normalized = normalize_agent_chat(parsed, runtime=runtime)
+        normalized["tool_rounds"] = len(tool_results)
+        normalized["tools_used"] = tools_used
+        return normalized
 
 
 def classify_feedback_with_agent(

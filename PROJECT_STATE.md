@@ -343,17 +343,21 @@ out of product-facing docs. The product direction is defined in
   `scripts/telegram_operator/projects.py` (`resolve_chat_focus`,
   `build_project_focus`); every probe degrades without breaking chat.
 
-- Plain-text routing is agent-owned (function-calling style): the chat agent
-  returns a structured intent (`chat` | `delegate_work` | `inspect_project`).
-  `delegate_work` carries a `delegation_goal` restatement and triggers the
-  plan-capture confirm card; `inspect_project` triggers a bounded read-only
-  workspace probe of the focused project (git branch/status/commits, key doc
-  timestamps, recently modified files via
-  `projects.py::inspect_project_workspace`) and a second agent call grounded
-  on the probe, with a deterministic summary fallback. The old keyword
-  markers (`classify_feedback_kind`) apply only when the local agent is off
-  or unreachable. Per operator decision, new chat-routed actions must extend
-  the agent's structured decision schema, not keyword lists.
+- Telegram plain text runs an agentic tool loop, not intent enumeration: per
+  message the chat agent may call up to 3 read-only tools
+  (`workspace_overview`, `list_dir`, `read_file`, all confined to registered
+  projects with path-traversal guards, in
+  `scripts/telegram_operator/projects.py`) and must finish with one terminal
+  action: `answer` (chat reply) or `propose_plan` (delegation_goal -> the
+  existing plan-capture confirm card; tap stays the only approval). The loop
+  lives in `agent.py::chat_with_agent` with the executor in the adapter
+  (`run_chat_tool`); tool use is logged as `chat_tools_used`. This handles
+  compound requests like "진단하고 새로 계획 세워봐" (inspect files, fold
+  findings into the proposed goal) without per-request-type code. Legacy
+  intent-shaped model output still maps (delegate_work, inspect_project ->
+  overview tool). Keyword markers apply only when the local agent is off or
+  unreachable. Per operator decision, new chat capabilities should be new
+  tools or terminal actions in this loop, never keyword lists.
 
 - `forager go [tool] [-- args]` is the zero-friction wrapper for direct agent
   work (`src/cli/go.rs`, Rust registry loader in

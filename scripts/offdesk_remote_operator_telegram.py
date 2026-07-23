@@ -97,7 +97,9 @@ from telegram_operator.projects import (
     find_project_dir,
     inspect_project_workspace,
     inspection_summary_lines,
+    list_project_dir,
     load_registry,
+    read_project_file,
     registry_summary,
     resolve_chat_focus,
 )
@@ -1644,6 +1646,50 @@ def build_chat_operator_snapshot(
     return snapshot
 
 
+def run_chat_tool(
+    args: argparse.Namespace,
+    request: dict[str, Any],
+    *,
+    registry: dict[str, dict[str, Any]],
+    focus_entry: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Execute one read-only chat-agent tool call. Never raises.
+
+    The chat agent may only touch registered projects, and only through the
+    bounded read-only helpers in telegram_operator.projects.
+    """
+
+    tool = str(request.get("tool") or "")
+    key = str(request.get("project") or "").strip() or str((focus_entry or {}).get("key") or "")
+    entry = registry.get(key)
+    if not isinstance(entry, dict):
+        return {
+            "status": "unknown_project",
+            "project": key or None,
+            "registered": sorted(registry.keys())[:20],
+        }
+    project_dir = find_project_dir(entry, workspace_roots(args))
+    if project_dir is None:
+        return {"status": "workspace_not_found", "project": key}
+    try:
+        if tool == "workspace_overview":
+            report = inspect_project_workspace(project_dir)
+            report["status"] = "ok"
+            report["project"] = key
+            return report
+        if tool == "list_dir":
+            return list_project_dir(project_dir, str(request.get("path") or ""))
+        if tool == "read_file":
+            return read_project_file(project_dir, str(request.get("path") or ""))
+    except Exception as error:  # noqa: BLE001 - chat tools must never crash the poll loop
+        return {
+            "status": "tool_failed",
+            "tool": tool[:40],
+            "error": sanitize_text(str(error), max_chars=120),
+        }
+    return {"status": "unknown_tool", "tool": tool[:40]}
+
+
 def render_command_result(
     args: argparse.Namespace,
     config: dict[str, Any],
@@ -1703,9 +1749,10 @@ def render_command_result(
         return result
     if parsed.get("command") == "chat":
         chat_text = str(parsed.get("chat_text") or command_text)
+        registry = load_registry()
         focus_entry, focus_source = resolve_chat_focus(
             chat_text,
-            load_registry(),
+            registry,
             sticky_focus_key,
         )
         if focus_entry:
@@ -1718,52 +1765,45 @@ def render_command_result(
             focus_entry=focus_entry,
             focus_source=focus_source,
         )
+        tool_outcomes: list[dict[str, Any]] = []
+
+        def execute_chat_tool(request: dict[str, Any]) -> dict[str, Any]:
+            outcome = run_chat_tool(args, request, registry=registry, focus_entry=focus_entry)
+            tool_outcomes.append({"request": request, "result": outcome})
+            return outcome
+
         agent_intent = chat_with_agent(
             args,
             chat_text,
             feedback_context=feedback_context,
             chat_history=chat_history,
             operator_snapshot=operator_snapshot,
+            tool_executor=execute_chat_tool,
         )
-        if isinstance(agent_intent, dict) and agent_intent.get("intent") == "inspect_project":
-            # Tool round: run the read-only workspace probe the agent asked
-            # for, then call it again with the results. One round only.
-            inspection: dict[str, Any] = {"status": "no_project"}
-            if focus_entry:
-                project_dir = find_project_dir(focus_entry, workspace_roots(args))
-                if project_dir:
-                    inspection = inspect_project_workspace(project_dir)
-                    inspection["status"] = "ok"
-                else:
-                    inspection = {"status": "workspace_not_found"}
-                inspection["project_key"] = focus_entry.get("key")
-            result["local_inspection"] = {
-                "status": inspection.get("status"),
-                "project_key": inspection.get("project_key"),
-            }
-            operator_snapshot["local_inspection"] = inspection
-            followup = chat_with_agent(
-                args,
-                chat_text,
-                feedback_context=feedback_context,
-                chat_history=chat_history,
-                operator_snapshot=operator_snapshot,
+        if isinstance(agent_intent, dict) and agent_intent.get("tools_used"):
+            result["chat_tools_used"] = agent_intent.get("tools_used")
+        if (
+            isinstance(agent_intent, dict)
+            and agent_intent.get("intent") == "chat"
+            and not agent_intent.get("assistant_reply")
+        ):
+            # The model inspected but never composed an answer; degrade to a
+            # deterministic summary of the last successful overview probe.
+            overview = next(
+                (
+                    item["result"]
+                    for item in reversed(tool_outcomes)
+                    if item["request"].get("tool") == "workspace_overview"
+                    and item["result"].get("status") == "ok"
+                ),
+                None,
             )
-            if (
-                isinstance(followup, dict)
-                and followup.get("status") == "classified"
-                and followup.get("assistant_reply")
-            ):
-                agent_intent = {**followup, "intent": "chat", "delegation_goal": None}
-            elif inspection.get("status") == "ok":
-                # Agent could not compose the answer; fall back to a
-                # deterministic summary of what the probe saw.
+            if overview and focus_entry:
                 agent_intent = {
                     **agent_intent,
-                    "intent": "chat",
                     "assistant_reply": "\n".join(
                         [f"{focus_entry.get('display_name')} 로컬 상태:"]
-                        + inspection_summary_lines(inspection)
+                        + inspection_summary_lines(overview)
                     ),
                 }
         if isinstance(agent_intent, dict):
