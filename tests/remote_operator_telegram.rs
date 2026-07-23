@@ -3357,6 +3357,123 @@ fn remote_operator_telegram_replay_plan_request_creates_project_selection_sessio
 
 #[test]
 #[serial]
+fn remote_operator_telegram_delegation_capture_confirm_starts_plan_session() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    let workspace_root = temp.path().join("workspace");
+    fs::create_dir_all(workspace_root.join("Alpha"))?;
+    fs::write(
+        workspace_root.join("Alpha").join("README.md"),
+        "Alpha project\n",
+    )?;
+    let state_path = temp.path().join("telegram_state.json");
+    let feedback_file = temp.path().join("feedback.jsonl");
+    let ingest_dir = temp.path().join("feedback_ingest");
+
+    let replay = |update_path: &Path, out: &Path| -> Result<std::process::Output> {
+        Ok(remote_operator_command(temp.path())
+            .arg("--dry-run")
+            .arg("--once")
+            .arg("--replay-update-file")
+            .arg(update_path)
+            .arg("--forager-bin")
+            .arg(env!("CARGO_BIN_EXE_forager"))
+            .arg("--env-file")
+            .arg(&env_path)
+            .arg("--state-file")
+            .arg(&state_path)
+            .arg("--feedback-file")
+            .arg(&feedback_file)
+            .arg("--feedback-ingest-dir")
+            .arg(&ingest_dir)
+            .arg("--workspace-root")
+            .arg(&workspace_root)
+            .arg("--out")
+            .arg(out)
+            .output()?)
+    };
+
+    let delegation_update = temp.path().join("delegation_update.json");
+    write_text_update(
+        &delegation_update,
+        710,
+        890,
+        "그럼 Alpha에서 마지막 기록을 확인하고 새로 방향을 검토해볼까",
+    )?;
+    let capture_out = temp.path().join("capture_result.json");
+    let output = replay(&delegation_update, &capture_out)?;
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let capture: Value = serde_json::from_slice(&fs::read(&capture_out)?)?;
+    assert_eq!(capture["status"], "rendered");
+    assert_eq!(capture["parsed_command"]["command"], "chat");
+    assert_eq!(capture["plan_capture_offered"], true);
+    let capture_preview = capture["message_preview"]
+        .as_str()
+        .expect("capture preview");
+    assert!(capture_preview.contains("<b>계획 후보로 등록할까요?</b>"));
+    let state: Value = serde_json::from_slice(&fs::read(&state_path)?)?;
+    let chat_hash = capture["target_chat_id_hash"].as_str().expect("chat hash");
+    assert_eq!(
+        state["pending_dispatch_confirmations_by_chat"][chat_hash]["kind"],
+        "plan_capture"
+    );
+
+    let confirm_update = temp.path().join("confirm_update.json");
+    write_text_update(&confirm_update, 711, 891, "/confirm")?;
+    let confirm_out = temp.path().join("confirm_result.json");
+    let output = replay(&confirm_update, &confirm_out)?;
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let confirmed: Value = serde_json::from_slice(&fs::read(&confirm_out)?)?;
+    assert_eq!(confirmed["status"], "rendered");
+    assert_eq!(confirmed["feedback_recorded"], true);
+    assert_eq!(confirmed["decision_feedback_ingest_status"], "recorded");
+    assert_eq!(
+        confirmed["remote_plan_session"]["schema"],
+        "telegram_remote_plan_session.v1"
+    );
+    assert_eq!(
+        confirmed["remote_plan_session"]["stage"],
+        "project_selection"
+    );
+    assert_eq!(
+        confirmed["remote_plan_session"]["execution_authorized"],
+        false
+    );
+    let confirm_preview = confirmed["message_preview"]
+        .as_str()
+        .expect("confirm preview");
+    assert!(confirm_preview.contains("<b>계획 대상 선택</b>"));
+    assert_mobile_contract(&confirmed);
+
+    let feedback_rows = fs::read_to_string(&feedback_file)?;
+    assert_eq!(feedback_rows.lines().count(), 1);
+    assert!(feedback_rows.contains("planning_request"));
+
+    let state: Value = serde_json::from_slice(&fs::read(&state_path)?)?;
+    assert_eq!(
+        state["pending_dispatch_confirmations_by_chat"][chat_hash],
+        Value::Null
+    );
+    assert_eq!(
+        state["remote_plan_sessions_by_chat"][chat_hash]["stage"],
+        "project_selection"
+    );
+    Ok(())
+}
+
+#[test]
+#[serial]
 fn remote_operator_telegram_replay_plan_session_plain_text_stays_chat() -> Result<()> {
     let temp = tempdir()?;
     let env_path = temp.path().join("telegram.env");

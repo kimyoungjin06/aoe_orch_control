@@ -2318,8 +2318,13 @@ def run_once(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]
             from telegram_operator.agent import classify_feedback_kind  # noqa: PLC0415
 
             pending_now = (state.get("pending_dispatch_confirmations_by_chat") or {}).get(chat_hash)
-            if classify_feedback_kind(text) == "planning_request" and not (
-                isinstance(pending_now, dict) and confirmation_is_fresh(pending_now)
+            if (
+                classify_feedback_kind(text) == "planning_request"
+                and not (isinstance(pending_now, dict) and confirmation_is_fresh(pending_now))
+                # An active plan session already owns this chat's plain text;
+                # questions about the plan must stay chat, not spawn a second
+                # capture card.
+                and active_remote_plan_session(state, chat_hash) is None
             ):
                 # Natural-language delegation: offer to capture it as a plan
                 # candidate. The tap is the approval; chat alone records nothing.
@@ -2372,11 +2377,22 @@ def run_once(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]
                 if isinstance(capture_record, dict):
                     capture_ingest = ingest_feedback_decision(args, capture_record)
                     rendered.update(capture_ingest)
-                    create_remote_plan_session(
+                    # Mirror the direct /plan path: store the session and move
+                    # straight into project selection, so a confirmed capture
+                    # behaves exactly like typing /plan.
+                    session = create_remote_plan_session(
                         args, chat_hash=chat_hash, request_text=plan_text,
                         parsed_command=synthetic, feedback_context=capture_context,
                         decision_id=capture_ingest.get("decision_feedback_decision_id"),
                     )
+                    store_remote_plan_session(state, chat_hash, session)
+                    rendered["remote_plan_session"] = public_remote_plan_session(session)
+                    rendered["message_preview"] = render_project_selection_message(
+                        profile=args.profile,
+                        session=session,
+                    )
+                    attach_choice_surface(rendered, remote_plan_selection_context(session))
+                    rendered["mobile_card_contract"] = mobile_card_contract(rendered["message_preview"])
         try:
             message_id = send_message(
                 config,
