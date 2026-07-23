@@ -196,6 +196,53 @@ fn spawn_fake_ollama_with_classification(
     Ok((format!("http://127.0.0.1:{port}"), handle))
 }
 
+/// Serves /api/tags any number of times and answers successive
+/// /api/generate calls from `responses` in order, writing each request body
+/// to `<body_dir>/generate_<n>.json`. Returns after the last response.
+fn spawn_fake_ollama_with_sequence(
+    body_dir: PathBuf,
+    responses: Vec<Value>,
+) -> Result<(String, thread::JoinHandle<Result<()>>)> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let port = listener.local_addr()?.port();
+    listener.set_nonblocking(true)?;
+    let handle = thread::spawn(move || -> Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut served = 0usize;
+        while served < responses.len() {
+            let (mut stream, _) = match listener.accept() {
+                Ok(value) => value,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() > deadline {
+                        anyhow::bail!("fake Ollama timed out waiting for requests");
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let (request_line, body) = read_http_request(&mut stream)?;
+            if request_line.starts_with("GET /api/tags ") {
+                write_http_json(
+                    &mut stream,
+                    json!({"models": [{"name": "qwen3-coder-next:latest"}]}),
+                )?;
+            } else if request_line.starts_with("POST /api/generate ") {
+                fs::write(body_dir.join(format!("generate_{served}.json")), &body)?;
+                write_http_json(
+                    &mut stream,
+                    json!({"response": serde_json::to_string(&responses[served])?}),
+                )?;
+                served += 1;
+            } else {
+                write_http_json(&mut stream, json!({"error": request_line}))?;
+            }
+        }
+        Ok(())
+    });
+    Ok((format!("http://127.0.0.1:{port}"), handle))
+}
+
 fn spawn_fake_ollama(body_path: PathBuf) -> Result<(String, thread::JoinHandle<Result<()>>)> {
     spawn_fake_ollama_with_classification(
         body_path,
@@ -7524,6 +7571,97 @@ fn remote_operator_telegram_agent_chat_intent_overrides_planning_keywords() -> R
         state["pending_dispatch_confirmations_by_chat"][chat_hash],
         Value::Null
     );
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_inspect_intent_probes_workspace_and_answers() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    write_project_registry(temp.path())?;
+    let workspace_root = temp.path().join("workspace");
+    let project_dir = workspace_root.join("1.2.8.TwinPaper");
+    fs::create_dir_all(project_dir.join("modules"))?;
+    fs::write(project_dir.join("PROJECT_STATE.md"), "current state\n")?;
+    fs::write(project_dir.join("README.md"), "TwinPaper\n")?;
+    fs::write(
+        project_dir.join("modules").join("next.md"),
+        "next actions\n",
+    )?;
+
+    let body_dir = temp.path().join("agent_requests");
+    fs::create_dir_all(&body_dir)?;
+    let (base_url, server) = spawn_fake_ollama_with_sequence(
+        body_dir.clone(),
+        vec![
+            json!({
+                "intent": "inspect_project",
+                "delegation_goal": null,
+                "confidence": 0.9,
+                "requires_clarification": false,
+                "clarifying_question": null,
+                "assistant_reply": null,
+                "reason": "Operator asked for the project's local file state.",
+                "non_authorized": ["execution", "approval", "shell"]
+            }),
+            json!({
+                "intent": "chat",
+                "delegation_goal": null,
+                "confidence": 0.9,
+                "requires_clarification": false,
+                "clarifying_question": null,
+                "assistant_reply": "PROJECT_STATE.md와 README.md가 확인됩니다. git 저장소는 아닙니다.",
+                "reason": "Answered from local_inspection.",
+                "non_authorized": ["execution", "approval", "shell"]
+            }),
+        ],
+    )?;
+    let out = temp.path().join("inspect_result.json");
+
+    let output = remote_operator_command(temp.path())
+        .arg("--dry-run")
+        .arg("--command-text")
+        .arg("Twinpaper 로컬 파일 상태 확인해봐")
+        .arg("--forager-bin")
+        .arg(env!("CARGO_BIN_EXE_forager"))
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--workspace-root")
+        .arg(&workspace_root)
+        .arg("--out")
+        .arg(&out)
+        .arg("--agent-intent-mode")
+        .arg("required")
+        .arg("--agent-base-url")
+        .arg(&base_url)
+        .arg("--agent-model")
+        .arg("qwen3-coder-next:latest")
+        .output()?;
+
+    server.join().expect("fake ollama server panicked")?;
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&fs::read(&out)?)?;
+    assert_eq!(result["status"], "rendered");
+    assert_eq!(result["local_inspection"]["status"], "ok");
+    assert_eq!(result["local_inspection"]["project_key"], "twinpaper");
+    assert_eq!(result["project_focus"]["key"], "twinpaper");
+    let preview = result["message_preview"].as_str().expect("message preview");
+    assert!(preview.contains("PROJECT_STATE.md와 README.md가 확인됩니다."));
+
+    // The second agent call must carry the probe results as ground truth.
+    let second_request: Value =
+        serde_json::from_slice(&fs::read(body_dir.join("generate_1.json"))?)?;
+    let second_prompt = second_request["prompt"].as_str().expect("second prompt");
+    assert!(second_prompt.contains("local_inspection"));
+    assert!(second_prompt.contains("PROJECT_STATE.md"));
+    assert!(second_prompt.contains("modules/next.md"));
     Ok(())
 }
 

@@ -8,6 +8,7 @@ fan-in (aggregating status across projects) both resolve through it.
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import pathlib
@@ -198,6 +199,158 @@ def build_project_focus(
         except (OSError, ValueError, subprocess.TimeoutExpired):
             focus["wiki"] = {"status": "unavailable"}
     return focus
+
+
+def find_project_dir(
+    entry: dict[str, Any], roots: list[pathlib.Path]
+) -> pathlib.Path | None:
+    """Locate the working tree of a registered project under the workspace roots."""
+
+    patterns = [str(p) for p in (entry.get("workspace_patterns") or []) if str(p).strip()]
+    if not patterns:
+        return None
+    for root in roots:
+        for pattern in patterns:
+            candidate = root / pattern
+            if candidate.is_dir():
+                return candidate
+        try:
+            children = [child for child in root.iterdir() if child.is_dir()]
+        except OSError:
+            continue
+        for child in children:
+            if any(pattern in str(child) for pattern in patterns):
+                return child
+    return None
+
+
+KEY_DOC_NAMES = (
+    "PROJECT_STATE.md",
+    "README.md",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "RETURN_PACKAGE.md",
+)
+
+SKIP_DIR_NAMES = {
+    ".git",
+    "__pycache__",
+    "node_modules",
+    "target",
+    ".venv",
+    "venv",
+    ".cache",
+}
+
+
+def inspect_project_workspace(
+    path: pathlib.Path, *, timeout_sec: int = 10
+) -> dict[str, Any]:
+    """Bounded read-only probe of a project working tree for chat grounding.
+
+    This is the tool behind the chat agent's 'inspect_project' decision. It
+    must stay read-only and every probe degrades to a marker instead of
+    raising.
+    """
+
+    report: dict[str, Any] = {"path": str(path)}
+
+    def git(*argv: str) -> str:
+        proc = subprocess.run(
+            ["git", "-C", str(path), *argv],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=timeout_sec,
+        )
+        if proc.returncode != 0:
+            raise ValueError(f"git {' '.join(argv)} failed")
+        return proc.stdout
+
+    try:
+        report["git_branch"] = git("rev-parse", "--abbrev-ref", "HEAD").strip()
+        dirty = [line for line in git("status", "--short").splitlines() if line.strip()]
+        report["git_dirty_count"] = len(dirty)
+        report["git_dirty_sample"] = dirty[:10]
+        report["git_recent_commits"] = git(
+            "log", "-5", "--format=%ad %s", "--date=short"
+        ).splitlines()
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        report["git_status"] = "unavailable"
+
+    def mtime_iso(stat: os.stat_result) -> str:
+        return (
+            datetime.datetime.fromtimestamp(stat.st_mtime, tz=datetime.timezone.utc)
+            .strftime("%Y-%m-%dT%H:%M:%SZ")
+        )
+
+    key_docs: list[dict[str, Any]] = []
+    for name in KEY_DOC_NAMES:
+        doc = path / name
+        try:
+            if doc.is_file():
+                stat = doc.stat()
+                key_docs.append(
+                    {"name": name, "modified_at": mtime_iso(stat), "size_bytes": stat.st_size}
+                )
+        except OSError:
+            continue
+    report["key_docs"] = key_docs
+
+    # Newest files, two levels deep, so "what changed recently" is answerable
+    # without an unbounded tree walk.
+    newest: list[tuple[float, str, os.stat_result]] = []
+    examined = 0
+    try:
+        for child in path.iterdir():
+            if examined > 2000:
+                break
+            if child.name.startswith(".") or child.name in SKIP_DIR_NAMES:
+                continue
+            entries = [child]
+            if child.is_dir():
+                try:
+                    entries = list(child.iterdir())
+                except OSError:
+                    continue
+            for item in entries:
+                examined += 1
+                if examined > 2000:
+                    break
+                if item.name.startswith(".") or item.name in SKIP_DIR_NAMES:
+                    continue
+                try:
+                    if item.is_file():
+                        stat = item.stat()
+                        newest.append((stat.st_mtime, str(item.relative_to(path)), stat))
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    newest.sort(reverse=True)
+    report["recently_modified"] = [
+        {"file": rel, "modified_at": mtime_iso(stat)} for _, rel, stat in newest[:5]
+    ]
+    return report
+
+
+def inspection_summary_lines(inspection: dict[str, Any]) -> list[str]:
+    """Deterministic short summary of an inspection, for the no-agent fallback."""
+
+    lines: list[str] = []
+    branch = inspection.get("git_branch")
+    if branch:
+        dirty = int(inspection.get("git_dirty_count") or 0)
+        lines.append(f"git: {branch} · 변경 {dirty}건")
+        commits = inspection.get("git_recent_commits") or []
+        if commits:
+            lines.append(f"최근 커밋: {commits[0]}")
+    else:
+        lines.append("git 정보 없음")
+    for item in (inspection.get("recently_modified") or [])[:2]:
+        lines.append(f"최근 수정: {item.get('file')} ({item.get('modified_at')})")
+    return lines
 
 
 def _forager_json(

@@ -343,6 +343,18 @@ out of product-facing docs. The product direction is defined in
   `scripts/telegram_operator/projects.py` (`resolve_chat_focus`,
   `build_project_focus`); every probe degrades without breaking chat.
 
+- Plain-text routing is agent-owned (function-calling style): the chat agent
+  returns a structured intent (`chat` | `delegate_work` | `inspect_project`).
+  `delegate_work` carries a `delegation_goal` restatement and triggers the
+  plan-capture confirm card; `inspect_project` triggers a bounded read-only
+  workspace probe of the focused project (git branch/status/commits, key doc
+  timestamps, recently modified files via
+  `projects.py::inspect_project_workspace`) and a second agent call grounded
+  on the probe, with a deterministic summary fallback. The old keyword
+  markers (`classify_feedback_kind`) apply only when the local agent is off
+  or unreachable. Per operator decision, new chat-routed actions must extend
+  the agent's structured decision schema, not keyword lists.
+
 - `forager go [tool] [-- args]` is the zero-friction wrapper for direct agent
   work (`src/cli/go.rs`, Rust registry loader in
   `src/session/project_registry.rs`): resolves cwd against the registry,

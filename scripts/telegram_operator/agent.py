@@ -233,6 +233,7 @@ def build_agent_chat_prompt(
             "You are read-only. You are not allowed to approve, launch, dispatch, run shell commands, mutate files, resolve approvals, or retarget providers.",
             "FIRST decide what the operator's message IS, and return that decision as intent:",
             "intent 'delegate_work': the operator is handing the harness work to do -- plan, review, investigate, build, fix, run something ('~해줘', '~해볼까', '~하자', imperatives, requests). Set delegation_goal to their request restated as ONE actionable goal in the same language. The harness will show a confirm card that captures it as a plan candidate; do NOT tell the operator to type /plan and do NOT answer with inspection commands. assistant_reply may be a one-line acknowledgment.",
+            "intent 'inspect_project': the operator wants you to actually look at a project's CURRENT local state -- files, git, recent changes ('로컬 상태 확인해', '파일 좀 봐줘', '새로 에이전트 만들어서 확인해') -- and the answer is not already in operator_snapshot. The harness will run a read-only workspace inspection and call you again with local_inspection filled; answer from it then. Set delegation_goal to null.",
             "intent 'chat': everything else -- questions, status checks, opinions, thanks, small talk. A question ABOUT work in progress ('지금 뭐 처리하고 있어?') is chat, even when it contains words like 계획/처리/진행. Set delegation_goal to null and answer directly.",
             "For pure inspection questions, recommend the matching supported command instead of asking the operator for file paths or treating the chat as authorization.",
             "Conversation input:",
@@ -243,13 +244,14 @@ def build_agent_chat_prompt(
             "When the operator names a project, resolve it against registered_projects keys and display names first; unregistered folders are context, not managed projects.",
             "project_focus, when present, is the live state of the ONE project this conversation is about (focus_source 'mention' = named in this message, 'sticky' = carried over from an earlier message): its sessions with tool and status, session_counts, and its adaptive-wiki entry_count plus recent_claims. Answer project questions from these concrete facts (which sessions exist, what state they are in, what was recently learned), never with a generic 'the project is registered' line.",
             "When project_focus is absent and the operator asks about 'the project' without naming one, ask which registered project they mean.",
+            "local_inspection, when present, is the fresh read-only workspace probe you requested via inspect_project: working-tree path, git branch, dirty files, recent commits, key document timestamps, recently modified files. Answer NOW from it and never return intent inspect_project again in this turn. If local_inspection.status is 'no_project', ask which registered project to inspect; if 'workspace_not_found', say the project folder was not found.",
             "supported_commands is the COMPLETE slash-command surface. Never mention, suggest, or invent a slash command that is not listed there.",
             json.dumps(ground_truth, ensure_ascii=False, sort_keys=True),
             "Return exactly one JSON object. Do not include markdown.",
             "JSON schema:",
             json.dumps(
                 {
-                    "intent": "chat | delegate_work",
+                    "intent": "chat | delegate_work | inspect_project",
                     "delegation_goal": None,
                     "confidence": 0.0,
                     "requires_clarification": False,
@@ -386,10 +388,11 @@ def normalize_agent_chat(parsed: dict[str, Any], *, runtime: dict[str, Any]) -> 
         + ["execution", "approval", "shell", "git mutation"]
     )
     # The chat agent owns the routing decision (function-calling style):
-    # 'delegate_work' triggers the plan-capture confirm card in the adapter,
-    # anything unrecognized degrades to plain chat.
+    # 'delegate_work' triggers the plan-capture confirm card, and
+    # 'inspect_project' triggers a read-only workspace probe plus a second
+    # agent call; anything unrecognized degrades to plain chat.
     intent = str(parsed.get("intent") or "").strip().lower()
-    if intent != "delegate_work":
+    if intent not in {"delegate_work", "inspect_project"}:
         intent = "chat"
     return {
         "schema": AGENT_INTENT_SCHEMA,

@@ -94,6 +94,9 @@ from telegram_operator.project_candidates import (
 )
 from telegram_operator.projects import (
     build_project_focus,
+    find_project_dir,
+    inspect_project_workspace,
+    inspection_summary_lines,
     load_registry,
     registry_summary,
     resolve_chat_focus,
@@ -1710,17 +1713,59 @@ def render_command_result(
                 "key": focus_entry.get("key"),
                 "source": focus_source,
             }
+        operator_snapshot = build_chat_operator_snapshot(
+            args,
+            focus_entry=focus_entry,
+            focus_source=focus_source,
+        )
         agent_intent = chat_with_agent(
             args,
             chat_text,
             feedback_context=feedback_context,
             chat_history=chat_history,
-            operator_snapshot=build_chat_operator_snapshot(
-                args,
-                focus_entry=focus_entry,
-                focus_source=focus_source,
-            ),
+            operator_snapshot=operator_snapshot,
         )
+        if isinstance(agent_intent, dict) and agent_intent.get("intent") == "inspect_project":
+            # Tool round: run the read-only workspace probe the agent asked
+            # for, then call it again with the results. One round only.
+            inspection: dict[str, Any] = {"status": "no_project"}
+            if focus_entry:
+                project_dir = find_project_dir(focus_entry, workspace_roots(args))
+                if project_dir:
+                    inspection = inspect_project_workspace(project_dir)
+                    inspection["status"] = "ok"
+                else:
+                    inspection = {"status": "workspace_not_found"}
+                inspection["project_key"] = focus_entry.get("key")
+            result["local_inspection"] = {
+                "status": inspection.get("status"),
+                "project_key": inspection.get("project_key"),
+            }
+            operator_snapshot["local_inspection"] = inspection
+            followup = chat_with_agent(
+                args,
+                chat_text,
+                feedback_context=feedback_context,
+                chat_history=chat_history,
+                operator_snapshot=operator_snapshot,
+            )
+            if (
+                isinstance(followup, dict)
+                and followup.get("status") == "classified"
+                and followup.get("assistant_reply")
+            ):
+                agent_intent = {**followup, "intent": "chat", "delegation_goal": None}
+            elif inspection.get("status") == "ok":
+                # Agent could not compose the answer; fall back to a
+                # deterministic summary of what the probe saw.
+                agent_intent = {
+                    **agent_intent,
+                    "intent": "chat",
+                    "assistant_reply": "\n".join(
+                        [f"{focus_entry.get('display_name')} 로컬 상태:"]
+                        + inspection_summary_lines(inspection)
+                    ),
+                }
         if isinstance(agent_intent, dict):
             parsed["agent_intent"] = agent_intent
             parsed["agent_chat_reason"] = str(
