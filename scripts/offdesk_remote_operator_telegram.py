@@ -2356,11 +2356,24 @@ def run_once(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]
                     attach_choice_surface(rendered, remote_plan_selection_context(session))
                     rendered["mobile_card_contract"] = mobile_card_contract(rendered["message_preview"])
         if parsed_command.get("command") == "chat":
-            from telegram_operator.agent import classify_feedback_kind  # noqa: PLC0415
+            agent_intent = (
+                parsed_command.get("agent_intent")
+                if isinstance(parsed_command.get("agent_intent"), dict)
+                else {}
+            )
+            if agent_intent.get("status") == "classified":
+                # The chat agent owns the routing decision (function-calling
+                # style); keyword markers are only the no-agent fallback.
+                wants_capture = agent_intent.get("intent") == "delegate_work"
+                capture_note = str(agent_intent.get("delegation_goal") or "").strip() or text
+            else:
+                from telegram_operator.agent import classify_feedback_kind  # noqa: PLC0415
 
+                wants_capture = classify_feedback_kind(text) == "planning_request"
+                capture_note = text
             pending_now = (state.get("pending_dispatch_confirmations_by_chat") or {}).get(chat_hash)
             if (
-                classify_feedback_kind(text) == "planning_request"
+                wants_capture
                 and not (isinstance(pending_now, dict) and confirmation_is_fresh(pending_now))
                 # An active plan session already owns this chat's plain text;
                 # questions about the plan must stay chat, not spawn a second
@@ -2371,13 +2384,13 @@ def run_once(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]
                 # candidate. The tap is the approval; chat alone records nothing.
                 capture = build_confirmation(
                     kind="plan_capture", target_id="plan", action_kind="capture",
-                    observed_hash="", note=sanitize_text(text, max_chars=380),
+                    observed_hash="", note=sanitize_text(capture_note, max_chars=380),
                     chat_hash=chat_hash, ttl_sec=900,
                 )
                 store_confirmation(state, chat_hash, capture)
                 preview = "\n".join([
                     "<b>계획 후보로 등록할까요?</b>",
-                    sanitize_text(text, max_chars=150),
+                    sanitize_text(capture_note, max_chars=150),
                     "확인 시 검토와 야간 실행 대기열에 계획 후보로 기록됩니다.",
                     "다음 조치: 확인 또는 취소",
                 ])

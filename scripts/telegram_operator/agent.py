@@ -231,7 +231,9 @@ def build_agent_chat_prompt(
             "recent_chat_history lists earlier turns in this Telegram chat, oldest first. Use it ONLY to resolve follow-up questions and pronouns; telegram_text is the message to answer now.",
             "Never repeat one of your earlier replies verbatim. If the operator follows up on the same topic, add new detail, answer the follow-up directly, or state plainly that you have nothing new to add.",
             "You are read-only. You are not allowed to approve, launch, dispatch, run shell commands, mutate files, resolve approvals, or retarget providers.",
-            "When the operator delegates work in natural language ('~해볼까', '검토해줘', '진행해', '처리해'), do NOT answer with read-only inspection commands. Reply with the one ready-to-send command that captures the request as a plan candidate, quoted verbatim on its own line: /plan <their request restated as one goal>. Explain in one clause that sending it queues the work for review and overnight execution.",
+            "FIRST decide what the operator's message IS, and return that decision as intent:",
+            "intent 'delegate_work': the operator is handing the harness work to do -- plan, review, investigate, build, fix, run something ('~해줘', '~해볼까', '~하자', imperatives, requests). Set delegation_goal to their request restated as ONE actionable goal in the same language. The harness will show a confirm card that captures it as a plan candidate; do NOT tell the operator to type /plan and do NOT answer with inspection commands. assistant_reply may be a one-line acknowledgment.",
+            "intent 'chat': everything else -- questions, status checks, opinions, thanks, small talk. A question ABOUT work in progress ('지금 뭐 처리하고 있어?') is chat, even when it contains words like 계획/처리/진행. Set delegation_goal to null and answer directly.",
             "For pure inspection questions, recommend the matching supported command instead of asking the operator for file paths or treating the chat as authorization.",
             "Conversation input:",
             json.dumps(conversation, ensure_ascii=False, sort_keys=True),
@@ -247,7 +249,8 @@ def build_agent_chat_prompt(
             "JSON schema:",
             json.dumps(
                 {
-                    "intent": "chat",
+                    "intent": "chat | delegate_work",
+                    "delegation_goal": None,
                     "confidence": 0.0,
                     "requires_clarification": False,
                     "clarifying_question": None,
@@ -382,6 +385,12 @@ def normalize_agent_chat(parsed: dict[str, Any], *, runtime: dict[str, Any]) -> 
         list(parsed.get("non_authorized") if isinstance(parsed.get("non_authorized"), list) else [])
         + ["execution", "approval", "shell", "git mutation"]
     )
+    # The chat agent owns the routing decision (function-calling style):
+    # 'delegate_work' triggers the plan-capture confirm card in the adapter,
+    # anything unrecognized degrades to plain chat.
+    intent = str(parsed.get("intent") or "").strip().lower()
+    if intent != "delegate_work":
+        intent = "chat"
     return {
         "schema": AGENT_INTENT_SCHEMA,
         "status": "classified",
@@ -389,7 +398,10 @@ def normalize_agent_chat(parsed: dict[str, Any], *, runtime: dict[str, Any]) -> 
         "provider": runtime.get("provider"),
         "base_url": runtime.get("base_url"),
         "model": runtime.get("model"),
-        "intent": "chat",
+        "intent": intent,
+        "delegation_goal": short_optional_text(parsed.get("delegation_goal"), max_chars=380)
+        if intent == "delegate_work"
+        else None,
         "feedback_kind": "chat",
         "confidence": clamp_float(parsed.get("confidence")),
         "requires_clarification": bool(parsed.get("requires_clarification")),

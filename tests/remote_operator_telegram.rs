@@ -7375,6 +7375,160 @@ fn remote_operator_telegram_chat_focus_sticks_across_messages() -> Result<()> {
 
 #[test]
 #[serial]
+fn remote_operator_telegram_agent_delegate_intent_offers_capture_without_keywords() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    let agent_request_path = temp.path().join("ollama_delegate_request.json");
+    let (base_url, server) = spawn_fake_ollama_with_classification(
+        agent_request_path.clone(),
+        json!({
+            "intent": "delegate_work",
+            "delegation_goal": "TwinPaper 논문 그림을 재정리한다",
+            "confidence": 0.9,
+            "requires_clarification": false,
+            "clarifying_question": null,
+            "assistant_reply": "계획 후보로 잡아둘게요.",
+            "reason": "Operator handed over work in natural language.",
+            "non_authorized": ["execution", "approval", "shell"]
+        }),
+    )?;
+    let update_path = temp.path().join("delegate_update.json");
+    // No deterministic planning keyword anywhere in this message: only the
+    // agent's structured decision can route it to the capture card.
+    write_text_update(
+        &update_path,
+        730,
+        910,
+        "트윈페이퍼 논문 그림 다시 정리해줘야겠다",
+    )?;
+    let state_path = temp.path().join("telegram_state.json");
+    let out = temp.path().join("delegate_result.json");
+
+    let output = remote_operator_command(temp.path())
+        .arg("--dry-run")
+        .arg("--once")
+        .arg("--replay-update-file")
+        .arg(&update_path)
+        .arg("--forager-bin")
+        .arg(env!("CARGO_BIN_EXE_forager"))
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--state-file")
+        .arg(&state_path)
+        .arg("--feedback-file")
+        .arg(temp.path().join("feedback.jsonl"))
+        .arg("--feedback-ingest-dir")
+        .arg(temp.path().join("feedback_ingest"))
+        .arg("--agent-intent-mode")
+        .arg("required")
+        .arg("--agent-base-url")
+        .arg(&base_url)
+        .arg("--agent-model")
+        .arg("qwen3-coder-next:latest")
+        .arg("--out")
+        .arg(&out)
+        .output()?;
+
+    server.join().expect("fake ollama server panicked")?;
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&fs::read(&out)?)?;
+    assert_eq!(result["status"], "rendered");
+    assert_eq!(result["plan_capture_offered"], true);
+    let preview = result["message_preview"].as_str().expect("message preview");
+    assert!(preview.contains("<b>계획 후보로 등록할까요?</b>"));
+    // The card carries the agent's restated goal, not the raw message.
+    assert!(preview.contains("TwinPaper 논문 그림을 재정리한다"));
+    let state: Value = serde_json::from_slice(&fs::read(&state_path)?)?;
+    let chat_hash = result["target_chat_id_hash"].as_str().expect("chat hash");
+    assert_eq!(
+        state["pending_dispatch_confirmations_by_chat"][chat_hash]["note"],
+        "TwinPaper 논문 그림을 재정리한다"
+    );
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_agent_chat_intent_overrides_planning_keywords() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    let agent_request_path = temp.path().join("ollama_question_request.json");
+    let (base_url, server) = spawn_fake_ollama_with_classification(
+        agent_request_path.clone(),
+        json!({
+            "intent": "chat",
+            "delegation_goal": null,
+            "confidence": 0.9,
+            "requires_clarification": false,
+            "clarifying_question": null,
+            "assistant_reply": "지금 처리 중인 작업은 없습니다.",
+            "reason": "Question about work in progress, not a delegation.",
+            "non_authorized": ["execution", "approval", "shell"]
+        }),
+    )?;
+    let update_path = temp.path().join("question_update.json");
+    // Contains the deterministic marker '처리', but it is a question; the
+    // agent's chat decision must win over the keyword fallback.
+    write_text_update(&update_path, 731, 911, "지금 뭐 처리하고 있어?")?;
+    let state_path = temp.path().join("telegram_state.json");
+    let out = temp.path().join("question_result.json");
+
+    let output = remote_operator_command(temp.path())
+        .arg("--dry-run")
+        .arg("--once")
+        .arg("--replay-update-file")
+        .arg(&update_path)
+        .arg("--forager-bin")
+        .arg(env!("CARGO_BIN_EXE_forager"))
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--state-file")
+        .arg(&state_path)
+        .arg("--feedback-file")
+        .arg(temp.path().join("feedback.jsonl"))
+        .arg("--feedback-ingest-dir")
+        .arg(temp.path().join("feedback_ingest"))
+        .arg("--agent-intent-mode")
+        .arg("required")
+        .arg("--agent-base-url")
+        .arg(&base_url)
+        .arg("--agent-model")
+        .arg("qwen3-coder-next:latest")
+        .arg("--out")
+        .arg(&out)
+        .output()?;
+
+    server.join().expect("fake ollama server panicked")?;
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&fs::read(&out)?)?;
+    assert_eq!(result["status"], "rendered");
+    assert_eq!(result["plan_capture_offered"], Value::Null);
+    let preview = result["message_preview"].as_str().expect("message preview");
+    assert!(preview.contains("<b>Forager 응답</b>"));
+    assert!(preview.contains("지금 처리 중인 작업은 없습니다."));
+    let state: Value = serde_json::from_slice(&fs::read(&state_path)?)?;
+    let chat_hash = result["target_chat_id_hash"].as_str().expect("chat hash");
+    assert_eq!(
+        state["pending_dispatch_confirmations_by_chat"][chat_hash],
+        Value::Null
+    );
+    Ok(())
+}
+
+#[test]
+#[serial]
 fn remote_operator_telegram_chat_scrubs_hallucinated_commands() -> Result<()> {
     let temp = tempdir()?;
     let env_path = temp.path().join("telegram.env");
