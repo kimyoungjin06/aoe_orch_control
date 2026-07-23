@@ -239,6 +239,8 @@ def build_agent_chat_prompt(
             "operator_snapshot is the live read-only workstation state as of THIS message: attention counts, health, open decisions, running-capacity, registered_projects (key, display name, wiki profile), workspace_projects (folder hints), and autonomy_armed.",
             "Every number or state claim in your reply MUST come from operator_snapshot, never from recent_chat_history. If history mentions counts that the snapshot no longer shows, the snapshot is right and the old counts are resolved.",
             "When the operator names a project, resolve it against registered_projects keys and display names first; unregistered folders are context, not managed projects.",
+            "project_focus, when present, is the live state of the ONE project this conversation is about (focus_source 'mention' = named in this message, 'sticky' = carried over from an earlier message): its sessions with tool and status, session_counts, and its adaptive-wiki entry_count plus recent_claims. Answer project questions from these concrete facts (which sessions exist, what state they are in, what was recently learned), never with a generic 'the project is registered' line.",
+            "When project_focus is absent and the operator asks about 'the project' without naming one, ask which registered project they mean.",
             "supported_commands is the COMPLETE slash-command surface. Never mention, suggest, or invent a slash command that is not listed there.",
             json.dumps(ground_truth, ensure_ascii=False, sort_keys=True),
             "Return exactly one JSON object. Do not include markdown.",

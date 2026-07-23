@@ -92,7 +92,12 @@ from telegram_operator.project_candidates import (
     relative_path_hint,
     workspace_roots,
 )
-from telegram_operator.projects import load_registry, registry_summary
+from telegram_operator.projects import (
+    build_project_focus,
+    load_registry,
+    registry_summary,
+    resolve_chat_focus,
+)
 from telegram_operator.persistence import (
     append_chat_history,
     chat_history_for_chat_hash,
@@ -1581,7 +1586,12 @@ def resolve_dispatch_confirmation(
         rendered["mobile_card_contract"] = mobile_card_contract(message_preview)
 
 
-def build_chat_operator_snapshot(args: argparse.Namespace) -> dict[str, Any]:
+def build_chat_operator_snapshot(
+    args: argparse.Namespace,
+    *,
+    focus_entry: dict[str, Any] | None = None,
+    focus_source: str | None = None,
+) -> dict[str, Any]:
     """Compact live read-only state handed to the local chat agent.
 
     Without this the agent only sees chat history, so it answers state and
@@ -1590,6 +1600,13 @@ def build_chat_operator_snapshot(args: argparse.Namespace) -> dict[str, Any]:
     """
 
     snapshot: dict[str, Any] = {"schema": "telegram_chat_operator_snapshot.v1"}
+    if isinstance(focus_entry, dict):
+        snapshot["project_focus"] = build_project_focus(
+            args.forager_bin,
+            args.profile,
+            focus_entry,
+            focus_source,
+        )
     try:
         surface = export_workstation_surface(args.forager_bin, args.profile)
         snapshot["workstation"] = {
@@ -1632,6 +1649,7 @@ def render_command_result(
     mode: str,
     feedback_context: dict[str, Any] | None = None,
     chat_history: list[dict[str, Any]] | None = None,
+    sticky_focus_key: str | None = None,
 ) -> dict[str, Any]:
     result = result_base(args, config, mode)
     result["command_text"] = sanitize_text(command_text, max_chars=400)
@@ -1681,12 +1699,27 @@ def render_command_result(
         )
         return result
     if parsed.get("command") == "chat":
+        chat_text = str(parsed.get("chat_text") or command_text)
+        focus_entry, focus_source = resolve_chat_focus(
+            chat_text,
+            load_registry(),
+            sticky_focus_key,
+        )
+        if focus_entry:
+            result["project_focus"] = {
+                "key": focus_entry.get("key"),
+                "source": focus_source,
+            }
         agent_intent = chat_with_agent(
             args,
-            str(parsed.get("chat_text") or command_text),
+            chat_text,
             feedback_context=feedback_context,
             chat_history=chat_history,
-            operator_snapshot=build_chat_operator_snapshot(args),
+            operator_snapshot=build_chat_operator_snapshot(
+                args,
+                focus_entry=focus_entry,
+                focus_source=focus_source,
+            ),
         )
         if isinstance(agent_intent, dict):
             parsed["agent_intent"] = agent_intent
@@ -2223,6 +2256,7 @@ def run_once(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]
                 chat_hash,
                 max_age_sec=args.context_max_age_sec,
             )
+            sticky_focus = (state.get("chat_focus_by_chat") or {}).get(chat_hash)
             rendered = render_command_result(
                 args,
                 config,
@@ -2234,11 +2268,18 @@ def run_once(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]
                     chat_hash,
                     max_age_sec=args.context_max_age_sec,
                 ),
+                sticky_focus_key=str((sticky_focus or {}).get("project_key") or "") or None,
             )
         rendered["updates_seen"] = len(updates)
         if isinstance(update_id, int):
             rendered["processed_update_id"] = update_id
         parsed_command = rendered.get("parsed_command") if isinstance(rendered.get("parsed_command"), dict) else {}
+        focus = rendered.get("project_focus")
+        if isinstance(focus, dict) and focus.get("source") == "mention" and focus.get("key"):
+            state.setdefault("chat_focus_by_chat", {})[chat_hash] = {
+                "project_key": focus.get("key"),
+                "updated_at": utc_now(),
+            }
         if parsed_command.get("command") == "remember":
             remember_text = str(parsed_command.get("remember_text") or text)
             # A persistence failure must not raise before the offset save:

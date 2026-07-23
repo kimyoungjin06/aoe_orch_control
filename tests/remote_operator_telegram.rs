@@ -7222,6 +7222,157 @@ fn remote_operator_telegram_chat_prompt_includes_command_surface_and_snapshot() 
     Ok(())
 }
 
+fn write_project_registry(home: &Path) -> Result<()> {
+    let dir = home.join(".config").join("forager");
+    fs::create_dir_all(&dir)?;
+    fs::write(
+        dir.join("projects.toml"),
+        r#"schema = "forager_project_registry.v1"
+
+[projects.twinpaper]
+display_name = "TwinPaper"
+workspace_patterns = ["1.2.8.TwinPaper"]
+wiki_profile = "twinpaper-review"
+"#,
+    )?;
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_chat_grounds_mentioned_project_focus() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    write_project_registry(temp.path())?;
+    let out = temp.path().join("focused_chat.json");
+    let agent_request_path = temp.path().join("ollama_focus_request.json");
+    let (base_url, server) = spawn_fake_ollama_with_classification(
+        agent_request_path.clone(),
+        json!({
+            "intent": "chat",
+            "confidence": 0.9,
+            "requires_clarification": false,
+            "clarifying_question": null,
+            "assistant_reply": "TwinPaper 세션은 모두 중지 상태입니다.",
+            "reason": "Project question answered from project_focus.",
+            "non_authorized": ["execution", "approval", "shell"]
+        }),
+    )?;
+
+    let output = remote_operator_command(temp.path())
+        .arg("--dry-run")
+        .arg("--command-text")
+        .arg("좋아. Twinpaper 프로젝트 마지막 상태 리뷰해줘")
+        .arg("--forager-bin")
+        .arg(env!("CARGO_BIN_EXE_forager"))
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--out")
+        .arg(&out)
+        .arg("--agent-intent-mode")
+        .arg("required")
+        .arg("--agent-base-url")
+        .arg(&base_url)
+        .arg("--agent-model")
+        .arg("qwen3-coder-next:latest")
+        .output()?;
+
+    server.join().expect("fake ollama server panicked")?;
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&fs::read(&out)?)?;
+    assert_eq!(result["status"], "rendered");
+    assert_eq!(result["project_focus"]["key"], "twinpaper");
+    assert_eq!(result["project_focus"]["source"], "mention");
+
+    let agent_request: Value = serde_json::from_slice(&fs::read(&agent_request_path)?)?;
+    let prompt = agent_request["prompt"].as_str().expect("agent prompt");
+    // The agent must see the mentioned project's live state, not just the
+    // registry row, so it answers with concrete session/wiki facts.
+    assert!(prompt.contains("project_focus"));
+    assert!(prompt.contains("\"focus_source\": \"mention\""));
+    assert!(prompt.contains("TwinPaper"));
+    assert!(prompt.contains("session_counts"));
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_chat_focus_sticks_across_messages() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    write_project_registry(temp.path())?;
+    let state_path = temp.path().join("telegram_state.json");
+    let feedback_file = temp.path().join("feedback.jsonl");
+    let ingest_dir = temp.path().join("feedback_ingest");
+
+    let replay = |update_path: &Path, out: &Path| -> Result<std::process::Output> {
+        Ok(remote_operator_command(temp.path())
+            .arg("--dry-run")
+            .arg("--once")
+            .arg("--replay-update-file")
+            .arg(update_path)
+            .arg("--forager-bin")
+            .arg(env!("CARGO_BIN_EXE_forager"))
+            .arg("--env-file")
+            .arg(&env_path)
+            .arg("--state-file")
+            .arg(&state_path)
+            .arg("--feedback-file")
+            .arg(&feedback_file)
+            .arg("--feedback-ingest-dir")
+            .arg(&ingest_dir)
+            .arg("--out")
+            .arg(out)
+            .output()?)
+    };
+
+    let mention_update = temp.path().join("mention_update.json");
+    write_text_update(&mention_update, 720, 900, "Twinpaper 마지막 기록 리뷰해줘")?;
+    let mention_out = temp.path().join("mention_result.json");
+    let output = replay(&mention_update, &mention_out)?;
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mention: Value = serde_json::from_slice(&fs::read(&mention_out)?)?;
+    assert_eq!(mention["parsed_command"]["command"], "chat");
+    assert_eq!(mention["project_focus"]["key"], "twinpaper");
+    assert_eq!(mention["project_focus"]["source"], "mention");
+    let chat_hash = mention["target_chat_id_hash"].as_str().expect("chat hash");
+    let state: Value = serde_json::from_slice(&fs::read(&state_path)?)?;
+    assert_eq!(
+        state["chat_focus_by_chat"][chat_hash]["project_key"],
+        "twinpaper"
+    );
+
+    let followup_update = temp.path().join("followup_update.json");
+    write_text_update(&followup_update, 721, 901, "지금 상태 어때")?;
+    let followup_out = temp.path().join("followup_result.json");
+    let output = replay(&followup_update, &followup_out)?;
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let followup: Value = serde_json::from_slice(&fs::read(&followup_out)?)?;
+    assert_eq!(followup["parsed_command"]["command"], "chat");
+    // The follow-up drops the project name; the chat's sticky focus keeps
+    // the conversation about the same project.
+    assert_eq!(followup["project_focus"]["key"], "twinpaper");
+    assert_eq!(followup["project_focus"]["source"], "sticky");
+    Ok(())
+}
+
 #[test]
 #[serial]
 fn remote_operator_telegram_chat_scrubs_hallucinated_commands() -> Result<()> {

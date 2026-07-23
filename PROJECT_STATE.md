@@ -327,9 +327,21 @@ out of product-facing docs. The product direction is defined in
   `public/portfolio-surface.json` -> `/portfolio` page: one row per project
   with live session counts by tool, wiki plane entry/candidate counts, and a
   link into `/knowledge?profile=...`). Loader:
-  `scripts/telegram_operator/projects.py`. Fan-out routing (focus-sticky
-  project context, `/p <key>` prefix) and per-project attention cards are the
-  next slices and should resolve through this registry.
+  `scripts/telegram_operator/projects.py`. Fan-out routing (`/p <key>`
+  prefix) and per-project attention cards are the next slices and should
+  resolve through this registry.
+
+- Telegram chat now has project focus grounding: a plain-text message that
+  names a registered project (key, display name, or folder alias,
+  case-insensitive) resolves to that project, and the chat agent receives a
+  `project_focus` block with the project's live sessions (from
+  `forager status --json` rows), session counts, and its wiki plane's entry
+  count plus recent claims. The focus is sticky per chat
+  (`chat_focus_by_chat` in listener state): follow-up messages that drop the
+  project name keep answering about the same project until another project
+  is mentioned. Resolution and probes live in
+  `scripts/telegram_operator/projects.py` (`resolve_chat_focus`,
+  `build_project_focus`); every probe degrades without breaking chat.
 
 - `forager go [tool] [-- args]` is the zero-friction wrapper for direct agent
   work (`src/cli/go.rs`, Rust registry loader in
