@@ -254,6 +254,8 @@ def build_agent_chat_prompt(
             "- read_file(project, path): first 4000 characters of one text file",
             tool_budget_line,
             "Use tools when the operator asks about local files or current project contents, or wants a diagnosis before planning; skip them when operator_snapshot/project_focus already answer the question. When no project is named, use the project_focus project; when there is none either, finish with 'answer' and requires_clarification=true asking which registered project they mean.",
+            "When comparing projects, you may call tools on different projects across rounds; do not compare from memory when one side lacks ground truth.",
+            "You have NO web access, NO external data sources, and you cannot run code or commands. When the operator asks for something none of your tools or supported_commands cover, say plainly that this chat cannot do it and name the nearest supported alternative (e.g. capture it as a plan candidate); never imply you could do it with more detail.",
             "tool_results in the conversation input lists what your tool calls THIS message returned, oldest first. Trust them over recent_chat_history.",
             "Conversation input:",
             json.dumps(conversation, ensure_ascii=False, sort_keys=True),
