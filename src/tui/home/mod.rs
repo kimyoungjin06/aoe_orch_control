@@ -2,6 +2,7 @@
 
 mod input;
 mod operations;
+pub(super) mod projects;
 mod render;
 
 #[cfg(test)]
@@ -339,6 +340,7 @@ pub struct HomeView {
 
     // Settings view
     pub(super) settings_view: Option<SettingsView>,
+    pub(super) projects_view: Option<projects::ProjectsView>,
     /// Flag to indicate we're confirming settings close (unsaved changes)
     pub(super) settings_close_confirm: bool,
 
@@ -433,6 +435,7 @@ impl HomeView {
             terminal_preview_cache: PreviewCache::default(),
             sound_config,
             settings_view: None,
+            projects_view: None,
             settings_close_confirm: false,
             diff_view: None,
             list_width: load_config()

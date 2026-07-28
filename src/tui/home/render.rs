@@ -49,6 +49,12 @@ impl HomeView {
             return;
         }
 
+        // Projects view takes over the whole screen
+        if let Some(ref mut projects) = self.projects_view {
+            projects.render(frame, area, theme);
+            return;
+        }
+
         // Diff view takes over the whole screen
         if let Some(ref mut diff) = self.diff_view {
             // Compute diff for selected file if not cached

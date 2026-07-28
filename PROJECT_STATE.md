@@ -394,9 +394,13 @@ out of product-facing docs. The product direction is defined in
   exists), attaching either way. The TUI status bar now carries harness-wide
   orchestration signals: `Autonomy ARMED` while the overnight window is
   armed, and the wiki candidate queue total across every registered plane
-  (`load_orchestration_summary`, refreshed on reload). Remaining TUI
-  improvement slices deferred: project rollup view and an actionable
-  attention panel.
+  (`load_orchestration_summary`, refreshed on reload). The TUI now has a
+  full-screen project registry view (`p` from home,
+  `src/tui/home/projects.rs`): every registered project with live
+  running/waiting/total session counts and wiki plane, active projects
+  first; Enter jumps to the project's first session or shows the
+  `forager go` onboarding hint for session-less projects. Remaining TUI
+  improvement slice deferred: an actionable attention panel.
 
 ## Next Work Candidates
 

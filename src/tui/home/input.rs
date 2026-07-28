@@ -41,6 +41,33 @@ impl HomeView {
             }
         }
 
+        // Handle projects view (full-screen takeover)
+        if let Some(ref mut projects) = self.projects_view {
+            use crate::tui::home::projects::ProjectsAction;
+            match projects.handle_key(key) {
+                ProjectsAction::Continue => return None,
+                ProjectsAction::Close => {
+                    self.projects_view = None;
+                    return None;
+                }
+                ProjectsAction::JumpToSession(id) => {
+                    self.projects_view = None;
+                    if let Some(idx) = self.flat_items.iter().position(
+                        |item| matches!(item, Item::Session { id: sid, .. } if *sid == id),
+                    ) {
+                        self.cursor = idx;
+                    }
+                    self.selected_session = Some(id);
+                    return None;
+                }
+                ProjectsAction::ShowHint(title, body) => {
+                    self.projects_view = None;
+                    self.info_dialog = Some(InfoDialog::new(&title, &body));
+                    return None;
+                }
+            }
+        }
+
         // Handle settings view (full-screen takeover)
         if let Some(ref mut settings) = self.settings_view {
             match settings.handle_key(key) {
@@ -393,6 +420,11 @@ impl HomeView {
                     existing_titles,
                     existing_groups,
                     self.storage.profile(),
+                ));
+            }
+            KeyCode::Char('p') => {
+                self.projects_view = Some(crate::tui::home::projects::ProjectsView::new(
+                    &self.instances,
                 ));
             }
             KeyCode::Char('s') => {
