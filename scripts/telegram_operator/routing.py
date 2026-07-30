@@ -70,8 +70,8 @@ COMMAND_SURFACE = (
     ("/confirm", "대기 중인 확인 승인", "실행"),
     ("/cancel", "대기 중인 확인 취소", "실행"),
     ("/cancel_task <id> [이유]", "작업 취소", "실행"),
-    ("/session_approve <id>", "대기 세션 승인 키 전송(Enter)", "실행"),
-    ("/session_deny <id>", "대기 세션 거부 키 전송(Esc)", "실행"),
+    ("/session_approve <id> [hash] [n]", "대기 세션 승인(기본 Enter, n=옵션 번호)", "실행"),
+    ("/session_deny <id> [hash]", "대기 세션 거부 키 전송(Esc)", "실행"),
     ("/plan <내용>", "계획 후보로 기록 (로컬 Plan Mode에서 이어감)", "기록"),
     ("/feedback <내용>", "의견 기록", "기록"),
     ("/remember <내용>", "위키 후보로 기록", "기록"),
@@ -297,6 +297,8 @@ def parse_remote_command(command_text: str) -> dict[str, Any]:
             "reason": "explicit_session_input_command",
             "command_text": original_text,
             "session_input_session_id": args[0].strip(),
+            "session_input_hash": args[1].strip() if len(args) > 1 else "",
+            "session_input_option": args[2].strip() if len(args) > 2 and args[2].strip().isdigit() else "",
         }
     if command == "cancel_task":
         if not args:

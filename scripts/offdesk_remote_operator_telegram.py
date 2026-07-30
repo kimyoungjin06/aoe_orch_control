@@ -1289,6 +1289,8 @@ def render_dispatch_command(
             dispatch_result = apply_session_input(
                 args.forager_bin, args.profile, session_id, action,
                 status_file=args.session_status_file,
+                expected_hash=str(parsed.get("session_input_hash") or ""),
+                option_key=str(parsed.get("session_input_option") or ""),
             )
         except Exception as error:  # noqa: BLE001 - poll loop must never crash here
             dispatch_result = {"ok": False, "kind": "session_input", "error": sanitize_text(str(error), max_chars=200)}
@@ -1302,6 +1304,25 @@ def render_dispatch_command(
                     "다음 조치: /status",
                 ]
             )
+        elif str(dispatch_result.get("error") or "") == "prompt_changed":
+            new_hash = str(dispatch_result.get("new_hash") or "")
+            sid8 = session_id[:8]
+            message_preview = "\n".join(
+                [
+                    "<b>프롬프트가 바뀌어 중단했습니다</b>",
+                    f"현재: {html.escape(str(dispatch_result.get('prompt_line') or ''))}",
+                    "지금 화면 기준으로 다시 선택하세요.",
+                    "다음 조치: 아래 버튼",
+                ]
+            )
+            result["reply_markup_preview"] = {
+                "keyboard": [
+                    [f"/session_approve {sid8} {new_hash}", f"/session_deny {sid8} {new_hash}"],
+                    ["상태", "도움말"],
+                ],
+                "resize_keyboard": True,
+                "one_time_keyboard": False,
+            }
         else:
             message_preview = render_dispatch_error_message(
                 profile=args.profile,
@@ -2194,7 +2215,7 @@ def scan_and_propose_autonomy(
         return {"status": "scan_failed", "error": sanitize_text(str(error), max_chars=240)}
 
 
-def summarize_waiting_prompt(args: argparse.Namespace, session_id: str) -> str:
+def summarize_waiting_prompt(args: argparse.Namespace, tail: str) -> str:
     """One-line summary of what a waiting session is asking, for the card.
 
     Captures the tmux pane tail (read-only) and asks the local model to
@@ -2207,16 +2228,7 @@ def summarize_waiting_prompt(args: argparse.Namespace, session_id: str) -> str:
         resolve_agent_config,
         select_agent_runtime,
     )
-    from telegram_operator.dispatch import (  # noqa: PLC0415
-        capture_session_tail,
-        find_tmux_session_name,
-    )
-
     try:
-        tmux_name = find_tmux_session_name(session_id)
-        if not tmux_name:
-            return ""
-        tail = capture_session_tail(tmux_name, lines=30)
         if not tail.strip():
             return ""
         fallback = sanitize_text(tail.splitlines()[-1], max_chars=120)
@@ -2306,7 +2318,18 @@ def scan_and_notify_waiting_sessions(
             title = sanitize_text(str(session.get("title") or session_id), max_chars=60)
             tool = sanitize_text(str(session.get("tool") or "agent"), max_chars=24)
             project = sanitize_text(str(session.get("project") or "미등록"), max_chars=40)
-            ask_summary = summarize_waiting_prompt(args, session_id)
+            from telegram_operator.dispatch import (  # noqa: PLC0415
+                capture_session_tail,
+                find_tmux_session_name,
+                pane_prompt_hash,
+                parse_prompt_options,
+            )
+
+            tmux_name = find_tmux_session_name(session_id)
+            tail = capture_session_tail(tmux_name, lines=15) if tmux_name else ""
+            prompt_hash = pane_prompt_hash(tail)
+            options = parse_prompt_options(tail)
+            ask_summary = summarize_waiting_prompt(args, tail)
             lines = [
                 "<b>세션 입력 대기</b>",
                 f"⏸ {html.escape(project)} · {html.escape(title)} ({html.escape(tool)})",
@@ -2315,13 +2338,28 @@ def scan_and_notify_waiting_sessions(
                 lines.append(f"요청: {html.escape(ask_summary)}")
             else:
                 lines.append("에이전트가 승인/입력을 기다리고 있습니다.")
-            lines.append("아래 버튼 한 번으로 승인/거부합니다.")
+            if options:
+                lines.append(
+                    " · ".join(
+                        f"{opt['key']}. {html.escape(sanitize_text(opt['label'], max_chars=24))}"
+                        for opt in options
+                    )
+                )
+            lines.append("아래 버튼 한 번으로 선택합니다.")
             message = "\n".join(lines)
-            approve_markup = {
-                "keyboard": [
-                    [f"/session_approve {session_id[:8]}", f"/session_deny {session_id[:8]}"],
+            sid8 = session_id[:8]
+            if options:
+                option_row = [
+                    f"/session_approve {sid8} {prompt_hash} {opt['key']}" for opt in options[:3]
+                ]
+                keyboard = [option_row, [f"/session_deny {sid8} {prompt_hash}", "상태"]]
+            else:
+                keyboard = [
+                    [f"/session_approve {sid8} {prompt_hash}", f"/session_deny {sid8} {prompt_hash}"],
                     ["상태", "도움말"],
-                ],
+                ]
+            approve_markup = {
+                "keyboard": keyboard,
                 "resize_keyboard": True,
                 "one_time_keyboard": False,
             }

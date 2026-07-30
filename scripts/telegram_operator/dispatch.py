@@ -19,8 +19,10 @@ truth. It only orchestrates commands the CLI already exposes.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import pathlib
+import re
 import subprocess
 import uuid
 from typing import Any
@@ -474,6 +476,28 @@ def capture_session_tail(tmux_name: str, *, lines: int = 30) -> str:
     return "\n".join(rows[-lines:])
 
 
+def pane_prompt_hash(tail: str) -> str:
+    """Stable short fingerprint of the visible prompt, for informed consent."""
+
+    return hashlib.sha256(tail.encode("utf-8")).hexdigest()[:8] if tail else ""
+
+
+PROMPT_OPTION_RE = re.compile(r"^\s*(?:[❯>]\s*)?(\d)[.)]\s+(\S.{0,50})")
+
+
+def parse_prompt_options(tail: str) -> list[dict[str, str]]:
+    """Extract numbered choices (e.g. '1. Yes  2. No') from a prompt pane."""
+
+    options: dict[str, str] = {}
+    for line in tail.splitlines():
+        match = PROMPT_OPTION_RE.match(line)
+        if match:
+            options[match.group(1)] = match.group(2).strip()
+    if len(options) < 2:
+        return []
+    return [{"key": key, "label": options[key]} for key in sorted(options)][:4]
+
+
 def apply_session_input(
     forager_bin: str,
     profile: str,
@@ -481,6 +505,8 @@ def apply_session_input(
     action: str,
     *,
     status_file: Any = None,
+    expected_hash: str = "",
+    option_key: str = "",
 ) -> dict[str, Any]:
     """Send one approve/deny keystroke to a waiting supervised session.
 
@@ -514,7 +540,21 @@ def apply_session_input(
     if tmux_name is None:
         result["error"] = "tmux_session_not_found"
         return result
-    key = "Enter" if action == "approve" else "Escape"
+    if expected_hash:
+        # Informed consent: the keystroke applies to the prompt the operator
+        # saw on the card. If the pane moved on, refuse and report the new
+        # state instead of blind-approving whatever is there now.
+        tail = capture_session_tail(tmux_name, lines=15)
+        current_hash = pane_prompt_hash(tail)
+        if current_hash != expected_hash:
+            result["error"] = "prompt_changed"
+            result["new_hash"] = current_hash
+            result["prompt_line"] = sanitize_text(tail.splitlines()[-1] if tail else "", max_chars=100)
+            return result
+    if action == "approve" and option_key:
+        key = option_key
+    else:
+        key = "Enter" if action == "approve" else "Escape"
     try:
         subprocess.run(
             ["tmux", "send-keys", "-t", tmux_name, key],
