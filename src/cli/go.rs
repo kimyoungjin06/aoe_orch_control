@@ -56,6 +56,11 @@ pub struct GoArgs {
 }
 
 pub async fn run(profile: &str, args: GoArgs) -> Result<()> {
+    if profile != "default" {
+        // A stray FORAGER_PROFILE silently splits session storage; make the
+        // active profile impossible to miss before creating anything.
+        println!("Profile: {profile} (from -p/--profile or FORAGER_PROFILE)");
+    }
     let path = if args.path.as_os_str() == "." {
         std::env::current_dir()?
     } else {
