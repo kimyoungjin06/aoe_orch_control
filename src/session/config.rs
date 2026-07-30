@@ -44,6 +44,12 @@ pub struct Config {
 
     #[serde(default)]
     pub app_state: AppStateConfig,
+
+    /// Top-level tables this struct does not model (e.g. the harness scripts'
+    /// `[remote_operator.telegram.agent]` provider block). Captured so that
+    /// saving from the settings TUI round-trips them instead of deleting them.
+    #[serde(flatten)]
+    pub extra: toml::Table,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -370,6 +376,28 @@ pub fn get_claude_config_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_config_roundtrip_preserves_unknown_sections() {
+        let raw = r#"
+default_profile = ""
+
+[session]
+default_tool = "codex"
+
+[remote_operator.telegram.agent]
+provider = "ollama"
+base_url = "http://10.0.0.1:11434"
+models = ["qwen3-coder-next:latest"]
+"#;
+        let config: Config = toml::from_str(raw).expect("parse config with extra section");
+        let out = toml::to_string_pretty(&config).expect("serialize config");
+        assert!(out.contains("[remote_operator.telegram.agent]"));
+        assert!(out.contains("base_url = \"http://10.0.0.1:11434\""));
+        let reparsed: Config = toml::from_str(&out).expect("reparse saved config");
+        assert_eq!(reparsed.session.default_tool.as_deref(), Some("codex"));
+        assert!(reparsed.extra.contains_key("remote_operator"));
+    }
 
     // Tests for Config defaults
     #[test]
