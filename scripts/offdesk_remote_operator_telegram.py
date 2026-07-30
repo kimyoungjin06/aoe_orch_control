@@ -2288,13 +2288,20 @@ def scan_and_notify_waiting_sessions(
         for session_id in list(notified):
             if session_id not in waiting_ids and now - float(notified[session_id]) > 300:
                 del notified[session_id]
+        prev_waiting = {str(x) for x in state.get("waiting_ids_last_scan") or []}
+        state["waiting_ids_last_scan"] = sorted(waiting_ids)
         sent = []
         for session in waiting:
             session_id = str(session.get("id") or "")
             if not session_id:
                 continue
             last = float(notified.get(session_id) or 0)
-            if now - last < int(args.session_notify_backoff_sec):
+            # A session that was not waiting at the previous scan hit a NEW
+            # prompt: notify right away (60s flap guard only). The long
+            # backoff is a reminder cadence for one continuously-waiting
+            # prompt, not a mute for the session.
+            threshold = 60 if session_id not in prev_waiting else int(args.session_notify_backoff_sec)
+            if now - last < threshold:
                 continue
             title = sanitize_text(str(session.get("title") or session_id), max_chars=60)
             tool = sanitize_text(str(session.get("tool") or "agent"), max_chars=24)
