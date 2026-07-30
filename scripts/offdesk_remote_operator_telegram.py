@@ -61,6 +61,7 @@ from telegram_operator.schemas import (
 from telegram_operator.plan_messages import render_project_selection_message
 from telegram_operator.dispatch import (
     apply_cancel_task,
+    apply_session_input,
     apply_decision_action,
     apply_operator_pause,
     apply_operator_resume,
@@ -1278,6 +1279,29 @@ def render_dispatch_command(
                 detail=str(error),
             )
         return finalize_dispatch_result(result, message_preview, context=attention_context)
+    if command in {"session_approve", "session_deny"}:
+        session_id = str(parsed.get("session_input_session_id") or "")
+        action = "approve" if command == "session_approve" else "deny"
+        confirmation = build_confirmation(
+            kind="session_input",
+            target_id=session_id,
+            action_kind=action,
+            observed_hash="",
+            note="",
+            chat_hash=None,
+            ttl_sec=args.dispatch_confirm_ttl_sec,
+        )
+        result["pending_dispatch_confirmation"] = confirmation
+        key_label = "Enter(기본 선택 수락)" if action == "approve" else "Esc(거부/닫기)"
+        message_preview = "\n".join(
+            [
+                "<b>세션 입력 전송 확인</b>",
+                f"세션 {html.escape(session_id)}에 {key_label} 키를 보냅니다.",
+                "확인 시점에 세션이 여전히 입력 대기인지 재검증합니다.",
+                "다음 조치: 확인 또는 취소",
+            ]
+        )
+        return finalize_dispatch_result(result, message_preview)
     if command == "cancel_task":
         task_id = str(parsed.get("cancel_task_id") or "")
         reason = str(parsed.get("cancel_reason") or "")
@@ -1356,7 +1380,7 @@ def resolve_dispatch_confirmation(
         rendered["message_preview"] = message_preview
         rendered["mobile_card_contract"] = mobile_card_contract(message_preview)
         return
-    if command in {"decision", "recover", "dispatch", "run", "cancel_task", "resume"}:
+    if command in {"decision", "recover", "dispatch", "run", "cancel_task", "session_approve", "session_deny", "resume"}:
         confirmation = rendered.get("pending_dispatch_confirmation")
         if isinstance(confirmation, dict):
             confirmation["chat_id_hash"] = chat_hash
@@ -1451,6 +1475,35 @@ def resolve_dispatch_confirmation(
                     headline="런타임 디스패치에 실패했습니다",
                     detail=str(error),
                 )
+    elif str(confirmation.get("kind") or "") == "session_input":
+        try:
+            dispatch_result = apply_session_input(
+                args.forager_bin,
+                args.profile,
+                str(confirmation.get("target_id") or ""),
+                str(confirmation.get("action_kind") or ""),
+                status_file=args.session_status_file,
+            )
+        except Exception as error:  # noqa: BLE001 - poll loop must never crash here
+            dispatch_result = {"ok": False, "kind": "session_input", "error": sanitize_text(str(error), max_chars=200)}
+        rendered["dispatch_result"] = dispatch_result
+        if dispatch_result.get("ok"):
+            action = str(dispatch_result.get("action") or "")
+            message_preview = "\n".join(
+                [
+                    "<b>세션 입력 전송됨</b>",
+                    f"{html.escape(str(dispatch_result.get('project') or ''))} · {html.escape(str(dispatch_result.get('session_title') or ''))}",
+                    "승인 키(Enter)를 보냈습니다." if action == "approve" else "거부 키(Esc)를 보냈습니다.",
+                    "다음 조치: /status",
+                ]
+            )
+        else:
+            message_preview = render_dispatch_error_message(
+                profile=args.profile,
+                generated_at=generated_at,
+                headline="세션 입력 전송에 실패했습니다",
+                detail=str(dispatch_result.get("error") or "unknown"),
+            )
     elif str(confirmation.get("kind") or "") == "cancel_task":
         # Cancel is the fail-safe direction; it has no envelope hash to re-check.
         try:
@@ -1913,6 +1966,8 @@ def render_command_result(
         "run",
         "tasks",
         "cancel_task",
+        "session_approve",
+        "session_deny",
         "pause",
         "resume",
         "attention",
@@ -2222,11 +2277,19 @@ def scan_and_notify_waiting_sessions(
                     "<b>세션 입력 대기</b>",
                     f"⏸ {html.escape(project)} · {html.escape(title)} ({html.escape(tool)})",
                     "에이전트가 승인/입력을 기다리고 있습니다.",
-                    f"다음 조치: forager session attach {html.escape(title)}",
+                    "다음 조치: 아래 버튼 또는 forager session attach",
                 ]
             )
+            approve_markup = {
+                "keyboard": [
+                    [f"/session_approve {session_id[:8]}", f"/session_deny {session_id[:8]}"],
+                    ["상태", "도움말"],
+                ],
+                "resize_keyboard": True,
+                "one_time_keyboard": False,
+            }
             try:
-                send_message(config, target_chat_id, message, args)
+                send_message(config, target_chat_id, message, args, reply_markup=approve_markup)
             except RemoteOperatorTelegramError:
                 continue
             notified[session_id] = now
@@ -2489,6 +2552,8 @@ def run_once(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]
             "dispatch",
             "run",
             "cancel_task",
+            "session_approve",
+            "session_deny",
             "pause",
             "resume",
             "confirm",

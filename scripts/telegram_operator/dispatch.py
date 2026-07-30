@@ -20,6 +20,7 @@ truth. It only orchestrates commands the CLI already exposes.
 from __future__ import annotations
 
 import json
+import pathlib
 import subprocess
 import uuid
 from typing import Any
@@ -441,6 +442,65 @@ def apply_decision_action(
 
 
 CANCELLABLE_TASK_STATUSES_EXCLUDED = {"completed", "cancelled"}
+
+
+def apply_session_input(
+    forager_bin: str,
+    profile: str,
+    session_id: str,
+    action: str,
+    *,
+    status_file: Any = None,
+) -> dict[str, Any]:
+    """Send one approve/deny keystroke to a waiting supervised session.
+
+    Re-verifies at confirm time that the session still waits for input,
+    resolves its tmux session by the id suffix in the session name, then
+    sends Enter (accept the highlighted default) or Escape (dismiss). It
+    never types text into the agent.
+    """
+
+    result: dict[str, Any] = {"ok": False, "kind": "session_input", "action": action}
+    if status_file is not None:
+        try:
+            status = json.loads(pathlib.Path(status_file).read_text())
+        except (OSError, json.JSONDecodeError) as error:
+            result["error"] = f"status_unavailable:{error}"
+            return result
+    else:
+        status = run_forager_json(forager_bin, profile, ["status", "--json"], label="session status")
+    rows = [row for row in status.get("sessions") or [] if isinstance(row, dict)]
+    matches = [row for row in rows if str(row.get("id") or "").startswith(session_id)]
+    if len(matches) != 1:
+        result["error"] = "session_not_found" if not matches else "session_id_ambiguous"
+        return result
+    session = matches[0]
+    result["session_title"] = str(session.get("title") or "")
+    result["project"] = str(session.get("project") or "")
+    if str(session.get("status") or "") != "waiting":
+        result["error"] = f"session_not_waiting:{session.get('status')}"
+        return result
+    suffix = "_" + str(session.get("id") or "")[:8]
+    try:
+        listing = subprocess.run(
+            ["tmux", "ls", "-F", "#S"], check=False, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True, timeout=10,
+        )
+        names = [name for name in listing.stdout.splitlines() if name.endswith(suffix)]
+        if len(names) != 1:
+            result["error"] = "tmux_session_not_found" if not names else "tmux_session_ambiguous"
+            return result
+        key = "Enter" if action == "approve" else "Escape"
+        subprocess.run(
+            ["tmux", "send-keys", "-t", names[0], key],
+            check=True, timeout=10,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        result["error"] = f"tmux_failed:{error}"
+        return result
+    result["ok"] = True
+    return result
 
 
 def cancellable_tasks_from_surface(surface: dict[str, Any]) -> list[dict[str, Any]]:
