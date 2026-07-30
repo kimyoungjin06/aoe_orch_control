@@ -11,7 +11,9 @@ use crate::offdesk::{
     TaskResumeStore,
 };
 use crate::offdesk::{load_orchestration_signals, OrchestrationSignals};
-use crate::session::{app_dir_resolution, get_profile_dir, project_registry, Status, Storage};
+use crate::session::{
+    app_dir_resolution, get_profile_dir, project_registry, Instance, Status, Storage,
+};
 
 #[derive(Args)]
 pub struct StatusArgs {
@@ -47,6 +49,83 @@ struct SessionStatusJson {
     status: String,
     /// Registry project key resolved from the session path, if any
     project: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ForeignSessionJson {
+    tmux_session: String,
+    session_id_suffix: String,
+    owner_profile: Option<String>,
+}
+
+/// Live `forager_*` tmux sessions that this profile's storage does not know.
+/// Divergence happens when sessions get created under another profile (stray
+/// FORAGER_PROFILE, TUI profile switch); tmux is the runtime truth, so status
+/// must surface the gap instead of letting sessions go invisible.
+fn detect_foreign_sessions(profile: &str, instances: &[Instance]) -> Vec<ForeignSessionJson> {
+    let Ok(output) = std::process::Command::new("tmux")
+        .args(["list-sessions", "-F", "#S"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let known: std::collections::HashSet<&str> = instances
+        .iter()
+        .filter_map(|inst| inst.id.get(..8))
+        .collect();
+    let mut foreign = Vec::new();
+    for name in String::from_utf8_lossy(&output.stdout).lines() {
+        let Some(rest) = name.strip_prefix("forager_") else {
+            continue;
+        };
+        let Some(suffix) = rest.rsplit('_').next() else {
+            continue;
+        };
+        if suffix.len() != 8 || !suffix.chars().all(|c| c.is_ascii_hexdigit()) {
+            continue;
+        }
+        if known.contains(suffix) {
+            continue;
+        }
+        foreign.push(ForeignSessionJson {
+            tmux_session: name.to_string(),
+            session_id_suffix: suffix.to_string(),
+            owner_profile: find_owner_profile(suffix, profile),
+        });
+    }
+    foreign
+}
+
+fn find_owner_profile(suffix: &str, current_profile: &str) -> Option<String> {
+    let current_dir = get_profile_dir(current_profile).ok()?;
+    let profiles_root = current_dir.parent()?.to_path_buf();
+    let entries = std::fs::read_dir(profiles_root).ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == current_profile {
+            continue;
+        }
+        let sessions_file = entry.path().join("sessions.json");
+        let Ok(raw) = std::fs::read_to_string(&sessions_file) else {
+            continue;
+        };
+        let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            continue;
+        };
+        if let Some(rows) = parsed.as_array() {
+            for row in rows {
+                if let Some(id) = row.get("id").and_then(|v| v.as_str()) {
+                    if id.starts_with(suffix) {
+                        return Some(name);
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 fn status_label(status: Status) -> &'static str {
@@ -115,6 +194,7 @@ struct StatusJson {
     registered_projects: usize,
     wiki_candidates: usize,
     sessions: Vec<SessionStatusJson>,
+    foreign_sessions: Vec<ForeignSessionJson>,
 }
 
 #[derive(Default)]
@@ -129,6 +209,7 @@ fn build_status_json(
     resume_counts: ResumeCounts,
     offdesk_summary: OffdeskStatusSummary,
     sessions: Vec<SessionStatusJson>,
+    foreign_sessions: Vec<ForeignSessionJson>,
 ) -> StatusJson {
     let offdesk_next_safe_actions =
         offdesk_next_safe_actions_for_status(&resume_counts, &offdesk_summary);
@@ -166,6 +247,7 @@ fn build_status_json(
         registered_projects: signals.registered_projects,
         wiki_candidates: signals.wiki_candidates,
         sessions,
+        foreign_sessions,
     }
 }
 
@@ -225,6 +307,7 @@ pub(crate) fn status_json_value_for_test(profile: &str) -> serde_json::Value {
         resume_counts,
         offdesk_summary,
         Vec::new(),
+        Vec::new(),
     ))
     .expect("status json should serialize")
 }
@@ -243,12 +326,14 @@ pub(crate) fn current_status_json_value(profile: &str) -> Result<Value> {
     let offdesk_summary = count_offdesk_state(storage.profile());
     let registry = project_registry::load_registry();
     let sessions = session_status_rows(&instances, &registry);
+    let foreign_sessions = detect_foreign_sessions(storage.profile(), &instances);
     Ok(serde_json::to_value(build_status_json(
         storage.profile(),
         counts,
         resume_counts,
         offdesk_summary,
         sessions,
+        foreign_sessions,
     ))?)
 }
 
@@ -266,6 +351,7 @@ pub async fn run(profile: &str, args: StatusArgs) -> Result<()> {
                 resume_counts,
                 offdesk_summary,
                 Vec::new(),
+                detect_foreign_sessions(storage.profile(), &[]),
             );
             println!("{}", serde_json::to_string(&status_json)?);
         } else if args.quiet {
@@ -303,12 +389,14 @@ pub async fn run(profile: &str, args: StatusArgs) -> Result<()> {
     if args.json {
         let registry = project_registry::load_registry();
         let sessions = session_status_rows(&instances, &registry);
+        let foreign_sessions = detect_foreign_sessions(storage.profile(), &instances);
         let status_json = build_status_json(
             storage.profile(),
             counts,
             resume_counts,
             offdesk_summary,
             sessions,
+            foreign_sessions,
         );
         println!("{}", serde_json::to_string(&status_json)?);
     } else if args.quiet {
@@ -328,6 +416,18 @@ pub async fn run(profile: &str, args: StatusArgs) -> Result<()> {
     } else {
         print_session_summary(&counts);
         print_project_rollup(&instances);
+        for foreign in detect_foreign_sessions(storage.profile(), &instances) {
+            match &foreign.owner_profile {
+                Some(owner) => println!(
+                    "WARNING: live session {} belongs to profile '{}' (view: forager -p {} status)",
+                    foreign.tmux_session, owner, owner
+                ),
+                None => println!(
+                    "WARNING: live session {} is not in any profile's storage",
+                    foreign.tmux_session
+                ),
+            }
+        }
         print_harness_signals(storage.profile());
         print_profile_storage_hint(storage.profile());
         if counts.error > 0 {
