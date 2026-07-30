@@ -444,6 +444,36 @@ def apply_decision_action(
 CANCELLABLE_TASK_STATUSES_EXCLUDED = {"completed", "cancelled"}
 
 
+def find_tmux_session_name(session_id: str) -> str | None:
+    """Resolve the tmux session whose name ends with the 8-char id suffix."""
+
+    suffix = "_" + str(session_id or "")[:8]
+    try:
+        listing = subprocess.run(
+            ["tmux", "ls", "-F", "#S"], check=False, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    names = [name for name in listing.stdout.splitlines() if name.endswith(suffix)]
+    return names[0] if len(names) == 1 else None
+
+
+def capture_session_tail(tmux_name: str, *, lines: int = 30) -> str:
+    """Read-only tail of a tmux pane, for summarizing what the agent asks."""
+
+    try:
+        capture = subprocess.run(
+            ["tmux", "capture-pane", "-p", "-t", tmux_name], check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    rows = [line.rstrip() for line in capture.stdout.splitlines()]
+    rows = [line for line in rows if line.strip()]
+    return "\n".join(rows[-lines:])
+
+
 def apply_session_input(
     forager_bin: str,
     profile: str,
@@ -480,19 +510,14 @@ def apply_session_input(
     if str(session.get("status") or "") != "waiting":
         result["error"] = f"session_not_waiting:{session.get('status')}"
         return result
-    suffix = "_" + str(session.get("id") or "")[:8]
+    tmux_name = find_tmux_session_name(str(session.get("id") or ""))
+    if tmux_name is None:
+        result["error"] = "tmux_session_not_found"
+        return result
+    key = "Enter" if action == "approve" else "Escape"
     try:
-        listing = subprocess.run(
-            ["tmux", "ls", "-F", "#S"], check=False, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, text=True, timeout=10,
-        )
-        names = [name for name in listing.stdout.splitlines() if name.endswith(suffix)]
-        if len(names) != 1:
-            result["error"] = "tmux_session_not_found" if not names else "tmux_session_ambiguous"
-            return result
-        key = "Enter" if action == "approve" else "Escape"
         subprocess.run(
-            ["tmux", "send-keys", "-t", names[0], key],
+            ["tmux", "send-keys", "-t", tmux_name, key],
             check=True, timeout=10,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )

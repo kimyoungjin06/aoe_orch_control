@@ -1280,27 +1280,35 @@ def render_dispatch_command(
             )
         return finalize_dispatch_result(result, message_preview, context=attention_context)
     if command in {"session_approve", "session_deny"}:
+        # One tap by operator decision: the waiting card already shows what
+        # the agent is asking, so the button acts directly. The executor
+        # still re-verifies the session is waiting before sending the key.
         session_id = str(parsed.get("session_input_session_id") or "")
         action = "approve" if command == "session_approve" else "deny"
-        confirmation = build_confirmation(
-            kind="session_input",
-            target_id=session_id,
-            action_kind=action,
-            observed_hash="",
-            note="",
-            chat_hash=None,
-            ttl_sec=args.dispatch_confirm_ttl_sec,
-        )
-        result["pending_dispatch_confirmation"] = confirmation
-        key_label = "Enter(기본 선택 수락)" if action == "approve" else "Esc(거부/닫기)"
-        message_preview = "\n".join(
-            [
-                "<b>세션 입력 전송 확인</b>",
-                f"세션 {html.escape(session_id)}에 {key_label} 키를 보냅니다.",
-                "확인 시점에 세션이 여전히 입력 대기인지 재검증합니다.",
-                "다음 조치: 확인 또는 취소",
-            ]
-        )
+        try:
+            dispatch_result = apply_session_input(
+                args.forager_bin, args.profile, session_id, action,
+                status_file=args.session_status_file,
+            )
+        except Exception as error:  # noqa: BLE001 - poll loop must never crash here
+            dispatch_result = {"ok": False, "kind": "session_input", "error": sanitize_text(str(error), max_chars=200)}
+        result["dispatch_result"] = dispatch_result
+        if dispatch_result.get("ok"):
+            message_preview = "\n".join(
+                [
+                    "<b>세션 입력 전송됨</b>",
+                    f"{html.escape(str(dispatch_result.get('project') or ''))} · {html.escape(str(dispatch_result.get('session_title') or ''))}",
+                    "승인 키(Enter)를 보냈습니다." if action == "approve" else "거부 키(Esc)를 보냈습니다.",
+                    "다음 조치: /status",
+                ]
+            )
+        else:
+            message_preview = render_dispatch_error_message(
+                profile=args.profile,
+                generated_at=generated_at,
+                headline="세션 입력 전송에 실패했습니다",
+                detail=str(dispatch_result.get("error") or "unknown"),
+            )
         return finalize_dispatch_result(result, message_preview)
     if command == "cancel_task":
         task_id = str(parsed.get("cancel_task_id") or "")
@@ -1380,7 +1388,7 @@ def resolve_dispatch_confirmation(
         rendered["message_preview"] = message_preview
         rendered["mobile_card_contract"] = mobile_card_contract(message_preview)
         return
-    if command in {"decision", "recover", "dispatch", "run", "cancel_task", "session_approve", "session_deny", "resume"}:
+    if command in {"decision", "recover", "dispatch", "run", "cancel_task", "resume"}:
         confirmation = rendered.get("pending_dispatch_confirmation")
         if isinstance(confirmation, dict):
             confirmation["chat_id_hash"] = chat_hash
@@ -1475,35 +1483,6 @@ def resolve_dispatch_confirmation(
                     headline="런타임 디스패치에 실패했습니다",
                     detail=str(error),
                 )
-    elif str(confirmation.get("kind") or "") == "session_input":
-        try:
-            dispatch_result = apply_session_input(
-                args.forager_bin,
-                args.profile,
-                str(confirmation.get("target_id") or ""),
-                str(confirmation.get("action_kind") or ""),
-                status_file=args.session_status_file,
-            )
-        except Exception as error:  # noqa: BLE001 - poll loop must never crash here
-            dispatch_result = {"ok": False, "kind": "session_input", "error": sanitize_text(str(error), max_chars=200)}
-        rendered["dispatch_result"] = dispatch_result
-        if dispatch_result.get("ok"):
-            action = str(dispatch_result.get("action") or "")
-            message_preview = "\n".join(
-                [
-                    "<b>세션 입력 전송됨</b>",
-                    f"{html.escape(str(dispatch_result.get('project') or ''))} · {html.escape(str(dispatch_result.get('session_title') or ''))}",
-                    "승인 키(Enter)를 보냈습니다." if action == "approve" else "거부 키(Esc)를 보냈습니다.",
-                    "다음 조치: /status",
-                ]
-            )
-        else:
-            message_preview = render_dispatch_error_message(
-                profile=args.profile,
-                generated_at=generated_at,
-                headline="세션 입력 전송에 실패했습니다",
-                detail=str(dispatch_result.get("error") or "unknown"),
-            )
     elif str(confirmation.get("kind") or "") == "cancel_task":
         # Cancel is the fail-safe direction; it has no envelope hash to re-check.
         try:
@@ -2215,6 +2194,54 @@ def scan_and_propose_autonomy(
         return {"status": "scan_failed", "error": sanitize_text(str(error), max_chars=240)}
 
 
+def summarize_waiting_prompt(args: argparse.Namespace, session_id: str) -> str:
+    """One-line summary of what a waiting session is asking, for the card.
+
+    Captures the tmux pane tail (read-only) and asks the local model to
+    compress it; degrades to the last visible prompt lines, then to empty.
+    Never raises into the poll loop.
+    """
+
+    from telegram_operator.agent import (  # noqa: PLC0415
+        call_ollama_intent_agent,
+        resolve_agent_config,
+        select_agent_runtime,
+    )
+    from telegram_operator.dispatch import (  # noqa: PLC0415
+        capture_session_tail,
+        find_tmux_session_name,
+    )
+
+    try:
+        tmux_name = find_tmux_session_name(session_id)
+        if not tmux_name:
+            return ""
+        tail = capture_session_tail(tmux_name, lines=30)
+        if not tail.strip():
+            return ""
+        fallback = sanitize_text(tail.splitlines()[-1], max_chars=120)
+        agent_config = resolve_agent_config(args)
+        if agent_config.get("mode") == "off":
+            return fallback
+        runtime = select_agent_runtime(agent_config)
+        if not runtime:
+            return fallback
+        prompt = "\n".join(
+            [
+                "An AI coding agent inside a terminal is paused on a permission prompt.",
+                "From the terminal tail below, state in ONE short Korean line what the agent is asking permission to do (the exact command/file if visible).",
+                'Return exactly one JSON object: {"summary": "<one line>"}. No markdown.',
+                "Terminal tail:",
+                tail[-3000:],
+            ]
+        )
+        parsed = call_ollama_intent_agent(runtime, prompt)
+        summary = sanitize_text(str(parsed.get("summary") or ""), max_chars=140)
+        return summary or fallback
+    except Exception:  # noqa: BLE001 - poll loop must never crash here
+        return ""
+
+
 def scan_and_notify_waiting_sessions(
     args: argparse.Namespace,
     config: dict[str, Any],
@@ -2272,14 +2299,17 @@ def scan_and_notify_waiting_sessions(
             title = sanitize_text(str(session.get("title") or session_id), max_chars=60)
             tool = sanitize_text(str(session.get("tool") or "agent"), max_chars=24)
             project = sanitize_text(str(session.get("project") or "미등록"), max_chars=40)
-            message = "\n".join(
-                [
-                    "<b>세션 입력 대기</b>",
-                    f"⏸ {html.escape(project)} · {html.escape(title)} ({html.escape(tool)})",
-                    "에이전트가 승인/입력을 기다리고 있습니다.",
-                    "다음 조치: 아래 버튼 또는 forager session attach",
-                ]
-            )
+            ask_summary = summarize_waiting_prompt(args, session_id)
+            lines = [
+                "<b>세션 입력 대기</b>",
+                f"⏸ {html.escape(project)} · {html.escape(title)} ({html.escape(tool)})",
+            ]
+            if ask_summary:
+                lines.append(f"요청: {html.escape(ask_summary)}")
+            else:
+                lines.append("에이전트가 승인/입력을 기다리고 있습니다.")
+            lines.append("아래 버튼 한 번으로 승인/거부합니다.")
+            message = "\n".join(lines)
             approve_markup = {
                 "keyboard": [
                     [f"/session_approve {session_id[:8]}", f"/session_deny {session_id[:8]}"],
