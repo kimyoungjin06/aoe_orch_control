@@ -2368,7 +2368,15 @@ def scan_and_notify_waiting_sessions(
             except RemoteOperatorTelegramError:
                 continue
             notified[session_id] = now
-            sent.append({"session_id": session_id, "title": title, "project": project})
+            sent.append(
+                {
+                    "session_id": session_id,
+                    "title": title,
+                    "project": project,
+                    "prompt_hash": prompt_hash,
+                    "pushed_at": utc_now(),
+                }
+            )
         if not sent:
             return {"status": "no_new_waiting", "waiting_count": len(waiting)}
         return {"status": "notified", "sent": sent, "waiting_count": len(waiting)}
@@ -2810,6 +2818,24 @@ def loop_backoff_if_needed(
     return consecutive_errors
 
 
+def result_carries_push(result: dict[str, Any]) -> bool:
+    """True when a proactive card went out on this poll, even with no inbound update.
+
+    Quiet polls report status "no_update", which run_loop does not print; a
+    push buried in one would leave no journal trace, making notify latency
+    unmeasurable.
+    """
+
+    session = result.get("session_notification")
+    if isinstance(session, dict) and session.get("status") == "notified":
+        return True
+    attention = result.get("attention_notification")
+    if isinstance(attention, dict) and attention.get("status") == "notified":
+        return True
+    autonomy = result.get("autonomy_proposal")
+    return isinstance(autonomy, dict) and autonomy.get("status") == "proposed"
+
+
 def loop_status_path(args: argparse.Namespace) -> pathlib.Path | None:
     if args.out:
         return args.out
@@ -2835,7 +2861,9 @@ def run_loop(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]
             update_loop_summary(summary, result)
             if status_path:
                 write_json(status_path, summary)
-            if max_polls is None and result.get("status") != "no_update":
+            if max_polls is None and (
+                result.get("status") != "no_update" or result_carries_push(result)
+            ):
                 print(json.dumps(result, ensure_ascii=False), flush=True)
             consecutive_errors = loop_backoff_if_needed(args, result, consecutive_errors)
     except KeyboardInterrupt:
