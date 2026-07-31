@@ -61,6 +61,9 @@ def render_service(name: str, task: str, description: str, python_bin: str, prof
             f"WorkingDirectory={systemd_arg(REPO_ROOT)}",
             f"ExecStart={exec_start}",
             "NoNewPrivileges=true",
+            # tmux and the stable forager binary live in ~/.local/bin, which
+            # the systemd user manager's default PATH does not include.
+            "Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin",
             "",
         ]
     )

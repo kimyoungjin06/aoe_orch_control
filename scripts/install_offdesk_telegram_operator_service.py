@@ -158,7 +158,12 @@ def render_unit(args: argparse.Namespace) -> str:
             "Restart=always",
             "RestartSec=5",
             "NoNewPrivileges=true",
-            "PrivateTmp=true",
+            # The session-notify scan and session-input dispatch shell out to
+            # tmux, which on user-managed hosts often lives in ~/.local/bin --
+            # a path the systemd user manager does not include by default.
+            "Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin",
+            # No PrivateTmp: the tmux server socket lives in /tmp/tmux-<uid>/
+            # and must stay reachable from this service.
             "",
             "[Install]",
             "WantedBy=default.target",
@@ -205,6 +210,7 @@ def render_watchdog_service_unit(args: argparse.Namespace) -> str:
             f"ExecStart={exec_start}",
             "NoNewPrivileges=true",
             "PrivateTmp=true",
+            "Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin",
             "",
         ]
     )
