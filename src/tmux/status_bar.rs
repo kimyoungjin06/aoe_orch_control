@@ -4,6 +4,7 @@ use anyhow::Result;
 use std::process::Command;
 
 const TITLE_OPTION: &str = "@forager_title";
+const PROJECT_OPTION: &str = "@forager_project";
 const BRANCH_OPTION: &str = "@forager_branch";
 const SANDBOX_OPTION: &str = "@forager_sandbox";
 const LEGACY_TITLE_OPTION: &str = "@aoe_title";
@@ -15,19 +16,25 @@ pub struct SandboxDisplay {
     pub container_name: String,
 }
 
-/// Apply Forager-styled status bar configuration to a tmux session.
-///
-/// Sets tmux user options and configures the status-right to display session
-/// information. Legacy @aoe_* options are also set during the rename transition.
-pub fn apply_status_bar(
+/// Set the @forager_* metadata options on a session without touching the
+/// status bar styling. Applied unconditionally so a user's own tmux config
+/// can reference #{@forager_project}/#{@forager_title} even when Forager's
+/// styling is suppressed by `tmux.status_bar = "auto"`.
+pub fn apply_session_metadata(
     session_name: &str,
     title: &str,
+    project: Option<&str>,
     branch: Option<&str>,
     sandbox: Option<&SandboxDisplay>,
 ) -> Result<()> {
-    // Set the session title as a tmux user option
     set_session_option(session_name, TITLE_OPTION, title)?;
     set_session_option(session_name, LEGACY_TITLE_OPTION, title)?;
+
+    // Set the project/group so identically-titled sessions (Claude, Codex,
+    // Orchestrator across many projects) stay distinguishable in the bar.
+    if let Some(project_name) = project.filter(|p| !p.trim().is_empty()) {
+        set_session_option(session_name, PROJECT_OPTION, project_name)?;
+    }
 
     // Set branch if provided (for worktree sessions)
     if let Some(branch_name) = branch {
@@ -45,16 +52,33 @@ pub fn apply_status_bar(
         )?;
     }
 
+    Ok(())
+}
+
+/// Apply Forager-styled status bar configuration to a tmux session.
+///
+/// Sets the metadata options and configures status-left/right styling.
+pub fn apply_status_bar(
+    session_name: &str,
+    title: &str,
+    project: Option<&str>,
+    branch: Option<&str>,
+    sandbox: Option<&SandboxDisplay>,
+) -> Result<()> {
+    apply_session_metadata(session_name, title, project, branch, sandbox)?;
+
     // Configure the status bar format using Forager's KISTI-aligned theme
     // colour32 = KISTI blue approximation, colour39 = cyan, colour160 = KISTI red approximation
     // colour235 = dark background
     //
-    // Format: "forager: Title | branch | [legacy container] | 14:30"
+    // Format: "forager: Project:Title | branch | [legacy container] | 14:30"
+    // - #{?#{@forager_project},#{@forager_project}:,}: conditional project display
     // - #{@forager_title}: session title
     // - #{?#{@forager_branch}, | #{@forager_branch},}: conditional branch display
     // - #{?#{@forager_sandbox}, [#{@forager_sandbox}],}: conditional sandbox display
     let status_format = concat!(
         " #[fg=colour32,bold]forager#[fg=colour252,nobold]: ",
+        "#{?#{@forager_project},#[fg=colour39]#{@forager_project}#[fg=colour252]:,}",
         "#{@forager_title}",
         "#{?#{@forager_branch}, #[fg=colour39]| #{@forager_branch}#[fg=colour252],}",
         "#{?#{@forager_sandbox}, #[fg=colour160]⬡ #{@forager_sandbox}#[fg=colour252],}",
@@ -65,13 +89,24 @@ pub fn apply_status_bar(
     set_session_option(session_name, "status-right-length", "80")?;
 
     // Dark background with light text - matches the Forager website.
+    // status-left leads with project · title (the operator-facing identity);
+    // the raw #S session name stays available via tmux itself.
     set_session_option(session_name, "status-style", "bg=colour235,fg=colour252")?;
     set_session_option(
         session_name,
         "status-left",
-        " #[fg=colour32,bold]#S#[fg=colour252,nobold] │ #[fg=colour245]Ctrl+b d#[fg=colour240] to detach ",
+        " #[fg=colour32,bold]#{?#{@forager_project},#{@forager_project}:,}#{@forager_title}#[fg=colour252,nobold] │ #[fg=colour245]Ctrl+b d#[fg=colour240] to detach ",
     )?;
-    set_session_option(session_name, "status-left-length", "50")?;
+    set_session_option(session_name, "status-left-length", "60")?;
+
+    // Report "Group:Title" as the outer terminal/tab title (PowerShell,
+    // Windows Terminal, ...) instead of the raw forager_* session name.
+    set_session_option(session_name, "set-titles", "on")?;
+    set_session_option(
+        session_name,
+        "set-titles-string",
+        "#{?#{@forager_title},#{?#{@forager_project},#{@forager_project}:,}#{@forager_title},#S}",
+    )?;
 
     Ok(())
 }
@@ -103,15 +138,20 @@ pub fn apply_mouse_option(session_name: &str, enabled: bool) -> Result<()> {
 pub fn apply_all_tmux_options(
     session_name: &str,
     title: &str,
+    project: Option<&str>,
     branch: Option<&str>,
     sandbox: Option<&SandboxDisplay>,
 ) {
     use crate::session::config::{should_apply_tmux_mouse, should_apply_tmux_status_bar};
 
     if should_apply_tmux_status_bar() {
-        if let Err(e) = apply_status_bar(session_name, title, branch, sandbox) {
+        if let Err(e) = apply_status_bar(session_name, title, project, branch, sandbox) {
             tracing::debug!("Failed to apply tmux status bar: {}", e);
         }
+    } else if let Err(e) = apply_session_metadata(session_name, title, project, branch, sandbox) {
+        // Styling is suppressed (user tmux config or disabled), but the
+        // @forager_* metadata stays available for the user's own bar.
+        tracing::debug!("Failed to apply tmux session metadata: {}", e);
     }
 
     if let Some(mouse_enabled) = should_apply_tmux_mouse() {
@@ -124,6 +164,7 @@ pub fn apply_all_tmux_options(
 /// Session info retrieved from tmux user options.
 pub struct SessionInfo {
     pub title: String,
+    pub project: Option<String>,
     pub branch: Option<String>,
     pub sandbox: Option<String>,
 }
@@ -152,6 +193,7 @@ pub fn get_session_info_for_current() -> Option<SessionInfo> {
             }
         });
 
+    let project = get_session_option(&session_name, PROJECT_OPTION);
     let branch = get_session_option(&session_name, BRANCH_OPTION)
         .or_else(|| get_session_option(&session_name, LEGACY_BRANCH_OPTION));
     let sandbox = get_session_option(&session_name, SANDBOX_OPTION)
@@ -159,6 +201,7 @@ pub fn get_session_info_for_current() -> Option<SessionInfo> {
 
     Some(SessionInfo {
         title,
+        project,
         branch,
         sandbox,
     })
@@ -169,7 +212,10 @@ pub fn get_session_info_for_current() -> Option<SessionInfo> {
 pub fn get_status_for_current_session() -> Option<String> {
     let info = get_session_info_for_current()?;
 
-    let mut result = format!("forager: {}", info.title);
+    let mut result = match &info.project {
+        Some(project) => format!("forager: {}:{}", project, info.title),
+        None => format!("forager: {}", info.title),
+    };
 
     if let Some(b) = &info.branch {
         result.push_str(" | ");
