@@ -32,12 +32,13 @@ struct SessionCache {
 }
 
 pub fn refresh_session_cache() {
+    // Space separator, not tab: without a UTF-8 locale (systemd services,
+    // cron) tmux sanitizes control characters in format output to '_',
+    // which silently broke the tab split and made every session look
+    // stopped. rsplit keeps names containing spaces safe since the
+    // activity field is always the trailing token.
     let output = Command::new("tmux")
-        .args([
-            "list-sessions",
-            "-F",
-            "#{session_name}\t#{session_activity}",
-        ])
+        .args(["list-sessions", "-F", "#{session_name} #{session_activity}"])
         .output();
 
     let new_data = match output {
@@ -45,7 +46,7 @@ pub fn refresh_session_cache() {
             let stdout = String::from_utf8_lossy(&out.stdout);
             let mut map = HashMap::new();
             for line in stdout.lines() {
-                if let Some((name, activity)) = line.split_once('\t') {
+                if let Some((name, activity)) = line.rsplit_once(' ') {
                     let activity: i64 = activity.parse().unwrap_or(0);
                     map.insert(name.to_string(), activity);
                 }
