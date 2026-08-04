@@ -168,7 +168,10 @@ pub async fn run(profile: &str, args: GoArgs) -> Result<()> {
         let mut instance = Instance::new(&title, normalized_path);
         instance.command = command.clone();
         instance.tool = tool.clone();
-        instance.yolo_mode = args.yolo;
+        instance.yolo_mode = args.yolo
+            || crate::session::Config::load()
+                .map(|c| c.session.yolo_mode_default)
+                .unwrap_or(false);
         if let Some(group) = project
             .as_ref()
             .and_then(|entry| entry.session_group.clone())
