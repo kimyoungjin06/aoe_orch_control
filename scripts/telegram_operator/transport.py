@@ -97,3 +97,34 @@ def send_message(
     if isinstance(result, dict) and isinstance(result.get("message_id"), int):
         return int(result["message_id"])
     return None
+
+
+def edit_message(
+    config: dict[str, Any],
+    chat_id: str,
+    message_id: int,
+    message: str,
+    args: Any,
+) -> bool:
+    """Best-effort edit of a previously sent message (e.g. expiring a stale
+    action card). Returns False instead of raising on dry-run or API refusal
+    (edits fail once a message is older than Telegram's 48h edit window)."""
+
+    if args.dry_run:
+        return False
+    try:
+        telegram_api(
+            config["token"],
+            "editMessageText",
+            {
+                "chat_id": chat_id,
+                "message_id": int(message_id),
+                "text": message,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            },
+            timeout_sec=max(1, int(args.api_timeout_sec)),
+        )
+        return True
+    except Exception:  # noqa: BLE001 - expiry edits must never break the loop
+        return False

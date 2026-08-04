@@ -8085,6 +8085,10 @@ fn remote_operator_telegram_waiting_session_notifies_once_per_episode() -> Resul
     assert_eq!(results[1]["session_notification"]["waiting_count"], 1);
 
     let state: Value = serde_json::from_slice(&fs::read(&state_path)?)?;
-    assert!(state["waiting_notified_by_session"]["abc123"].is_number());
+    // Entries are objects so the pushed card can be expired when the episode
+    // ends: "at" timestamp plus the sent message id / prompt hash / label.
+    let entry = &state["waiting_notified_by_session"]["abc123"];
+    assert!(entry.is_object());
+    assert!(entry["at"].is_number());
     Ok(())
 }

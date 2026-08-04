@@ -158,7 +158,7 @@ from telegram_operator.routing import (
     parse_remote_command,
     remote_plan_session_command_payload,
 )
-from telegram_operator.transport import get_updates, send_message
+from telegram_operator.transport import edit_message, get_updates, send_message
 from telegram_operator.wiki import record_remember_candidate
 
 
@@ -2294,11 +2294,32 @@ def scan_and_notify_waiting_sessions(
             state["waiting_notified_by_session"] = notified
         now = time.time()
         waiting_ids = {str(s.get("id") or "") for s in waiting}
-        # Episode end: forget sessions that are no longer waiting so the next
-        # episode notifies right away (entries younger than 300s stay to damp
+        # Normalize legacy float entries to dicts so cards can be expired.
+        for session_id, value in list(notified.items()):
+            if isinstance(value, (int, float)):
+                notified[session_id] = {"at": float(value)}
+        # Episode end: expire the pushed card in the chat right away (a stale
+        # card tapped hours later just fails its re-verification, which reads
+        # as a broken bot), then forget the session so the next episode
+        # notifies immediately (entries younger than 300s stay to damp
         # flapping between polls).
         for session_id in list(notified):
-            if session_id not in waiting_ids and now - float(notified[session_id]) > 300:
+            entry = notified[session_id]
+            if session_id in waiting_ids:
+                continue
+            message_id = entry.get("message_id")
+            if message_id and not entry.get("resolved"):
+                edit_message(
+                    config,
+                    target_chat_id,
+                    int(message_id),
+                    "<b>세션 입력 대기 - 해결됨</b>\n"
+                    f"{entry.get('label') or session_id[:8]}\n"
+                    "이 카드는 만료되었습니다 (세션이 더 이상 입력 대기가 아닙니다).",
+                    args,
+                )
+                entry["resolved"] = True
+            if now - float(entry.get("at") or 0) > 300:
                 del notified[session_id]
         prev_waiting = {str(x) for x in state.get("waiting_ids_last_scan") or []}
         state["waiting_ids_last_scan"] = sorted(waiting_ids)
@@ -2307,7 +2328,7 @@ def scan_and_notify_waiting_sessions(
             session_id = str(session.get("id") or "")
             if not session_id:
                 continue
-            last = float(notified.get(session_id) or 0)
+            last = float((notified.get(session_id) or {}).get("at") or 0)
             # A session that was not waiting at the previous scan hit a NEW
             # prompt: notify right away (60s flap guard only). The long
             # backoff is a reminder cadence for one continuously-waiting
@@ -2364,10 +2385,17 @@ def scan_and_notify_waiting_sessions(
                 "one_time_keyboard": False,
             }
             try:
-                send_message(config, target_chat_id, message, args, reply_markup=approve_markup)
+                message_id = send_message(
+                    config, target_chat_id, message, args, reply_markup=approve_markup
+                )
             except RemoteOperatorTelegramError:
                 continue
-            notified[session_id] = now
+            notified[session_id] = {
+                "at": now,
+                "message_id": message_id,
+                "prompt_hash": prompt_hash,
+                "label": f"{project} · {title} ({tool})",
+            }
             sent.append(
                 {
                     "session_id": session_id,
@@ -2375,6 +2403,7 @@ def scan_and_notify_waiting_sessions(
                     "project": project,
                     "prompt_hash": prompt_hash,
                     "pushed_at": utc_now(),
+                    "message_id": message_id,
                 }
             )
         if not sent:
