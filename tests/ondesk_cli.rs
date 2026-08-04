@@ -575,9 +575,11 @@ fn ondesk_workstation_surface_json_projects_current_status_into_dashboard() -> R
         .expect("recovery forbidden effects")
         .contains(&json!("wiki_promotion")));
     assert_eq!(surface["decisions"][0]["decision_id"], "decision-user");
+    // allowed_actions carry option IDs (the executor's action vocabulary),
+    // not display labels; slugged labels were rejected by action-decision.
     assert_eq!(
         surface["decisions"][0]["allowed_actions"],
-        json!(["Revise", "Block"])
+        json!(["revise", "block"])
     );
     assert_eq!(surface["graph_focus"]["title"], "Selected provenance path");
     Ok(())

@@ -19,7 +19,10 @@ truth. It only orchestrates commands the CLI already exposes.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import pathlib
+import re
 import subprocess
 import uuid
 from typing import Any
@@ -441,6 +444,128 @@ def apply_decision_action(
 
 
 CANCELLABLE_TASK_STATUSES_EXCLUDED = {"completed", "cancelled"}
+
+
+def find_tmux_session_name(session_id: str) -> str | None:
+    """Resolve the tmux session whose name ends with the 8-char id suffix."""
+
+    suffix = "_" + str(session_id or "")[:8]
+    try:
+        listing = subprocess.run(
+            ["tmux", "ls", "-F", "#S"], check=False, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    names = [name for name in listing.stdout.splitlines() if name.endswith(suffix)]
+    return names[0] if len(names) == 1 else None
+
+
+def capture_session_tail(tmux_name: str, *, lines: int = 30) -> str:
+    """Read-only tail of a tmux pane, for summarizing what the agent asks."""
+
+    try:
+        capture = subprocess.run(
+            ["tmux", "capture-pane", "-p", "-t", tmux_name], check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    rows = [line.rstrip() for line in capture.stdout.splitlines()]
+    rows = [line for line in rows if line.strip()]
+    return "\n".join(rows[-lines:])
+
+
+def pane_prompt_hash(tail: str) -> str:
+    """Stable short fingerprint of the visible prompt, for informed consent."""
+
+    return hashlib.sha256(tail.encode("utf-8")).hexdigest()[:8] if tail else ""
+
+
+PROMPT_OPTION_RE = re.compile(r"^\s*(?:[❯>]\s*)?(\d)[.)]\s+(\S.{0,50})")
+
+
+def parse_prompt_options(tail: str) -> list[dict[str, str]]:
+    """Extract numbered choices (e.g. '1. Yes  2. No') from a prompt pane."""
+
+    options: dict[str, str] = {}
+    for line in tail.splitlines():
+        match = PROMPT_OPTION_RE.match(line)
+        if match:
+            options[match.group(1)] = match.group(2).strip()
+    if len(options) < 2:
+        return []
+    return [{"key": key, "label": options[key]} for key in sorted(options)][:4]
+
+
+def apply_session_input(
+    forager_bin: str,
+    profile: str,
+    session_id: str,
+    action: str,
+    *,
+    status_file: Any = None,
+    expected_hash: str = "",
+    option_key: str = "",
+) -> dict[str, Any]:
+    """Send one approve/deny keystroke to a waiting supervised session.
+
+    Re-verifies at confirm time that the session still waits for input,
+    resolves its tmux session by the id suffix in the session name, then
+    sends Enter (accept the highlighted default) or Escape (dismiss). It
+    never types text into the agent.
+    """
+
+    result: dict[str, Any] = {"ok": False, "kind": "session_input", "action": action}
+    if status_file is not None:
+        try:
+            status = json.loads(pathlib.Path(status_file).read_text())
+        except (OSError, json.JSONDecodeError) as error:
+            result["error"] = f"status_unavailable:{error}"
+            return result
+    else:
+        status = run_forager_json(forager_bin, profile, ["status", "--json"], label="session status")
+    rows = [row for row in status.get("sessions") or [] if isinstance(row, dict)]
+    matches = [row for row in rows if str(row.get("id") or "").startswith(session_id)]
+    if len(matches) != 1:
+        result["error"] = "session_not_found" if not matches else "session_id_ambiguous"
+        return result
+    session = matches[0]
+    result["session_title"] = str(session.get("title") or "")
+    result["project"] = str(session.get("project") or "")
+    if str(session.get("status") or "") != "waiting":
+        result["error"] = f"session_not_waiting:{session.get('status')}"
+        return result
+    tmux_name = find_tmux_session_name(str(session.get("id") or ""))
+    if tmux_name is None:
+        result["error"] = "tmux_session_not_found"
+        return result
+    if expected_hash:
+        # Informed consent: the keystroke applies to the prompt the operator
+        # saw on the card. If the pane moved on, refuse and report the new
+        # state instead of blind-approving whatever is there now.
+        tail = capture_session_tail(tmux_name, lines=15)
+        current_hash = pane_prompt_hash(tail)
+        if current_hash != expected_hash:
+            result["error"] = "prompt_changed"
+            result["new_hash"] = current_hash
+            result["prompt_line"] = sanitize_text(tail.splitlines()[-1] if tail else "", max_chars=100)
+            return result
+    if action == "approve" and option_key:
+        key = option_key
+    else:
+        key = "Enter" if action == "approve" else "Escape"
+    try:
+        subprocess.run(
+            ["tmux", "send-keys", "-t", tmux_name, key],
+            check=True, timeout=10,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        result["error"] = f"tmux_failed:{error}"
+        return result
+    result["ok"] = True
+    return result
 
 
 def cancellable_tasks_from_surface(surface: dict[str, Any]) -> list[dict[str, Any]]:

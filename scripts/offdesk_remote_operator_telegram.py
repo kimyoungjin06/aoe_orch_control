@@ -61,6 +61,7 @@ from telegram_operator.schemas import (
 from telegram_operator.plan_messages import render_project_selection_message
 from telegram_operator.dispatch import (
     apply_cancel_task,
+    apply_session_input,
     apply_decision_action,
     apply_operator_pause,
     apply_operator_resume,
@@ -92,7 +93,17 @@ from telegram_operator.project_candidates import (
     relative_path_hint,
     workspace_roots,
 )
-from telegram_operator.projects import load_registry, registry_summary
+from telegram_operator.projects import (
+    build_project_focus,
+    find_project_dir,
+    inspect_project_workspace,
+    inspection_summary_lines,
+    list_project_dir,
+    load_registry,
+    read_project_file,
+    registry_summary,
+    resolve_chat_focus,
+)
 from telegram_operator.persistence import (
     append_chat_history,
     chat_history_for_chat_hash,
@@ -147,7 +158,7 @@ from telegram_operator.routing import (
     parse_remote_command,
     remote_plan_session_command_payload,
 )
-from telegram_operator.transport import get_updates, send_message
+from telegram_operator.transport import edit_message, get_updates, send_message
 from telegram_operator.wiki import record_remember_candidate
 
 
@@ -1268,6 +1279,58 @@ def render_dispatch_command(
                 detail=str(error),
             )
         return finalize_dispatch_result(result, message_preview, context=attention_context)
+    if command in {"session_approve", "session_deny"}:
+        # One tap by operator decision: the waiting card already shows what
+        # the agent is asking, so the button acts directly. The executor
+        # still re-verifies the session is waiting before sending the key.
+        session_id = str(parsed.get("session_input_session_id") or "")
+        action = "approve" if command == "session_approve" else "deny"
+        try:
+            dispatch_result = apply_session_input(
+                args.forager_bin, args.profile, session_id, action,
+                status_file=args.session_status_file,
+                expected_hash=str(parsed.get("session_input_hash") or ""),
+                option_key=str(parsed.get("session_input_option") or ""),
+            )
+        except Exception as error:  # noqa: BLE001 - poll loop must never crash here
+            dispatch_result = {"ok": False, "kind": "session_input", "error": sanitize_text(str(error), max_chars=200)}
+        result["dispatch_result"] = dispatch_result
+        if dispatch_result.get("ok"):
+            message_preview = "\n".join(
+                [
+                    "<b>세션 입력 전송됨</b>",
+                    f"{html.escape(str(dispatch_result.get('project') or ''))} · {html.escape(str(dispatch_result.get('session_title') or ''))}",
+                    "승인 키(Enter)를 보냈습니다." if action == "approve" else "거부 키(Esc)를 보냈습니다.",
+                    "다음 조치: /status",
+                ]
+            )
+        elif str(dispatch_result.get("error") or "") == "prompt_changed":
+            new_hash = str(dispatch_result.get("new_hash") or "")
+            sid8 = session_id[:8]
+            message_preview = "\n".join(
+                [
+                    "<b>프롬프트가 바뀌어 중단했습니다</b>",
+                    f"현재: {html.escape(str(dispatch_result.get('prompt_line') or ''))}",
+                    "지금 화면 기준으로 다시 선택하세요.",
+                    "다음 조치: 아래 버튼",
+                ]
+            )
+            result["reply_markup_preview"] = {
+                "keyboard": [
+                    [f"/session_approve {sid8} {new_hash}", f"/session_deny {sid8} {new_hash}"],
+                    ["상태", "도움말"],
+                ],
+                "resize_keyboard": True,
+                "one_time_keyboard": False,
+            }
+        else:
+            message_preview = render_dispatch_error_message(
+                profile=args.profile,
+                generated_at=generated_at,
+                headline="세션 입력 전송에 실패했습니다",
+                detail=str(dispatch_result.get("error") or "unknown"),
+            )
+        return finalize_dispatch_result(result, message_preview)
     if command == "cancel_task":
         task_id = str(parsed.get("cancel_task_id") or "")
         reason = str(parsed.get("cancel_reason") or "")
@@ -1463,6 +1526,14 @@ def resolve_dispatch_confirmation(
                 headline="작업 취소에 실패했습니다",
                 detail=str(error),
             )
+    elif str(confirmation.get("kind") or "") == "plan_capture":
+        rendered["captured_plan_text"] = str(confirmation.get("note") or "")
+        message_preview = "\n".join([
+            "<b>계획 후보 등록</b>",
+            sanitize_text(rendered["captured_plan_text"], max_chars=140),
+            "검토 후 로컬 Plan Mode 또는 야간 창에서 이어집니다.",
+            "다음 조치: /plans · /status",
+        ])
     elif str(confirmation.get("kind") or "") == "autonomy_start":
         try:
             proc = subprocess.run(
@@ -1573,7 +1644,12 @@ def resolve_dispatch_confirmation(
         rendered["mobile_card_contract"] = mobile_card_contract(message_preview)
 
 
-def build_chat_operator_snapshot(args: argparse.Namespace) -> dict[str, Any]:
+def build_chat_operator_snapshot(
+    args: argparse.Namespace,
+    *,
+    focus_entry: dict[str, Any] | None = None,
+    focus_source: str | None = None,
+) -> dict[str, Any]:
     """Compact live read-only state handed to the local chat agent.
 
     Without this the agent only sees chat history, so it answers state and
@@ -1582,6 +1658,13 @@ def build_chat_operator_snapshot(args: argparse.Namespace) -> dict[str, Any]:
     """
 
     snapshot: dict[str, Any] = {"schema": "telegram_chat_operator_snapshot.v1"}
+    if isinstance(focus_entry, dict):
+        snapshot["project_focus"] = build_project_focus(
+            args.forager_bin,
+            args.profile,
+            focus_entry,
+            focus_source,
+        )
     try:
         surface = export_workstation_surface(args.forager_bin, args.profile)
         snapshot["workstation"] = {
@@ -1616,6 +1699,50 @@ def build_chat_operator_snapshot(args: argparse.Namespace) -> dict[str, Any]:
     return snapshot
 
 
+def run_chat_tool(
+    args: argparse.Namespace,
+    request: dict[str, Any],
+    *,
+    registry: dict[str, dict[str, Any]],
+    focus_entry: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Execute one read-only chat-agent tool call. Never raises.
+
+    The chat agent may only touch registered projects, and only through the
+    bounded read-only helpers in telegram_operator.projects.
+    """
+
+    tool = str(request.get("tool") or "")
+    key = str(request.get("project") or "").strip() or str((focus_entry or {}).get("key") or "")
+    entry = registry.get(key)
+    if not isinstance(entry, dict):
+        return {
+            "status": "unknown_project",
+            "project": key or None,
+            "registered": sorted(registry.keys())[:20],
+        }
+    project_dir = find_project_dir(entry, workspace_roots(args))
+    if project_dir is None:
+        return {"status": "workspace_not_found", "project": key}
+    try:
+        if tool == "workspace_overview":
+            report = inspect_project_workspace(project_dir)
+            report["status"] = "ok"
+            report["project"] = key
+            return report
+        if tool == "list_dir":
+            return list_project_dir(project_dir, str(request.get("path") or ""))
+        if tool == "read_file":
+            return read_project_file(project_dir, str(request.get("path") or ""))
+    except Exception as error:  # noqa: BLE001 - chat tools must never crash the poll loop
+        return {
+            "status": "tool_failed",
+            "tool": tool[:40],
+            "error": sanitize_text(str(error), max_chars=120),
+        }
+    return {"status": "unknown_tool", "tool": tool[:40]}
+
+
 def render_command_result(
     args: argparse.Namespace,
     config: dict[str, Any],
@@ -1624,6 +1751,7 @@ def render_command_result(
     mode: str,
     feedback_context: dict[str, Any] | None = None,
     chat_history: list[dict[str, Any]] | None = None,
+    sticky_focus_key: str | None = None,
 ) -> dict[str, Any]:
     result = result_base(args, config, mode)
     result["command_text"] = sanitize_text(command_text, max_chars=400)
@@ -1673,13 +1801,64 @@ def render_command_result(
         )
         return result
     if parsed.get("command") == "chat":
+        chat_text = str(parsed.get("chat_text") or command_text)
+        registry = load_registry()
+        focus_entry, focus_source = resolve_chat_focus(
+            chat_text,
+            registry,
+            sticky_focus_key,
+        )
+        if focus_entry:
+            result["project_focus"] = {
+                "key": focus_entry.get("key"),
+                "source": focus_source,
+            }
+        operator_snapshot = build_chat_operator_snapshot(
+            args,
+            focus_entry=focus_entry,
+            focus_source=focus_source,
+        )
+        tool_outcomes: list[dict[str, Any]] = []
+
+        def execute_chat_tool(request: dict[str, Any]) -> dict[str, Any]:
+            outcome = run_chat_tool(args, request, registry=registry, focus_entry=focus_entry)
+            tool_outcomes.append({"request": request, "result": outcome})
+            return outcome
+
         agent_intent = chat_with_agent(
             args,
-            str(parsed.get("chat_text") or command_text),
+            chat_text,
             feedback_context=feedback_context,
             chat_history=chat_history,
-            operator_snapshot=build_chat_operator_snapshot(args),
+            operator_snapshot=operator_snapshot,
+            tool_executor=execute_chat_tool,
         )
+        if isinstance(agent_intent, dict) and agent_intent.get("tools_used"):
+            result["chat_tools_used"] = agent_intent.get("tools_used")
+        if (
+            isinstance(agent_intent, dict)
+            and agent_intent.get("intent") == "chat"
+            and not agent_intent.get("assistant_reply")
+        ):
+            # The model inspected but never composed an answer; degrade to a
+            # deterministic summary of the last successful overview probe.
+            overview = next(
+                (
+                    item["result"]
+                    for item in reversed(tool_outcomes)
+                    if item["request"].get("tool") == "workspace_overview"
+                    and item["result"].get("status") == "ok"
+                ),
+                None,
+            )
+            if overview and focus_entry:
+                agent_intent = {
+                    **agent_intent,
+                    "assistant_reply": "\n".join(
+                        [f"{focus_entry.get('display_name')} 로컬 상태:"]
+                        + inspection_summary_lines(overview)
+                    ),
+                }
         if isinstance(agent_intent, dict):
             parsed["agent_intent"] = agent_intent
             parsed["agent_chat_reason"] = str(
@@ -1787,6 +1966,8 @@ def render_command_result(
         "run",
         "tasks",
         "cancel_task",
+        "session_approve",
+        "session_deny",
         "pause",
         "resume",
         "attention",
@@ -2034,6 +2215,45 @@ def scan_and_propose_autonomy(
         return {"status": "scan_failed", "error": sanitize_text(str(error), max_chars=240)}
 
 
+def summarize_waiting_prompt(args: argparse.Namespace, tail: str) -> str:
+    """One-line summary of what a waiting session is asking, for the card.
+
+    Captures the tmux pane tail (read-only) and asks the local model to
+    compress it; degrades to the last visible prompt lines, then to empty.
+    Never raises into the poll loop.
+    """
+
+    from telegram_operator.agent import (  # noqa: PLC0415
+        call_ollama_intent_agent,
+        resolve_agent_config,
+        select_agent_runtime,
+    )
+    try:
+        if not tail.strip():
+            return ""
+        fallback = sanitize_text(tail.splitlines()[-1], max_chars=120)
+        agent_config = resolve_agent_config(args)
+        if agent_config.get("mode") == "off":
+            return fallback
+        runtime = select_agent_runtime(agent_config)
+        if not runtime:
+            return fallback
+        prompt = "\n".join(
+            [
+                "An AI coding agent inside a terminal is paused on a permission prompt.",
+                "From the terminal tail below, state in ONE short Korean line what the agent is asking permission to do (the exact command/file if visible).",
+                'Return exactly one JSON object: {"summary": "<one line>"}. No markdown.',
+                "Terminal tail:",
+                tail[-3000:],
+            ]
+        )
+        parsed = call_ollama_intent_agent(runtime, prompt)
+        summary = sanitize_text(str(parsed.get("summary") or ""), max_chars=140)
+        return summary or fallback
+    except Exception:  # noqa: BLE001 - poll loop must never crash here
+        return ""
+
+
 def scan_and_notify_waiting_sessions(
     args: argparse.Namespace,
     config: dict[str, Any],
@@ -2074,37 +2294,118 @@ def scan_and_notify_waiting_sessions(
             state["waiting_notified_by_session"] = notified
         now = time.time()
         waiting_ids = {str(s.get("id") or "") for s in waiting}
-        # Episode end: forget sessions that are no longer waiting so the next
-        # episode notifies right away (entries younger than 300s stay to damp
+        # Normalize legacy float entries to dicts so cards can be expired.
+        for session_id, value in list(notified.items()):
+            if isinstance(value, (int, float)):
+                notified[session_id] = {"at": float(value)}
+        # Episode end: expire the pushed card in the chat right away (a stale
+        # card tapped hours later just fails its re-verification, which reads
+        # as a broken bot), then forget the session so the next episode
+        # notifies immediately (entries younger than 300s stay to damp
         # flapping between polls).
         for session_id in list(notified):
-            if session_id not in waiting_ids and now - float(notified[session_id]) > 300:
+            entry = notified[session_id]
+            if session_id in waiting_ids:
+                continue
+            message_id = entry.get("message_id")
+            if message_id and not entry.get("resolved"):
+                edit_message(
+                    config,
+                    target_chat_id,
+                    int(message_id),
+                    "<b>세션 입력 대기 - 해결됨</b>\n"
+                    f"{entry.get('label') or session_id[:8]}\n"
+                    "이 카드는 만료되었습니다 (세션이 더 이상 입력 대기가 아닙니다).",
+                    args,
+                )
+                entry["resolved"] = True
+            if now - float(entry.get("at") or 0) > 300:
                 del notified[session_id]
+        prev_waiting = {str(x) for x in state.get("waiting_ids_last_scan") or []}
+        state["waiting_ids_last_scan"] = sorted(waiting_ids)
         sent = []
         for session in waiting:
             session_id = str(session.get("id") or "")
             if not session_id:
                 continue
-            last = float(notified.get(session_id) or 0)
-            if now - last < int(args.session_notify_backoff_sec):
+            last = float((notified.get(session_id) or {}).get("at") or 0)
+            # A session that was not waiting at the previous scan hit a NEW
+            # prompt: notify right away (60s flap guard only). The long
+            # backoff is a reminder cadence for one continuously-waiting
+            # prompt, not a mute for the session.
+            threshold = 60 if session_id not in prev_waiting else int(args.session_notify_backoff_sec)
+            if now - last < threshold:
                 continue
             title = sanitize_text(str(session.get("title") or session_id), max_chars=60)
             tool = sanitize_text(str(session.get("tool") or "agent"), max_chars=24)
             project = sanitize_text(str(session.get("project") or "미등록"), max_chars=40)
-            message = "\n".join(
-                [
-                    "<b>세션 입력 대기</b>",
-                    f"⏸ {html.escape(project)} · {html.escape(title)} ({html.escape(tool)})",
-                    "에이전트가 승인/입력을 기다리고 있습니다.",
-                    f"다음 조치: forager session attach {html.escape(title)}",
-                ]
+            from telegram_operator.dispatch import (  # noqa: PLC0415
+                capture_session_tail,
+                find_tmux_session_name,
+                pane_prompt_hash,
+                parse_prompt_options,
             )
+
+            tmux_name = find_tmux_session_name(session_id)
+            tail = capture_session_tail(tmux_name, lines=15) if tmux_name else ""
+            prompt_hash = pane_prompt_hash(tail)
+            options = parse_prompt_options(tail)
+            ask_summary = summarize_waiting_prompt(args, tail)
+            lines = [
+                "<b>세션 입력 대기</b>",
+                f"⏸ {html.escape(project)} · {html.escape(title)} ({html.escape(tool)})",
+            ]
+            if ask_summary:
+                lines.append(f"요청: {html.escape(ask_summary)}")
+            else:
+                lines.append("에이전트가 승인/입력을 기다리고 있습니다.")
+            if options:
+                lines.append(
+                    " · ".join(
+                        f"{opt['key']}. {html.escape(sanitize_text(opt['label'], max_chars=24))}"
+                        for opt in options
+                    )
+                )
+            lines.append("아래 버튼 한 번으로 선택합니다.")
+            message = "\n".join(lines)
+            sid8 = session_id[:8]
+            if options:
+                option_row = [
+                    f"/session_approve {sid8} {prompt_hash} {opt['key']}" for opt in options[:3]
+                ]
+                keyboard = [option_row, [f"/session_deny {sid8} {prompt_hash}", "상태"]]
+            else:
+                keyboard = [
+                    [f"/session_approve {sid8} {prompt_hash}", f"/session_deny {sid8} {prompt_hash}"],
+                    ["상태", "도움말"],
+                ]
+            approve_markup = {
+                "keyboard": keyboard,
+                "resize_keyboard": True,
+                "one_time_keyboard": False,
+            }
             try:
-                send_message(config, target_chat_id, message, args)
+                message_id = send_message(
+                    config, target_chat_id, message, args, reply_markup=approve_markup
+                )
             except RemoteOperatorTelegramError:
                 continue
-            notified[session_id] = now
-            sent.append({"session_id": session_id, "title": title, "project": project})
+            notified[session_id] = {
+                "at": now,
+                "message_id": message_id,
+                "prompt_hash": prompt_hash,
+                "label": f"{project} · {title} ({tool})",
+            }
+            sent.append(
+                {
+                    "session_id": session_id,
+                    "title": title,
+                    "project": project,
+                    "prompt_hash": prompt_hash,
+                    "pushed_at": utc_now(),
+                    "message_id": message_id,
+                }
+            )
         if not sent:
             return {"status": "no_new_waiting", "waiting_count": len(waiting)}
         return {"status": "notified", "sent": sent, "waiting_count": len(waiting)}
@@ -2215,6 +2516,7 @@ def run_once(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]
                 chat_hash,
                 max_age_sec=args.context_max_age_sec,
             )
+            sticky_focus = (state.get("chat_focus_by_chat") or {}).get(chat_hash)
             rendered = render_command_result(
                 args,
                 config,
@@ -2226,11 +2528,18 @@ def run_once(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]
                     chat_hash,
                     max_age_sec=args.context_max_age_sec,
                 ),
+                sticky_focus_key=str((sticky_focus or {}).get("project_key") or "") or None,
             )
         rendered["updates_seen"] = len(updates)
         if isinstance(update_id, int):
             rendered["processed_update_id"] = update_id
         parsed_command = rendered.get("parsed_command") if isinstance(rendered.get("parsed_command"), dict) else {}
+        focus = rendered.get("project_focus")
+        if isinstance(focus, dict) and focus.get("source") == "mention" and focus.get("key"):
+            state.setdefault("chat_focus_by_chat", {})[chat_hash] = {
+                "project_key": focus.get("key"),
+                "updated_at": utc_now(),
+            }
         if parsed_command.get("command") == "remember":
             remember_text = str(parsed_command.get("remember_text") or text)
             # A persistence failure must not raise before the offset save:
@@ -2306,12 +2615,57 @@ def run_once(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]
                     )
                     attach_choice_surface(rendered, remote_plan_selection_context(session))
                     rendered["mobile_card_contract"] = mobile_card_contract(rendered["message_preview"])
+        if parsed_command.get("command") == "chat":
+            agent_intent = (
+                parsed_command.get("agent_intent")
+                if isinstance(parsed_command.get("agent_intent"), dict)
+                else {}
+            )
+            if agent_intent.get("status") == "classified":
+                # The chat agent owns the routing decision (function-calling
+                # style); keyword markers are only the no-agent fallback.
+                wants_capture = agent_intent.get("intent") == "delegate_work"
+                capture_note = str(agent_intent.get("delegation_goal") or "").strip() or text
+            else:
+                from telegram_operator.agent import classify_feedback_kind  # noqa: PLC0415
+
+                wants_capture = classify_feedback_kind(text) == "planning_request"
+                capture_note = text
+            pending_now = (state.get("pending_dispatch_confirmations_by_chat") or {}).get(chat_hash)
+            if (
+                wants_capture
+                and not (isinstance(pending_now, dict) and confirmation_is_fresh(pending_now))
+                # An active plan session already owns this chat's plain text;
+                # questions about the plan must stay chat, not spawn a second
+                # capture card.
+                and active_remote_plan_session(state, chat_hash) is None
+            ):
+                # Natural-language delegation: offer to capture it as a plan
+                # candidate. The tap is the approval; chat alone records nothing.
+                capture = build_confirmation(
+                    kind="plan_capture", target_id="plan", action_kind="capture",
+                    observed_hash="", note=sanitize_text(capture_note, max_chars=380),
+                    chat_hash=chat_hash, ttl_sec=900,
+                )
+                store_confirmation(state, chat_hash, capture)
+                preview = "\n".join([
+                    "<b>계획 후보로 등록할까요?</b>",
+                    sanitize_text(capture_note, max_chars=150),
+                    "확인 시 검토와 야간 실행 대기열에 계획 후보로 기록됩니다.",
+                    "다음 조치: 확인 또는 취소",
+                ])
+                rendered["message_preview"] = preview
+                rendered["mobile_card_contract"] = mobile_card_contract(preview)
+                rendered["reply_markup_preview"] = choice_keyboard({"context_kind": "dispatch_confirm"})
+                rendered["plan_capture_offered"] = True
         if parsed_command.get("command") in {
             "decision",
             "recover",
             "dispatch",
             "run",
             "cancel_task",
+            "session_approve",
+            "session_deny",
             "pause",
             "resume",
             "confirm",
@@ -2320,6 +2674,41 @@ def run_once(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]
             # Guarded remote execution. Every branch catches its own errors so
             # nothing raises before the offset save and re-delivers the update.
             resolve_dispatch_confirmation(args, state, chat_hash, rendered, parsed_command)
+            plan_text = rendered.pop("captured_plan_text", None)
+            if plan_text:
+                synthetic = {
+                    "command": "plan_request", "feedback_kind": "planning_request",
+                    "plan_text": plan_text, "feedback_text": plan_text,
+                    "reason": "plan_capture_confirm",
+                }
+                capture_context = last_context_for_chat_hash(
+                    state, chat_hash, max_age_sec=args.context_max_age_sec,
+                )
+                capture_result = record_feedback(
+                    args, config, message, plan_text,
+                    feedback_context=capture_context, parsed_command=synthetic,
+                )
+                capture_record = capture_result.pop("feedback_record", None)
+                rendered.update(capture_result)
+                if isinstance(capture_record, dict):
+                    capture_ingest = ingest_feedback_decision(args, capture_record)
+                    rendered.update(capture_ingest)
+                    # Mirror the direct /plan path: store the session and move
+                    # straight into project selection, so a confirmed capture
+                    # behaves exactly like typing /plan.
+                    session = create_remote_plan_session(
+                        args, chat_hash=chat_hash, request_text=plan_text,
+                        parsed_command=synthetic, feedback_context=capture_context,
+                        decision_id=capture_ingest.get("decision_feedback_decision_id"),
+                    )
+                    store_remote_plan_session(state, chat_hash, session)
+                    rendered["remote_plan_session"] = public_remote_plan_session(session)
+                    rendered["message_preview"] = render_project_selection_message(
+                        profile=args.profile,
+                        session=session,
+                    )
+                    attach_choice_surface(rendered, remote_plan_selection_context(session))
+                    rendered["mobile_card_contract"] = mobile_card_contract(rendered["message_preview"])
         try:
             message_id = send_message(
                 config,
@@ -2458,6 +2847,24 @@ def loop_backoff_if_needed(
     return consecutive_errors
 
 
+def result_carries_push(result: dict[str, Any]) -> bool:
+    """True when a proactive card went out on this poll, even with no inbound update.
+
+    Quiet polls report status "no_update", which run_loop does not print; a
+    push buried in one would leave no journal trace, making notify latency
+    unmeasurable.
+    """
+
+    session = result.get("session_notification")
+    if isinstance(session, dict) and session.get("status") == "notified":
+        return True
+    attention = result.get("attention_notification")
+    if isinstance(attention, dict) and attention.get("status") == "notified":
+        return True
+    autonomy = result.get("autonomy_proposal")
+    return isinstance(autonomy, dict) and autonomy.get("status") == "proposed"
+
+
 def loop_status_path(args: argparse.Namespace) -> pathlib.Path | None:
     if args.out:
         return args.out
@@ -2483,7 +2890,9 @@ def run_loop(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]
             update_loop_summary(summary, result)
             if status_path:
                 write_json(status_path, summary)
-            if max_polls is None and result.get("status") != "no_update":
+            if max_polls is None and (
+                result.get("status") != "no_update" or result_carries_push(result)
+            ):
                 print(json.dumps(result, ensure_ascii=False), flush=True)
             consecutive_errors = loop_backoff_if_needed(args, result, consecutive_errors)
     except KeyboardInterrupt:

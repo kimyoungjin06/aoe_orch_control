@@ -51,6 +51,7 @@ fn shortcuts() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
             vec![
                 ("/", "Search"),
                 ("s", "Settings"),
+                ("p", "Projects (registry)"),
                 ("P", "Next profile"),
                 ("?", "Toggle help"),
                 ("q", "Quit"),

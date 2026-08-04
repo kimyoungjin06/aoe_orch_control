@@ -120,9 +120,9 @@ def chunk_document(text: str, chunk_chars: int) -> list[str]:
 LLM_USAGE = {"calls": 0, "prompt_tokens": 0, "output_tokens": 0, "duration_ms": 0}
 
 
-def call_ollama(args: argparse.Namespace, prompt: str) -> str:
+def call_ollama(args: argparse.Namespace, prompt: str, *, model: str | None = None) -> str:
     payload = {
-        "model": args.model,
+        "model": model or args.model,
         "prompt": prompt,
         "stream": False,
         "think": False,

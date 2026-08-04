@@ -50,6 +50,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-candidates", type=int, default=6, help="Per session.")
     parser.add_argument("--record", action="store_true")
     parser.add_argument("--out-dir", type=pathlib.Path, help="Per-session reports + summary land here.")
+    parser.add_argument("--state-file", type=pathlib.Path,
+                        help="Durable cursor of already-mined transcripts (path -> mtime). "
+                        "Unchanged transcripts are skipped on later runs, so nightly batches "
+                        "do not re-mine the same sessions and resurrect rejected candidates.")
     return parser.parse_args()
 
 
@@ -112,17 +116,30 @@ def main() -> int:
                 mappings.append((pattern, profile, entry["key"]))
         print(f"project registry loaded: {len(mappings)} total mappings")
 
+    mined_state: dict[str, float] = {}
+    if args.state_file and args.state_file.exists():
+        try:
+            loaded = json.loads(args.state_file.read_text())
+            if isinstance(loaded, dict):
+                mined_state = {str(k): float(v) for k, v in loaded.items()}
+        except (ValueError, OSError):
+            mined_state = {}
+
     transcripts = sorted(
         {p for d in args.sessions_dir for p in d.rglob("*.jsonl")},
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
     print(f"found {len(transcripts)} transcripts; prefiltering (no LLM)...")
-    selected: list[tuple[pathlib.Path, str, str]] = []
-    skipped = {"quiet": 0, "unmapped": 0}
+    selected: list[tuple[pathlib.Path, str, str, float]] = []
+    skipped = {"quiet": 0, "unmapped": 0, "already_mined": 0}
     for path in transcripts:
         if len(selected) >= args.max_sessions:
             break
+        mtime = path.stat().st_mtime
+        if mined_state.get(str(path)) == mtime:
+            skipped["already_mined"] += 1
+            continue
         has_signature, operators = cheap_scan(path)
         if not has_signature and operators < args.min_operator_messages:
             skipped["quiet"] += 1
@@ -132,12 +149,15 @@ def main() -> int:
         if not profile:
             skipped["unmapped"] += 1
             continue
-        selected.append((path, profile, scope_ref))
-    print(f"selected {len(selected)} sessions (skipped quiet={skipped['quiet']}, unmapped={skipped['unmapped']})")
+        selected.append((path, profile, scope_ref, mtime))
+    print(
+        f"selected {len(selected)} sessions (skipped quiet={skipped['quiet']}, "
+        f"unmapped={skipped['unmapped']}, already_mined={skipped['already_mined']})"
+    )
 
     totals = {"accepted": 0, "rejected": 0, "sessions": 0, "failures": 0}
     by_profile: dict[str, int] = {}
-    for path, profile, scope_ref in selected:
+    for path, profile, scope_ref, mtime in selected:
         command = [
             sys.executable, str(DISTILLER),
             "--transcript", str(path),
@@ -161,7 +181,12 @@ def main() -> int:
         totals["accepted"] += accepted
         totals["rejected"] += rejected
         by_profile[profile] = by_profile.get(profile, 0) + accepted
+        mined_state[str(path)] = mtime
         print(f"  {path.name[:44]:46} -> {profile}: +{accepted} / -{rejected}")
+
+    if args.state_file:
+        args.state_file.parent.mkdir(parents=True, exist_ok=True)
+        args.state_file.write_text(json.dumps(mined_state, indent=1))
 
     print(f"\nbatch done: {totals['sessions']} sessions, {totals['accepted']} candidates accepted, "
           f"{totals['rejected']} rejected, {totals['failures']} failures")

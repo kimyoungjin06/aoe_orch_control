@@ -228,9 +228,11 @@ impl Instance {
     fn apply_session_tmux_options(&self, session_name: &str, display_title: &str) {
         let branch = self.worktree_info.as_ref().map(|w| w.branch.as_str());
         let sandbox = self.sandbox_display();
+        let project = Some(self.group_path.as_str()).filter(|g| !g.trim().is_empty());
         crate::tmux::status_bar::apply_all_tmux_options(
             session_name,
             display_title,
+            project,
             branch,
             sandbox.as_ref(),
         );

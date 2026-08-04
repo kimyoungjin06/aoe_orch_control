@@ -196,6 +196,53 @@ fn spawn_fake_ollama_with_classification(
     Ok((format!("http://127.0.0.1:{port}"), handle))
 }
 
+/// Serves /api/tags any number of times and answers successive
+/// /api/generate calls from `responses` in order, writing each request body
+/// to `<body_dir>/generate_<n>.json`. Returns after the last response.
+fn spawn_fake_ollama_with_sequence(
+    body_dir: PathBuf,
+    responses: Vec<Value>,
+) -> Result<(String, thread::JoinHandle<Result<()>>)> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let port = listener.local_addr()?.port();
+    listener.set_nonblocking(true)?;
+    let handle = thread::spawn(move || -> Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut served = 0usize;
+        while served < responses.len() {
+            let (mut stream, _) = match listener.accept() {
+                Ok(value) => value,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() > deadline {
+                        anyhow::bail!("fake Ollama timed out waiting for requests");
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let (request_line, body) = read_http_request(&mut stream)?;
+            if request_line.starts_with("GET /api/tags ") {
+                write_http_json(
+                    &mut stream,
+                    json!({"models": [{"name": "qwen3-coder-next:latest"}]}),
+                )?;
+            } else if request_line.starts_with("POST /api/generate ") {
+                fs::write(body_dir.join(format!("generate_{served}.json")), &body)?;
+                write_http_json(
+                    &mut stream,
+                    json!({"response": serde_json::to_string(&responses[served])?}),
+                )?;
+                served += 1;
+            } else {
+                write_http_json(&mut stream, json!({"error": request_line}))?;
+            }
+        }
+        Ok(())
+    });
+    Ok((format!("http://127.0.0.1:{port}"), handle))
+}
+
 fn spawn_fake_ollama(body_path: PathBuf) -> Result<(String, thread::JoinHandle<Result<()>>)> {
     spawn_fake_ollama_with_classification(
         body_path,
@@ -3350,6 +3397,123 @@ fn remote_operator_telegram_replay_plan_request_creates_project_selection_sessio
     assert_eq!(
         state["remote_plan_sessions_by_chat"][result["target_chat_id_hash"].as_str().unwrap()]
             ["stage"],
+        "project_selection"
+    );
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_delegation_capture_confirm_starts_plan_session() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    let workspace_root = temp.path().join("workspace");
+    fs::create_dir_all(workspace_root.join("Alpha"))?;
+    fs::write(
+        workspace_root.join("Alpha").join("README.md"),
+        "Alpha project\n",
+    )?;
+    let state_path = temp.path().join("telegram_state.json");
+    let feedback_file = temp.path().join("feedback.jsonl");
+    let ingest_dir = temp.path().join("feedback_ingest");
+
+    let replay = |update_path: &Path, out: &Path| -> Result<std::process::Output> {
+        Ok(remote_operator_command(temp.path())
+            .arg("--dry-run")
+            .arg("--once")
+            .arg("--replay-update-file")
+            .arg(update_path)
+            .arg("--forager-bin")
+            .arg(env!("CARGO_BIN_EXE_forager"))
+            .arg("--env-file")
+            .arg(&env_path)
+            .arg("--state-file")
+            .arg(&state_path)
+            .arg("--feedback-file")
+            .arg(&feedback_file)
+            .arg("--feedback-ingest-dir")
+            .arg(&ingest_dir)
+            .arg("--workspace-root")
+            .arg(&workspace_root)
+            .arg("--out")
+            .arg(out)
+            .output()?)
+    };
+
+    let delegation_update = temp.path().join("delegation_update.json");
+    write_text_update(
+        &delegation_update,
+        710,
+        890,
+        "그럼 Alpha에서 마지막 기록을 확인하고 새로 방향을 검토해볼까",
+    )?;
+    let capture_out = temp.path().join("capture_result.json");
+    let output = replay(&delegation_update, &capture_out)?;
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let capture: Value = serde_json::from_slice(&fs::read(&capture_out)?)?;
+    assert_eq!(capture["status"], "rendered");
+    assert_eq!(capture["parsed_command"]["command"], "chat");
+    assert_eq!(capture["plan_capture_offered"], true);
+    let capture_preview = capture["message_preview"]
+        .as_str()
+        .expect("capture preview");
+    assert!(capture_preview.contains("<b>계획 후보로 등록할까요?</b>"));
+    let state: Value = serde_json::from_slice(&fs::read(&state_path)?)?;
+    let chat_hash = capture["target_chat_id_hash"].as_str().expect("chat hash");
+    assert_eq!(
+        state["pending_dispatch_confirmations_by_chat"][chat_hash]["kind"],
+        "plan_capture"
+    );
+
+    let confirm_update = temp.path().join("confirm_update.json");
+    write_text_update(&confirm_update, 711, 891, "/confirm")?;
+    let confirm_out = temp.path().join("confirm_result.json");
+    let output = replay(&confirm_update, &confirm_out)?;
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let confirmed: Value = serde_json::from_slice(&fs::read(&confirm_out)?)?;
+    assert_eq!(confirmed["status"], "rendered");
+    assert_eq!(confirmed["feedback_recorded"], true);
+    assert_eq!(confirmed["decision_feedback_ingest_status"], "recorded");
+    assert_eq!(
+        confirmed["remote_plan_session"]["schema"],
+        "telegram_remote_plan_session.v1"
+    );
+    assert_eq!(
+        confirmed["remote_plan_session"]["stage"],
+        "project_selection"
+    );
+    assert_eq!(
+        confirmed["remote_plan_session"]["execution_authorized"],
+        false
+    );
+    let confirm_preview = confirmed["message_preview"]
+        .as_str()
+        .expect("confirm preview");
+    assert!(confirm_preview.contains("<b>계획 대상 선택</b>"));
+    assert_mobile_contract(&confirmed);
+
+    let feedback_rows = fs::read_to_string(&feedback_file)?;
+    assert_eq!(feedback_rows.lines().count(), 1);
+    assert!(feedback_rows.contains("planning_request"));
+
+    let state: Value = serde_json::from_slice(&fs::read(&state_path)?)?;
+    assert_eq!(
+        state["pending_dispatch_confirmations_by_chat"][chat_hash],
+        Value::Null
+    );
+    assert_eq!(
+        state["remote_plan_sessions_by_chat"][chat_hash]["stage"],
         "project_selection"
     );
     Ok(())
@@ -7105,6 +7269,507 @@ fn remote_operator_telegram_chat_prompt_includes_command_surface_and_snapshot() 
     Ok(())
 }
 
+fn write_project_registry(home: &Path) -> Result<()> {
+    let dir = home.join(".config").join("forager");
+    fs::create_dir_all(&dir)?;
+    fs::write(
+        dir.join("projects.toml"),
+        r#"schema = "forager_project_registry.v1"
+
+[projects.twinpaper]
+display_name = "TwinPaper"
+workspace_patterns = ["1.2.8.TwinPaper"]
+wiki_profile = "twinpaper-review"
+"#,
+    )?;
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_chat_grounds_mentioned_project_focus() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    write_project_registry(temp.path())?;
+    let out = temp.path().join("focused_chat.json");
+    let agent_request_path = temp.path().join("ollama_focus_request.json");
+    let (base_url, server) = spawn_fake_ollama_with_classification(
+        agent_request_path.clone(),
+        json!({
+            "intent": "chat",
+            "confidence": 0.9,
+            "requires_clarification": false,
+            "clarifying_question": null,
+            "assistant_reply": "TwinPaper 세션은 모두 중지 상태입니다.",
+            "reason": "Project question answered from project_focus.",
+            "non_authorized": ["execution", "approval", "shell"]
+        }),
+    )?;
+
+    let output = remote_operator_command(temp.path())
+        .arg("--dry-run")
+        .arg("--command-text")
+        .arg("좋아. Twinpaper 프로젝트 마지막 상태 리뷰해줘")
+        .arg("--forager-bin")
+        .arg(env!("CARGO_BIN_EXE_forager"))
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--out")
+        .arg(&out)
+        .arg("--agent-intent-mode")
+        .arg("required")
+        .arg("--agent-base-url")
+        .arg(&base_url)
+        .arg("--agent-model")
+        .arg("qwen3-coder-next:latest")
+        .output()?;
+
+    server.join().expect("fake ollama server panicked")?;
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&fs::read(&out)?)?;
+    assert_eq!(result["status"], "rendered");
+    assert_eq!(result["project_focus"]["key"], "twinpaper");
+    assert_eq!(result["project_focus"]["source"], "mention");
+
+    let agent_request: Value = serde_json::from_slice(&fs::read(&agent_request_path)?)?;
+    let prompt = agent_request["prompt"].as_str().expect("agent prompt");
+    // The agent must see the mentioned project's live state, not just the
+    // registry row, so it answers with concrete session/wiki facts.
+    assert!(prompt.contains("project_focus"));
+    assert!(prompt.contains("\"focus_source\": \"mention\""));
+    assert!(prompt.contains("TwinPaper"));
+    assert!(prompt.contains("session_counts"));
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_chat_focus_sticks_across_messages() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    write_project_registry(temp.path())?;
+    let state_path = temp.path().join("telegram_state.json");
+    let feedback_file = temp.path().join("feedback.jsonl");
+    let ingest_dir = temp.path().join("feedback_ingest");
+
+    let replay = |update_path: &Path, out: &Path| -> Result<std::process::Output> {
+        Ok(remote_operator_command(temp.path())
+            .arg("--dry-run")
+            .arg("--once")
+            .arg("--replay-update-file")
+            .arg(update_path)
+            .arg("--forager-bin")
+            .arg(env!("CARGO_BIN_EXE_forager"))
+            .arg("--env-file")
+            .arg(&env_path)
+            .arg("--state-file")
+            .arg(&state_path)
+            .arg("--feedback-file")
+            .arg(&feedback_file)
+            .arg("--feedback-ingest-dir")
+            .arg(&ingest_dir)
+            .arg("--out")
+            .arg(out)
+            .output()?)
+    };
+
+    let mention_update = temp.path().join("mention_update.json");
+    write_text_update(&mention_update, 720, 900, "Twinpaper 마지막 기록 리뷰해줘")?;
+    let mention_out = temp.path().join("mention_result.json");
+    let output = replay(&mention_update, &mention_out)?;
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mention: Value = serde_json::from_slice(&fs::read(&mention_out)?)?;
+    assert_eq!(mention["parsed_command"]["command"], "chat");
+    assert_eq!(mention["project_focus"]["key"], "twinpaper");
+    assert_eq!(mention["project_focus"]["source"], "mention");
+    let chat_hash = mention["target_chat_id_hash"].as_str().expect("chat hash");
+    let state: Value = serde_json::from_slice(&fs::read(&state_path)?)?;
+    assert_eq!(
+        state["chat_focus_by_chat"][chat_hash]["project_key"],
+        "twinpaper"
+    );
+
+    let followup_update = temp.path().join("followup_update.json");
+    write_text_update(&followup_update, 721, 901, "지금 상태 어때")?;
+    let followup_out = temp.path().join("followup_result.json");
+    let output = replay(&followup_update, &followup_out)?;
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let followup: Value = serde_json::from_slice(&fs::read(&followup_out)?)?;
+    assert_eq!(followup["parsed_command"]["command"], "chat");
+    // The follow-up drops the project name; the chat's sticky focus keeps
+    // the conversation about the same project.
+    assert_eq!(followup["project_focus"]["key"], "twinpaper");
+    assert_eq!(followup["project_focus"]["source"], "sticky");
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_agent_delegate_intent_offers_capture_without_keywords() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    let agent_request_path = temp.path().join("ollama_delegate_request.json");
+    let (base_url, server) = spawn_fake_ollama_with_classification(
+        agent_request_path.clone(),
+        json!({
+            "intent": "delegate_work",
+            "delegation_goal": "TwinPaper 논문 그림을 재정리한다",
+            "confidence": 0.9,
+            "requires_clarification": false,
+            "clarifying_question": null,
+            "assistant_reply": "계획 후보로 잡아둘게요.",
+            "reason": "Operator handed over work in natural language.",
+            "non_authorized": ["execution", "approval", "shell"]
+        }),
+    )?;
+    let update_path = temp.path().join("delegate_update.json");
+    // No deterministic planning keyword anywhere in this message: only the
+    // agent's structured decision can route it to the capture card.
+    write_text_update(
+        &update_path,
+        730,
+        910,
+        "트윈페이퍼 논문 그림 다시 정리해줘야겠다",
+    )?;
+    let state_path = temp.path().join("telegram_state.json");
+    let out = temp.path().join("delegate_result.json");
+
+    let output = remote_operator_command(temp.path())
+        .arg("--dry-run")
+        .arg("--once")
+        .arg("--replay-update-file")
+        .arg(&update_path)
+        .arg("--forager-bin")
+        .arg(env!("CARGO_BIN_EXE_forager"))
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--state-file")
+        .arg(&state_path)
+        .arg("--feedback-file")
+        .arg(temp.path().join("feedback.jsonl"))
+        .arg("--feedback-ingest-dir")
+        .arg(temp.path().join("feedback_ingest"))
+        .arg("--agent-intent-mode")
+        .arg("required")
+        .arg("--agent-base-url")
+        .arg(&base_url)
+        .arg("--agent-model")
+        .arg("qwen3-coder-next:latest")
+        .arg("--out")
+        .arg(&out)
+        .output()?;
+
+    server.join().expect("fake ollama server panicked")?;
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&fs::read(&out)?)?;
+    assert_eq!(result["status"], "rendered");
+    assert_eq!(result["plan_capture_offered"], true);
+    let preview = result["message_preview"].as_str().expect("message preview");
+    assert!(preview.contains("<b>계획 후보로 등록할까요?</b>"));
+    // The card carries the agent's restated goal, not the raw message.
+    assert!(preview.contains("TwinPaper 논문 그림을 재정리한다"));
+    let state: Value = serde_json::from_slice(&fs::read(&state_path)?)?;
+    let chat_hash = result["target_chat_id_hash"].as_str().expect("chat hash");
+    assert_eq!(
+        state["pending_dispatch_confirmations_by_chat"][chat_hash]["note"],
+        "TwinPaper 논문 그림을 재정리한다"
+    );
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_agent_chat_intent_overrides_planning_keywords() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    let agent_request_path = temp.path().join("ollama_question_request.json");
+    let (base_url, server) = spawn_fake_ollama_with_classification(
+        agent_request_path.clone(),
+        json!({
+            "intent": "chat",
+            "delegation_goal": null,
+            "confidence": 0.9,
+            "requires_clarification": false,
+            "clarifying_question": null,
+            "assistant_reply": "지금 처리 중인 작업은 없습니다.",
+            "reason": "Question about work in progress, not a delegation.",
+            "non_authorized": ["execution", "approval", "shell"]
+        }),
+    )?;
+    let update_path = temp.path().join("question_update.json");
+    // Contains the deterministic marker '처리', but it is a question; the
+    // agent's chat decision must win over the keyword fallback.
+    write_text_update(&update_path, 731, 911, "지금 뭐 처리하고 있어?")?;
+    let state_path = temp.path().join("telegram_state.json");
+    let out = temp.path().join("question_result.json");
+
+    let output = remote_operator_command(temp.path())
+        .arg("--dry-run")
+        .arg("--once")
+        .arg("--replay-update-file")
+        .arg(&update_path)
+        .arg("--forager-bin")
+        .arg(env!("CARGO_BIN_EXE_forager"))
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--state-file")
+        .arg(&state_path)
+        .arg("--feedback-file")
+        .arg(temp.path().join("feedback.jsonl"))
+        .arg("--feedback-ingest-dir")
+        .arg(temp.path().join("feedback_ingest"))
+        .arg("--agent-intent-mode")
+        .arg("required")
+        .arg("--agent-base-url")
+        .arg(&base_url)
+        .arg("--agent-model")
+        .arg("qwen3-coder-next:latest")
+        .arg("--out")
+        .arg(&out)
+        .output()?;
+
+    server.join().expect("fake ollama server panicked")?;
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&fs::read(&out)?)?;
+    assert_eq!(result["status"], "rendered");
+    assert_eq!(result["plan_capture_offered"], Value::Null);
+    let preview = result["message_preview"].as_str().expect("message preview");
+    assert!(preview.contains("<b>Forager 응답</b>"));
+    assert!(preview.contains("지금 처리 중인 작업은 없습니다."));
+    let state: Value = serde_json::from_slice(&fs::read(&state_path)?)?;
+    let chat_hash = result["target_chat_id_hash"].as_str().expect("chat hash");
+    assert_eq!(
+        state["pending_dispatch_confirmations_by_chat"][chat_hash],
+        Value::Null
+    );
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_chat_tools_probe_workspace_and_answer() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    write_project_registry(temp.path())?;
+    let workspace_root = temp.path().join("workspace");
+    let project_dir = workspace_root.join("1.2.8.TwinPaper");
+    fs::create_dir_all(project_dir.join("modules"))?;
+    fs::write(
+        project_dir.join("PROJECT_STATE.md"),
+        "focus is module two\n",
+    )?;
+    fs::write(project_dir.join("README.md"), "TwinPaper\n")?;
+    fs::write(
+        project_dir.join("modules").join("next.md"),
+        "next actions\n",
+    )?;
+
+    let body_dir = temp.path().join("agent_requests");
+    fs::create_dir_all(&body_dir)?;
+    let (base_url, server) = spawn_fake_ollama_with_sequence(
+        body_dir.clone(),
+        vec![
+            // Legacy intent shape must still map to a workspace_overview call.
+            json!({
+                "intent": "inspect_project",
+                "assistant_reply": null,
+                "reason": "Operator asked for the project's local file state."
+            }),
+            json!({
+                "action": "tool",
+                "tool": "read_file",
+                "project": "twinpaper",
+                "path": "PROJECT_STATE.md",
+                "reason": "Read the state document surfaced by the overview."
+            }),
+            json!({
+                "action": "answer",
+                "assistant_reply": "PROJECT_STATE.md 기준 현재 초점은 module two입니다.",
+                "confidence": 0.9,
+                "requires_clarification": false,
+                "clarifying_question": null,
+                "reason": "Answered from tool_results."
+            }),
+        ],
+    )?;
+    let out = temp.path().join("tools_result.json");
+
+    let output = remote_operator_command(temp.path())
+        .arg("--dry-run")
+        .arg("--command-text")
+        .arg("Twinpaper 로컬 파일 상태 확인해봐")
+        .arg("--forager-bin")
+        .arg(env!("CARGO_BIN_EXE_forager"))
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--workspace-root")
+        .arg(&workspace_root)
+        .arg("--out")
+        .arg(&out)
+        .arg("--agent-intent-mode")
+        .arg("required")
+        .arg("--agent-base-url")
+        .arg(&base_url)
+        .arg("--agent-model")
+        .arg("qwen3-coder-next:latest")
+        .output()?;
+
+    server.join().expect("fake ollama server panicked")?;
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&fs::read(&out)?)?;
+    assert_eq!(result["status"], "rendered");
+    assert_eq!(result["project_focus"]["key"], "twinpaper");
+    assert_eq!(result["chat_tools_used"][0]["tool"], "workspace_overview");
+    assert_eq!(result["chat_tools_used"][0]["status"], "ok");
+    assert_eq!(result["chat_tools_used"][1]["tool"], "read_file");
+    assert_eq!(result["chat_tools_used"][1]["status"], "ok");
+    let preview = result["message_preview"].as_str().expect("message preview");
+    assert!(preview.contains("현재 초점은 module two입니다."));
+
+    // Round 2 sees the overview results; round 3 sees the file content.
+    let second_request: Value =
+        serde_json::from_slice(&fs::read(body_dir.join("generate_1.json"))?)?;
+    let second_prompt = second_request["prompt"].as_str().expect("second prompt");
+    assert!(second_prompt.contains("tool_results"));
+    assert!(second_prompt.contains("PROJECT_STATE.md"));
+    assert!(second_prompt.contains("modules/next.md"));
+    let third_request: Value =
+        serde_json::from_slice(&fs::read(body_dir.join("generate_2.json"))?)?;
+    let third_prompt = third_request["prompt"].as_str().expect("third prompt");
+    assert!(third_prompt.contains("focus is module two"));
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_chat_tools_then_propose_plan_offers_capture() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    write_project_registry(temp.path())?;
+    let workspace_root = temp.path().join("workspace");
+    let project_dir = workspace_root.join("1.2.8.TwinPaper");
+    fs::create_dir_all(&project_dir)?;
+    fs::write(project_dir.join("NEXT_ACTIONS.md"), "P1: rerun baseline\n")?;
+
+    let body_dir = temp.path().join("agent_requests");
+    fs::create_dir_all(&body_dir)?;
+    let (base_url, server) = spawn_fake_ollama_with_sequence(
+        body_dir.clone(),
+        vec![
+            json!({
+                "action": "tool",
+                "tool": "read_file",
+                "project": "twinpaper",
+                "path": "NEXT_ACTIONS.md",
+                "reason": "Diagnose before planning."
+            }),
+            json!({
+                "action": "propose_plan",
+                "delegation_goal": "P1 기준 재실행을 반영해 TwinPaper 실행 계획을 새로 수립한다",
+                "assistant_reply": "진단 결과를 반영한 계획을 제안합니다.",
+                "confidence": 0.9,
+                "reason": "Operator asked to diagnose and replan."
+            }),
+        ],
+    )?;
+
+    let update_path = temp.path().join("diagnose_update.json");
+    write_text_update(
+        &update_path,
+        740,
+        920,
+        "twinpaper의 현재 프로젝트 상태를 진단하고 새로 계획을 세워봐",
+    )?;
+    let state_path = temp.path().join("telegram_state.json");
+    let out = temp.path().join("diagnose_result.json");
+
+    let output = remote_operator_command(temp.path())
+        .arg("--dry-run")
+        .arg("--once")
+        .arg("--replay-update-file")
+        .arg(&update_path)
+        .arg("--forager-bin")
+        .arg(env!("CARGO_BIN_EXE_forager"))
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--state-file")
+        .arg(&state_path)
+        .arg("--feedback-file")
+        .arg(temp.path().join("feedback.jsonl"))
+        .arg("--feedback-ingest-dir")
+        .arg(temp.path().join("feedback_ingest"))
+        .arg("--workspace-root")
+        .arg(&workspace_root)
+        .arg("--agent-intent-mode")
+        .arg("required")
+        .arg("--agent-base-url")
+        .arg(&base_url)
+        .arg("--agent-model")
+        .arg("qwen3-coder-next:latest")
+        .arg("--out")
+        .arg(&out)
+        .output()?;
+
+    server.join().expect("fake ollama server panicked")?;
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&fs::read(&out)?)?;
+    assert_eq!(result["status"], "rendered");
+    assert_eq!(result["chat_tools_used"][0]["tool"], "read_file");
+    assert_eq!(result["plan_capture_offered"], true);
+    let preview = result["message_preview"].as_str().expect("message preview");
+    assert!(preview.contains("<b>계획 후보로 등록할까요?</b>"));
+    // The card carries the diagnosis-informed goal.
+    assert!(preview.contains("P1 기준 재실행을 반영해"));
+    let state: Value = serde_json::from_slice(&fs::read(&state_path)?)?;
+    let chat_hash = result["target_chat_id_hash"].as_str().expect("chat hash");
+    assert_eq!(
+        state["pending_dispatch_confirmations_by_chat"][chat_hash]["kind"],
+        "plan_capture"
+    );
+    Ok(())
+}
+
 #[test]
 #[serial]
 fn remote_operator_telegram_chat_scrubs_hallucinated_commands() -> Result<()> {
@@ -7420,6 +8085,10 @@ fn remote_operator_telegram_waiting_session_notifies_once_per_episode() -> Resul
     assert_eq!(results[1]["session_notification"]["waiting_count"], 1);
 
     let state: Value = serde_json::from_slice(&fs::read(&state_path)?)?;
-    assert!(state["waiting_notified_by_session"]["abc123"].is_number());
+    // Entries are objects so the pushed card can be expired when the episode
+    // ends: "at" timestamp plus the sent message id / prompt hash / label.
+    let entry = &state["waiting_notified_by_session"]["abc123"];
+    assert!(entry.is_object());
+    assert!(entry["at"].is_number());
     Ok(())
 }

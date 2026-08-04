@@ -180,7 +180,10 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         instance.worktree_info = Some(worktree_info);
     }
 
-    instance.yolo_mode = args.yolo;
+    instance.yolo_mode = args.yolo
+        || Config::load()
+            .map(|c| c.session.yolo_mode_default)
+            .unwrap_or(false);
 
     // Check for repository hooks
     let hook_result: Result<()> = (|| {

@@ -140,6 +140,18 @@ Review is tiered by cost, cheapest first:
    planted inversion for ~2s and ~1k local tokens -- three orders of magnitude
    cheaper than an agent Council -- with occasional false positives on compound
    sentences, which is why flags stay advisory.
+2b. **Model-family council** (tier 2, `offdesk_wiki_prereview.py --council`):
+   judge each candidate with several distinct model FAMILIES (default
+   qwen3-coder:30b, gemma4:26b, gpt-oss:120b on the local GPU server) and
+   aggregate votes. Unanimous `supported` passes; any dissent surfaces as a
+   council-split verdict carrying per-model votes, taking the most severe
+   verdict. Rationale: family-specific failure modes (claim inversion,
+   rubric parroting) rarely repeat across families, so diversity converts
+   silent single-judge errors into visible splits at zero API cost.
+   Validated on seeded true/inverted/overreaching claims: both inversions
+   (including the historical localhost-preference inversion) were caught
+   2-of-3 with the third abstaining.
+
 3. **Agent Council** (tier 3): reserve multi-agent review for contested or
    high-stakes sets.
 

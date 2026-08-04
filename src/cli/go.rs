@@ -15,9 +15,9 @@ use crate::session::{repo_config, GroupTree, Instance, Storage};
 
 #[derive(Args)]
 pub struct GoArgs {
-    /// Agent tool to run (e.g. 'claude', 'codex', 'gemini', 'opencode')
-    #[arg(default_value = "claude")]
-    tool: String,
+    /// Agent tool to run (e.g. 'claude', 'codex', 'gemini', 'opencode').
+    /// Defaults to `session.default_tool` from the profile config, else 'claude'.
+    tool: Option<String>,
 
     /// Extra arguments appended to the tool command (after `--`),
     /// e.g. `forager go claude -- --continue`
@@ -56,6 +56,11 @@ pub struct GoArgs {
 }
 
 pub async fn run(profile: &str, args: GoArgs) -> Result<()> {
+    if profile != "default" {
+        // A stray FORAGER_PROFILE silently splits session storage; make the
+        // active profile impossible to miss before creating anything.
+        println!("Profile: {profile} (from -p/--profile or FORAGER_PROFILE)");
+    }
     let path = if args.path.as_os_str() == "." {
         std::env::current_dir()?
     } else {
@@ -65,10 +70,20 @@ pub async fn run(profile: &str, args: GoArgs) -> Result<()> {
         bail!("Path is not a directory: {}", path.display());
     }
 
+    // Explicit argument wins; otherwise honor the configured default tool
+    // (settings TUI: session.default_tool) before falling back to claude.
+    let tool_name = args.tool.clone().or_else(|| {
+        crate::session::profile_config::resolve_config(profile)
+            .ok()
+            .and_then(|config| config.session.default_tool.clone())
+            .map(|tool| tool.trim().to_string())
+            .filter(|tool| !tool.is_empty())
+    });
+    let tool_name = tool_name.unwrap_or_else(|| "claude".to_string());
     let command = if args.tool_args.is_empty() {
-        args.tool.clone()
+        tool_name.clone()
     } else {
-        format!("{} {}", args.tool, args.tool_args.join(" "))
+        format!("{} {}", tool_name, args.tool_args.join(" "))
     };
     let tool = super::add::detect_tool(&command)?;
 
@@ -153,7 +168,10 @@ pub async fn run(profile: &str, args: GoArgs) -> Result<()> {
         let mut instance = Instance::new(&title, normalized_path);
         instance.command = command.clone();
         instance.tool = tool.clone();
-        instance.yolo_mode = args.yolo;
+        instance.yolo_mode = args.yolo
+            || crate::session::Config::load()
+                .map(|c| c.session.yolo_mode_default)
+                .unwrap_or(false);
         if let Some(group) = project
             .as_ref()
             .and_then(|entry| entry.session_group.clone())

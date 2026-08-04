@@ -22,7 +22,11 @@ import subprocess
 import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
-RUNNER = REPO_ROOT / "scripts" / "offdesk_autonomy_run.py"
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+from deploy_harness_scripts import deploy as deploy_harness_scripts
+
+# Timers execute from the stable copy so repo checkouts cannot break them.
+RUNNER = deploy_harness_scripts() / "offdesk_autonomy_run.py"
 
 UNITS = [
     ("forager-autonomy-tick", "*:00/10", "tick", "Forager offdesk tick heartbeat (armed-gated)"),
@@ -57,6 +61,9 @@ def render_service(name: str, task: str, description: str, python_bin: str, prof
             f"WorkingDirectory={systemd_arg(REPO_ROOT)}",
             f"ExecStart={exec_start}",
             "NoNewPrivileges=true",
+            # tmux and the stable forager binary live in ~/.local/bin, which
+            # the systemd user manager's default PATH does not include.
+            "Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin",
             "",
         ]
     )

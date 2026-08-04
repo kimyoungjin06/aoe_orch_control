@@ -102,7 +102,12 @@ def service_path(service_name: str) -> pathlib.Path:
 
 
 def render_unit(args: argparse.Namespace) -> str:
-    script = args.repo_root / "scripts" / "offdesk_remote_operator_telegram.py"
+    # Deploy scripts to a stable path so branch switches in the repo cannot
+    # break the running service, then execute from that copy.
+    sys.path.insert(0, str(args.repo_root / "scripts"))
+    from deploy_harness_scripts import deploy
+
+    script = deploy() / "offdesk_remote_operator_telegram.py"
     command = [
         args.python_bin,
         script,
@@ -153,7 +158,12 @@ def render_unit(args: argparse.Namespace) -> str:
             "Restart=always",
             "RestartSec=5",
             "NoNewPrivileges=true",
-            "PrivateTmp=true",
+            # The session-notify scan and session-input dispatch shell out to
+            # tmux, which on user-managed hosts often lives in ~/.local/bin --
+            # a path the systemd user manager does not include by default.
+            "Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin",
+            # No PrivateTmp: the tmux server socket lives in /tmp/tmux-<uid>/
+            # and must stay reachable from this service.
             "",
             "[Install]",
             "WantedBy=default.target",
@@ -200,6 +210,7 @@ def render_watchdog_service_unit(args: argparse.Namespace) -> str:
             f"ExecStart={exec_start}",
             "NoNewPrivileges=true",
             "PrivateTmp=true",
+            "Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin",
             "",
         ]
     )

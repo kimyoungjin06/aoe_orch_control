@@ -327,9 +327,37 @@ out of product-facing docs. The product direction is defined in
   `public/portfolio-surface.json` -> `/portfolio` page: one row per project
   with live session counts by tool, wiki plane entry/candidate counts, and a
   link into `/knowledge?profile=...`). Loader:
-  `scripts/telegram_operator/projects.py`. Fan-out routing (focus-sticky
-  project context, `/p <key>` prefix) and per-project attention cards are the
-  next slices and should resolve through this registry.
+  `scripts/telegram_operator/projects.py`. Fan-out routing (`/p <key>`
+  prefix) and per-project attention cards are the next slices and should
+  resolve through this registry.
+
+- Telegram chat now has project focus grounding: a plain-text message that
+  names a registered project (key, display name, or folder alias,
+  case-insensitive) resolves to that project, and the chat agent receives a
+  `project_focus` block with the project's live sessions (from
+  `forager status --json` rows), session counts, and its wiki plane's entry
+  count plus recent claims. The focus is sticky per chat
+  (`chat_focus_by_chat` in listener state): follow-up messages that drop the
+  project name keep answering about the same project until another project
+  is mentioned. Resolution and probes live in
+  `scripts/telegram_operator/projects.py` (`resolve_chat_focus`,
+  `build_project_focus`); every probe degrades without breaking chat.
+
+- Telegram plain text runs an agentic tool loop, not intent enumeration: per
+  message the chat agent may call up to 3 read-only tools
+  (`workspace_overview`, `list_dir`, `read_file`, all confined to registered
+  projects with path-traversal guards, in
+  `scripts/telegram_operator/projects.py`) and must finish with one terminal
+  action: `answer` (chat reply) or `propose_plan` (delegation_goal -> the
+  existing plan-capture confirm card; tap stays the only approval). The loop
+  lives in `agent.py::chat_with_agent` with the executor in the adapter
+  (`run_chat_tool`); tool use is logged as `chat_tools_used`. This handles
+  compound requests like "진단하고 새로 계획 세워봐" (inspect files, fold
+  findings into the proposed goal) without per-request-type code. Legacy
+  intent-shaped model output still maps (delegate_work, inspect_project ->
+  overview tool). Keyword markers apply only when the local agent is off or
+  unreachable. Per operator decision, new chat capabilities should be new
+  tools or terminal actions in this loop, never keyword lists.
 
 - `forager go [tool] [-- args]` is the zero-friction wrapper for direct agent
   work (`src/cli/go.rs`, Rust registry loader in
@@ -366,9 +394,13 @@ out of product-facing docs. The product direction is defined in
   exists), attaching either way. The TUI status bar now carries harness-wide
   orchestration signals: `Autonomy ARMED` while the overnight window is
   armed, and the wiki candidate queue total across every registered plane
-  (`load_orchestration_summary`, refreshed on reload). Remaining TUI
-  improvement slices deferred: project rollup view and an actionable
-  attention panel.
+  (`load_orchestration_summary`, refreshed on reload). The TUI now has a
+  full-screen project registry view (`p` from home,
+  `src/tui/home/projects.rs`): every registered project with live
+  running/waiting/total session counts and wiki plane, active projects
+  first; Enter jumps to the project's first session or shows the
+  `forager go` onboarding hint for session-less projects. Remaining TUI
+  improvement slice deferred: an actionable attention panel.
 
 ## Next Work Candidates
 

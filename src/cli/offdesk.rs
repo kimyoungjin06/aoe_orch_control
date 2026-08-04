@@ -4732,13 +4732,14 @@ fn decision_record_from_telegram_feedback(
         approval_context.insert("focus_ref".to_string(), value.to_string());
     }
 
+    // The subject is what the operator sees in decision lists; it must carry
+    // the feedback itself, not the interaction-context label active at send
+    // time (which produced rows like "Telegram feedback: 처리할 항목 없음").
+    let subject_excerpt = truncate_chars(&feedback_text, 60);
     let subject = if is_planning_request {
-        "Telegram planning request".to_string()
+        format!("Telegram planning request: {subject_excerpt}")
     } else {
-        context_label
-            .as_deref()
-            .map(|label| format!("Telegram feedback: {label}"))
-            .unwrap_or_else(|| "Telegram feedback".to_string())
+        format!("Telegram feedback: {subject_excerpt}")
     };
     let current_scope = if is_planning_request {
         "Review this Telegram planning request and, if appropriate, turn it into a bounded Offdesk plan candidate. This decision does not execute work by itself.".to_string()

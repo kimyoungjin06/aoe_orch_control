@@ -3556,12 +3556,17 @@ fn decision_evidence_refs(record: &DecisionRecord) -> Vec<DecisionEvidenceRef> {
 }
 
 fn decision_allowed_actions(record: &DecisionRecord) -> Vec<String> {
+    // Envelopes must carry the option ID (the executor's action vocabulary:
+    // continue/revise/block/stop/deny/defer/plan), not the display label.
+    // Slugged labels like "revise_next_step" pass envelope validation but
+    // are rejected by `ondesk action-decision`, so the operator could never
+    // complete the chain.
     if let Some(brief) = record.approval_brief.as_ref() {
         if !brief.options.is_empty() {
             return brief
                 .options
                 .iter()
-                .map(|option| operator_safe_text(&option.label))
+                .map(|option| decision_option_action(&option.id, &option.label))
                 .collect();
         }
     }
@@ -3572,8 +3577,17 @@ fn decision_allowed_actions(record: &DecisionRecord) -> Vec<String> {
             .decision_request
             .options
             .iter()
-            .map(|option| operator_safe_text(&option.label))
+            .map(|option| decision_option_action(&option.id, &option.label))
             .collect()
+    }
+}
+
+fn decision_option_action(id: &str, label: &str) -> String {
+    let id = operator_safe_text(id);
+    if id.trim().is_empty() {
+        operator_safe_text(label)
+    } else {
+        id
     }
 }
 

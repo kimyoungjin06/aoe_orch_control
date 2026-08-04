@@ -56,11 +56,20 @@ Give exactly one verdict per candidate."""
 
 
 def parse_args() -> argparse.Namespace:
+    import os
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", required=True)
     parser.add_argument("--tag", default="", help="Only review candidates carrying this core tag (e.g. source/chat).")
     parser.add_argument("--base-url", default=None)
     parser.add_argument("--model", default=None)
+    parser.add_argument("--council", action="store_true",
+                        help="Judge with a council of model families and aggregate votes; "
+                        "any disagreement marks the candidate contested for operator eyes.")
+    parser.add_argument("--council-models",
+                        default=os.environ.get("OFFDESK_COUNCIL_MODELS",
+                                               "qwen3-coder:30b,gemma4:26b,gpt-oss:120b"),
+                        help="Comma-separated model list for --council (distinct families beat clones).")
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--num-ctx", type=int, default=16384)
     parser.add_argument("--num-predict", type=int, default=2048)
@@ -136,13 +145,64 @@ def main() -> int:
         item["reason"] = "no stored evidence quote; needs operator eyes"
     judged = [i for i in items if len(i["quote"]) >= 15]
     prompt = RUBRIC + "\n\n--- CANDIDATES ---\n" + render_batch(judged)
-    raw = call_ollama(args, prompt) if judged else '{"verdicts": []}' 
-    try:
-        verdicts = {int(v.get("n")): v for v in json.loads(raw).get("verdicts", []) if isinstance(v, dict)}
-    except (ValueError, TypeError):
-        # salvage a truncated array the same way the distillers do
-        salvaged, _ = parse_candidates(raw.replace('"verdicts"', '"candidates"', 1))
-        verdicts = {int(v.get("n", 0)): v for v in salvaged if isinstance(v, dict)}
+
+    def one_pass(model: str | None) -> dict[int, dict]:
+        if not judged:
+            return {}
+        raw = call_ollama(args, prompt, model=model)
+        try:
+            return {int(v.get("n")): v for v in json.loads(raw).get("verdicts", []) if isinstance(v, dict)}
+        except (ValueError, TypeError):
+            # salvage a truncated array the same way the distillers do
+            salvaged, _ = parse_candidates(raw.replace('"verdicts"', '"candidates"', 1))
+            return {int(v.get("n", 0)): v for v in salvaged if isinstance(v, dict)}
+
+    def stakes_high(item: dict) -> bool:
+        """Stakes come from what a wrong promotion would do, not from a new
+        LLM judgment: rules that steer agent behaviour (policy_rule,
+        procedure, failure_pattern) and user-global scope outrank plain
+        facts scoped to one project."""
+        c = next((c for c in candidates if c.get("id") == item.get("id")), {})
+        return (
+            str(c.get("kind") or "") in {"policy_rule", "procedure", "failure_pattern"}
+            or str(c.get("scope") or "") == "user_global"
+        )
+
+    if args.council:
+        council_models = [m.strip() for m in args.council_models.split(",") if m.strip()]
+        passes = {model: one_pass(model) for model in council_models}
+        verdicts = {}
+        for item in judged:
+            votes = {}
+            for model, byn in passes.items():
+                v = byn.get(item["n"], {})
+                verdict = str(v.get("verdict") or "unclear").lower()
+                votes[model] = {
+                    "verdict": verdict if verdict in VERDICTS else "unclear",
+                    "reason": normalize(str(v.get("reason") or ""))[:120],
+                }
+            item["council_votes"] = votes
+            kinds = {v["verdict"] for v in votes.values()}
+            # Escalation to a commercial council is stakes x uncertainty:
+            # local dissent on a behaviour-steering candidate is exactly the
+            # case worth spending frontier-model quota on.
+            item["escalate_commercial"] = kinds != {"supported"} and stakes_high(item)
+            if kinds == {"supported"}:
+                verdicts[item["n"]] = {"verdict": "supported", "reason": "council unanimous"}
+            else:
+                # Any dissent is a signal, not noise: family-specific failure
+                # modes (inversions, parroting) rarely repeat across families.
+                dissent = "; ".join(
+                    f"{model.split(':')[0]}={vote['verdict']}" for model, vote in votes.items()
+                )
+                worst = min(kinds, key=lambda k: {"inverted": 0, "unsupported": 1, "unclear": 2, "supported": 3}[k])
+                reasons = [v["reason"] for v in votes.values() if v["verdict"] != "supported" and v["reason"]]
+                verdicts[item["n"]] = {
+                    "verdict": worst if worst != "supported" else "unclear",
+                    "reason": f"council split ({dissent}): " + (reasons[0] if reasons else "review manually"),
+                }
+    else:
+        verdicts = one_pass(None)
 
     flagged = 0
     for item in items:
@@ -160,6 +220,8 @@ def main() -> int:
         print(f"  {marker:2} [{item['verdict']:11}] {item['claim'][:70]}")
         if item["verdict"] != "supported" and item["reason"]:
             print(f"       ↳ {item['reason'][:100]}")
+        if item.get("escalate_commercial"):
+            print("       ↳ ESCALATE: high-stakes + council dissent -> commercial council review")
     print(f"\n{len(items)} candidates: {len(items)-flagged} supported, {flagged} flagged for operator attention")
     if LLM_USAGE["calls"]:
         print(f"llm cost: {LLM_USAGE['calls']} call(s), {LLM_USAGE['prompt_tokens']}+{LLM_USAGE['output_tokens']} tokens, "

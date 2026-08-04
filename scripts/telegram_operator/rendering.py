@@ -41,11 +41,11 @@ MOBILE_CARD_FORBIDDEN_TERMS = (
 
 def sanitize_text(text: str, *, max_chars: int = 1200) -> str:
     safe = str(text or "")
-    safe = re.sub(r"bot[0-9]+:[A-Za-z0-9_-]+", "bot<redacted>", safe)
-    safe = re.sub(r"(?i)(telegram_bot_token|bot_token|token)=\S+", r"\1=<redacted>", safe)
-    safe = re.sub(r"sk-[A-Za-z0-9_-]{12,}", "sk-<redacted>", safe)
+    safe = re.sub(r"bot[0-9]+:[A-Za-z0-9_-]+", "bot[redacted]", safe)
+    safe = re.sub(r"(?i)(telegram_bot_token|bot_token|token)=\S+", r"\1=[redacted]", safe)
+    safe = re.sub(r"sk-[A-Za-z0-9_-]{12,}", "sk-[redacted]", safe)
     if len(safe) > max_chars:
-        safe = safe[:max_chars] + "...<truncated>"
+        safe = safe[:max_chars] + "...[truncated]"
     return safe
 
 
@@ -204,7 +204,7 @@ def render_projection_message(
     else:
         message = render_generic_projection_message(projection)
     if len(message) > max_chars:
-        return message[: max(0, max_chars - 20)] + "\n...<truncated>"
+        return message[: max(0, max_chars - 20)] + "\n...[truncated]"
     return message
 
 
@@ -407,6 +407,19 @@ def mobile_card_contract(
     leaked_terms = [term for term in MOBILE_CARD_FORBIDDEN_TERMS if term in message]
     if leaked_terms:
         warnings.append("forbidden_terms:" + ",".join(leaked_terms))
+    # Telegram parses the message as HTML: any "<tag>" outside the small
+    # supported set 400s the whole sendMessage. Placeholders like <id> must
+    # be &lt;-escaped; this warning makes every dry-run test catch them.
+    rogue_tags = sorted(
+        {
+            match.group(1).lower()
+            for match in re.finditer(r"</?([a-zA-Z][a-zA-Z0-9_-]*)", str(message or ""))
+            if match.group(1).lower()
+            not in {"b", "strong", "i", "em", "code", "pre", "a", "s", "u", "tg-spoiler"}
+        }
+    )
+    if rogue_tags:
+        warnings.append("unescaped_html_tags:" + ",".join(rogue_tags))
     return {
         "schema": MOBILE_CARD_CONTRACT_SCHEMA,
         "line_count": len(lines),
@@ -629,7 +642,7 @@ def render_decisions_message(*, profile: Any, generated_at: Any, decisions: list
         if len(title) > 60:
             title = title[:57] + "..."
         lines.append(f"{html.escape(title)}: {html.escape(actions)}")
-    lines.append("다음 조치: /decision <id> <action> [note]")
+    lines.append("다음 조치: /decision &lt;id&gt; &lt;action&gt; [note]")
     return "\n".join(lines)
 
 
@@ -646,7 +659,7 @@ def render_runtime_message(*, profile: Any, generated_at: Any, rows: list[dict[s
         marker = " (대기열 등록됨)" if row.get("already_queued") else ""
         lines.append(f"{html.escape(closeout)}{html.escape(marker)}")
     if enabled:
-        lines.append("다음 조치: /dispatch <closeout-id> <runner> -- <명령>")
+        lines.append("다음 조치: /dispatch &lt;closeout-id&gt; &lt;runner&gt; -- &lt;명령&gt;")
     else:
         lines.append("실행 비활성. --enable-runtime-dispatch 필요")
     return "\n".join(lines)
@@ -720,7 +733,7 @@ def render_run_list_message(
             lines.append(f"{html.escape(name)}: {html.escape(description)}")
         else:
             lines.append(html.escape(name))
-    lines.append("다음 조치: /run <closeout-id> <name>")
+    lines.append("다음 조치: /run &lt;closeout-id&gt; &lt;name&gt;")
     return "\n".join(lines)
 
 
@@ -826,7 +839,7 @@ def render_tasks_message(*, profile: Any, generated_at: Any, tasks: list[dict[st
             task_id = task_id[:37] + "..."
         status = str(task.get("status") or "")
         lines.append(f"{html.escape(task_id)} · {html.escape(status)}")
-    lines.append("다음 조치: /cancel-task <task-id> [사유]")
+    lines.append("다음 조치: /cancel-task &lt;task-id&gt; [사유]")
     return "\n".join(lines)
 
 
@@ -881,7 +894,7 @@ def render_recovery_message(*, profile: Any, generated_at: Any, recoveries: list
         if len(closeout) > 40:
             closeout = closeout[:37] + "..."
         lines.append(f"{html.escape(closeout)}: {html.escape(actions)}")
-    lines.append("다음 조치: /recover <closeout-id> <action> [note]")
+    lines.append("다음 조치: /recover &lt;closeout-id&gt; &lt;action&gt; [note]")
     return "\n".join(lines)
 
 
