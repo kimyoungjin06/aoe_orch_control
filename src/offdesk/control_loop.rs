@@ -647,8 +647,8 @@ fn apply_approved_provider_fallbacks(
 
         let mut applied = 0usize;
         for task in tasks.iter_mut().filter(|task| {
-            project_key.map_or(true, |expected| task.project_key == expected)
-                && task_id.map_or(true, |expected| task.task_id == expected)
+            project_key.is_none_or(|expected| task.project_key == expected)
+                && task_id.is_none_or(|expected| task.task_id == expected)
                 && provider_fallback_task_matches_scope(task, &approval, metadata)
         }) {
             task.provider_id = Some(candidate.provider_id.clone());

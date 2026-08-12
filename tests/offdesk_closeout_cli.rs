@@ -49,6 +49,46 @@ fn initialize_git_repo_with_initial_commit(repo_path: &Path, paths: &[&str]) -> 
 
 #[test]
 #[serial]
+fn offdesk_closeout_output_collision_writes_no_partial_artifacts() -> Result<()> {
+    let temp = tempdir()?;
+    fs::create_dir_all(profile_dir(temp.path()))?;
+    let output_dir = temp.path().join("closeout-output");
+    fs::create_dir_all(&output_dir)?;
+    let collision = output_dir.join("CLOSEOUT_PLAN.md");
+    fs::write(&collision, "existing plan")?;
+
+    let output = forager_command(temp.path())
+        .args([
+            "offdesk",
+            "closeout",
+            "--output",
+            output_dir.to_str().expect("utf-8 output directory"),
+            "--dry-run",
+            "--json",
+        ])
+        .output()?;
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("closeout artifact target already exists")
+    );
+    assert_eq!(fs::read_to_string(collision)?, "existing plan");
+    for name in [
+        "closeout_plan.json",
+        "cleanup_manifest.json",
+        "COMMERCIAL_REVIEW_PACKET.md",
+        "RETURN_PACKAGE.md",
+    ] {
+        assert!(
+            !output_dir.join(name).exists(),
+            "unexpected artifact: {name}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+#[serial]
 fn offdesk_closeout_writes_dry_run_review_packet_and_return_package() -> Result<()> {
     let temp = tempdir()?;
     let profile_dir = profile_dir(temp.path());
