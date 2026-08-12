@@ -8,19 +8,21 @@ import json
 import os
 import pathlib
 import re
+import stat
 import subprocess
 import sys
 from typing import Any
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
-DEFAULT_ENV_FILE = pathlib.Path(
-    os.environ.get(
-        "OFFDESK_TELEGRAM_ENV",
-        "/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram.env",
-    )
-)
 DEFAULT_CACHE_DIR = pathlib.Path.home() / ".cache" / "forager"
+
+
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+from telegram_operator.config import default_telegram_env_file
+
+
+DEFAULT_ENV_FILE = default_telegram_env_file()
 
 
 def parse_args() -> argparse.Namespace:
@@ -34,10 +36,37 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--forager-bin", type=pathlib.Path, default=pathlib.Path(resolve_forager_bin()))
     parser.add_argument("--env-file", type=pathlib.Path, default=DEFAULT_ENV_FILE)
     parser.add_argument("--profile", default=os.environ.get("FORAGER_PROFILE", "default"))
+    parser.add_argument(
+        "--workspace-root",
+        action="append",
+        type=pathlib.Path,
+        default=[],
+        help="Workspace root visible to the deployed listener. Can be repeated.",
+    )
     parser.add_argument("--state-file", type=pathlib.Path, default=DEFAULT_CACHE_DIR / "remote_operator_telegram_state.json")
     parser.add_argument("--feedback-file", type=pathlib.Path, default=DEFAULT_CACHE_DIR / "remote_operator_telegram_feedback.jsonl")
+    parser.add_argument(
+        "--conversation-file",
+        type=pathlib.Path,
+        default=DEFAULT_CACHE_DIR / "remote_operator_telegram_conversation.jsonl",
+    )
+    parser.add_argument(
+        "--update-journal-file",
+        type=pathlib.Path,
+        default=DEFAULT_CACHE_DIR / "remote_operator_telegram_updates.jsonl",
+    )
+    parser.add_argument(
+        "--reply-outbox-file",
+        type=pathlib.Path,
+        default=DEFAULT_CACHE_DIR / "remote_operator_telegram_reply_outbox.jsonl",
+    )
     parser.add_argument("--feedback-ingest-dir", type=pathlib.Path, default=DEFAULT_CACHE_DIR / "remote_operator_telegram_feedback_ingest")
     parser.add_argument("--loop-status-file", type=pathlib.Path, default=DEFAULT_CACHE_DIR / "remote_operator_telegram_loop.json")
+    parser.add_argument(
+        "--listener-lock-file",
+        type=pathlib.Path,
+        default=DEFAULT_CACHE_DIR / "remote_operator_telegram_listener.lock",
+    )
     parser.add_argument("--include-watchdog", action="store_true", help="Also install a timer-backed external watchdog.")
     parser.add_argument("--watchdog-service-name", default="forager-telegram-operator-watchdog.service")
     parser.add_argument("--watchdog-timer-name", default="forager-telegram-operator-watchdog.timer")
@@ -79,6 +108,11 @@ def parse_args() -> argparse.Namespace:
         "--enable-runtime-dispatch. Off by default.",
     )
     parser.add_argument("--install", action="store_true", help="Write the unit into ~/.config/systemd/user.")
+    parser.add_argument(
+        "--allow-dirty-source",
+        action="store_true",
+        help="Allow deploying scripts from a dirty Git checkout. Off by default.",
+    )
     parser.add_argument("--enable", action="store_true", help="Enable the service after installing it.")
     parser.add_argument("--start", action="store_true", help="Start the service after installing it.")
     parser.add_argument("--restart", action="store_true", help="Restart the service after installing it.")
@@ -97,17 +131,103 @@ def service_dir() -> pathlib.Path:
     return pathlib.Path.home() / ".config" / "systemd" / "user"
 
 
+def normalize_unit_name(name: str, suffix: str) -> str:
+    name = name.strip()
+    if not name:
+        raise SystemExit("systemd unit name must not be empty")
+    if pathlib.PurePath(name).name != name:
+        raise SystemExit(f"systemd unit name must not contain a path: {name}")
+    if name.endswith(suffix):
+        return name
+    if pathlib.PurePath(name).suffix:
+        raise SystemExit(f"systemd unit name must end with {suffix}: {name}")
+    return f"{name}{suffix}"
+
+
 def service_path(service_name: str) -> pathlib.Path:
     return service_dir() / service_name
 
 
-def render_unit(args: argparse.Namespace) -> str:
-    # Deploy scripts to a stable path so branch switches in the repo cannot
-    # break the running service, then execute from that copy.
-    sys.path.insert(0, str(args.repo_root / "scripts"))
-    from deploy_harness_scripts import deploy
+def secure_env_file(path: pathlib.Path) -> None:
+    if not path.is_file():
+        raise SystemExit(f"Telegram env file not found: {path}")
+    mode = stat.S_IMODE(path.stat().st_mode)
+    if mode & 0o077:
+        raise SystemExit(
+            f"Telegram env file must be private (mode {mode:04o}); run: chmod 600 {path}"
+        )
 
-    script = deploy() / "offdesk_remote_operator_telegram.py"
+
+def service_workspace_roots(args: argparse.Namespace) -> list[pathlib.Path]:
+    """Resolve roots before deployment so the stable copy never guesses from its own path."""
+
+    requested = [path.expanduser().resolve() for path in args.workspace_root]
+    if not requested:
+        repo_root = args.repo_root.expanduser().resolve()
+        requested = [
+            candidate
+            for candidate in (repo_root, *repo_root.parents)
+            if candidate.name == "Workspace"
+        ][:1]
+        if not requested:
+            requested = [repo_root.parent]
+    invalid = [path for path in requested if not path.is_dir()]
+    if invalid:
+        raise SystemExit(f"Workspace root not found: {invalid[0]}")
+    return list(dict.fromkeys(requested))
+
+
+def ensure_deployable_source(args: argparse.Namespace) -> None:
+    if not args.install or args.dry_run or args.allow_dirty_source:
+        return
+    repo_root = args.repo_root.expanduser().resolve()
+    try:
+        top_level = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--show-toplevel"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except OSError:
+        return
+    if top_level.returncode != 0:
+        return
+    try:
+        is_repo_root = pathlib.Path(top_level.stdout.strip()).resolve() == repo_root
+    except (OSError, RuntimeError):
+        is_repo_root = False
+    if not is_repo_root:
+        return
+    status = subprocess.run(
+        ["git", "-C", str(repo_root), "status", "--porcelain", "--untracked-files=normal"],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if status.returncode == 0 and status.stdout.strip():
+        raise SystemExit(
+            "Refusing to deploy Telegram operator scripts from a dirty Git checkout. "
+            "Commit or stash the changes, use a verified release bundle, or pass "
+            "--allow-dirty-source for an intentional development deployment."
+        )
+
+
+def runtime_script_dir(args: argparse.Namespace) -> pathlib.Path:
+    cached = getattr(args, "_runtime_script_dir", None)
+    if isinstance(cached, pathlib.Path):
+        return cached
+    sys.path.insert(0, str(args.repo_root / "scripts"))
+    from deploy_harness_scripts import STABLE_SCRIPTS, deploy
+
+    path = deploy() if args.install and not args.dry_run else STABLE_SCRIPTS
+    args._runtime_script_dir = path
+    return path
+
+
+def render_unit(args: argparse.Namespace) -> str:
+    script = runtime_script_dir(args) / "offdesk_remote_operator_telegram.py"
     command = [
         args.python_bin,
         script,
@@ -121,10 +241,18 @@ def render_unit(args: argparse.Namespace) -> str:
         args.state_file,
         "--feedback-file",
         args.feedback_file,
+        "--conversation-file",
+        args.conversation_file,
+        "--update-journal-file",
+        args.update_journal_file,
+        "--reply-outbox-file",
+        args.reply_outbox_file,
         "--feedback-ingest-dir",
         args.feedback_ingest_dir,
         "--loop-status-file",
         args.loop_status_file,
+        "--listener-lock-file",
+        args.listener_lock_file,
         "--poll-timeout-sec",
         args.poll_timeout_sec,
         "--api-timeout-sec",
@@ -132,6 +260,8 @@ def render_unit(args: argparse.Namespace) -> str:
         "--poll-error-backoff-sec",
         args.poll_error_backoff_sec,
     ]
+    for workspace_root in service_workspace_roots(args):
+        command.extend(["--workspace-root", workspace_root])
     if args.attention_notify:
         command.append("--attention-notify")
         if int(args.attention_reminder_sec) > 0:
@@ -149,13 +279,15 @@ def render_unit(args: argparse.Namespace) -> str:
             "Description=Forager Telegram remote operator",
             "After=network-online.target",
             "Wants=network-online.target",
-            "StartLimitIntervalSec=0",
+            "StartLimitIntervalSec=60",
+            "StartLimitBurst=5",
             "",
             "[Service]",
             "Type=simple",
-            f"WorkingDirectory={systemd_arg(args.repo_root)}",
+            "UMask=0077",
+            f"WorkingDirectory={systemd_arg(script.parent)}",
             f"ExecStart={exec_start}",
-            "Restart=always",
+            "Restart=on-failure",
             "RestartSec=5",
             "NoNewPrivileges=true",
             # The session-notify scan and session-input dispatch shell out to
@@ -173,7 +305,7 @@ def render_unit(args: argparse.Namespace) -> str:
 
 
 def render_watchdog_service_unit(args: argparse.Namespace) -> str:
-    script = args.repo_root / "scripts" / "offdesk_remote_operator_watchdog.py"
+    script = runtime_script_dir(args) / "offdesk_remote_operator_watchdog.py"
     command = [
         args.python_bin,
         script,
@@ -206,7 +338,7 @@ def render_watchdog_service_unit(args: argparse.Namespace) -> str:
             "",
             "[Service]",
             "Type=oneshot",
-            f"WorkingDirectory={systemd_arg(args.repo_root)}",
+            f"WorkingDirectory={systemd_arg(script.parent)}",
             f"ExecStart={exec_start}",
             "NoNewPrivileges=true",
             "PrivateTmp=true",
@@ -242,6 +374,14 @@ def systemctl_user(*args: str) -> None:
 
 def main() -> int:
     args = parse_args()
+    args.service_name = normalize_unit_name(args.service_name, ".service")
+    args.watchdog_service_name = normalize_unit_name(
+        args.watchdog_service_name, ".service"
+    )
+    args.watchdog_timer_name = normalize_unit_name(args.watchdog_timer_name, ".timer")
+    secure_env_file(args.env_file)
+    workspace_roots = service_workspace_roots(args)
+    ensure_deployable_source(args)
     unit = render_unit(args)
     path = service_path(args.service_name)
     watchdog_service_unit = render_watchdog_service_unit(args) if args.include_watchdog else None
@@ -253,7 +393,11 @@ def main() -> int:
         "service_name": args.service_name,
         "service_path": str(path),
         "repo_root": str(args.repo_root),
+        "runtime_script_dir": str(runtime_script_dir(args)),
+        "workspace_roots": [str(path) for path in workspace_roots],
         "loop_status_file": str(args.loop_status_file),
+        "update_journal_file": str(args.update_journal_file),
+        "reply_outbox_file": str(args.reply_outbox_file),
         "watchdog_included": bool(args.include_watchdog),
         "watchdog_service_name": args.watchdog_service_name if args.include_watchdog else None,
         "watchdog_timer_name": args.watchdog_timer_name if args.include_watchdog else None,

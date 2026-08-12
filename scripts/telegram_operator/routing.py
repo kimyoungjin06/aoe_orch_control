@@ -30,6 +30,8 @@ CORE_OR_SLASH_COMMANDS = {
     "feedback",
     "note",
     "remember",
+    "wiki",
+    "projects",
     "plan",
     "plan_request",
     "decisions",
@@ -43,6 +45,8 @@ CORE_OR_SLASH_COMMANDS = {
     "cancel_task",
     "session_approve",
     "session_deny",
+    "session_send",
+    "tell",
     "pause",
     "resume",
     "attention",
@@ -64,6 +68,8 @@ COMMAND_SURFACE = (
     ("/recovery", "복구 대기 항목", "조회"),
     ("/runtime", "런타임 디스패치 상태", "조회"),
     ("/tasks", "실행 중 작업 목록", "조회"),
+    ("/wiki [project]", "프로젝트별 위키 검토 대기", "조회"),
+    ("/projects [project]", "접근 가능한 프로젝트와 현재 포커스", "조회"),
     ("/decision <id> <action> [메모]", "결정 처리 (확인 카드 후 실행)", "실행"),
     ("/recover <id>", "복구 실행", "실행"),
     ("/run [name]", "사전 승인된 명령 목록/실행", "실행"),
@@ -72,6 +78,7 @@ COMMAND_SURFACE = (
     ("/cancel_task <id> [이유]", "작업 취소", "실행"),
     ("/session_approve <id> [hash] [n]", "대기 세션 승인(기본 Enter, n=옵션 번호)", "실행"),
     ("/session_deny <id> [hash]", "대기 세션 거부 키 전송(Esc)", "실행"),
+    ("/session_send <id> [hash] -- <내용>", "실행 중인 로컬 에이전트에 평문 전달", "실행"),
     ("/plan <내용>", "계획 후보로 기록 (로컬 Plan Mode에서 이어감)", "기록"),
     ("/feedback <내용>", "의견 기록", "기록"),
     ("/remember <내용>", "위키 후보로 기록", "기록"),
@@ -127,10 +134,13 @@ def parse_remote_command(command_text: str) -> dict[str, Any]:
             "command_text": original_text,
             "chat_text": original_text,
         }
-    # /dispatch carries an arbitrary shell command after " -- "; parse it from
-    # the raw text so quoting in the command survives shlex tokenization.
-    if normalize_command_name(text.split(None, 1)[0]) == "dispatch":
+    raw_command = normalize_command_name(text.split(None, 1)[0])
+    # These commands carry text after " -- "; parse from the raw input so
+    # quoting and whitespace inside the payload survive shlex tokenization.
+    if raw_command == "dispatch":
         return parse_dispatch_command(original_text, text)
+    if raw_command in {"session_send", "tell"}:
+        return parse_session_send_command(original_text, text)
     try:
         tokens = shlex.split(text)
     except ValueError as error:
@@ -180,6 +190,28 @@ def parse_remote_command(command_text: str) -> dict[str, Any]:
             "reason": "explicit_remember_command",
             "command_text": original_text,
             "remember_text": remember_text,
+        }
+    if command == "wiki":
+        if len(args) > 1:
+            return unsupported_command(original_text, "wiki_accepts_zero_or_one_project")
+        return {
+            "supported": True,
+            "command": "wiki",
+            "argv": [],
+            "reason": "explicit_wiki_command",
+            "command_text": original_text,
+            "project_selector": args[0].strip() if args else "",
+        }
+    if command == "projects":
+        if len(args) > 1:
+            return unsupported_command(original_text, "projects_accepts_zero_or_one_project")
+        return {
+            "supported": True,
+            "command": "projects",
+            "argv": [],
+            "reason": "explicit_projects_command",
+            "command_text": original_text,
+            "project_selector": args[0].strip() if args else "",
         }
     if command in {"plan", "plan_request"}:
         plan_text = " ".join(args).strip()
@@ -381,6 +413,37 @@ def parse_dispatch_command(original_text: str, text: str) -> dict[str, Any]:
         "closeout_id": left_tokens[0],
         "runner": left_tokens[1],
         "dispatch_command_text": command,
+    }
+
+
+def parse_session_send_command(original_text: str, text: str) -> dict[str, Any]:
+    remainder = text.split(None, 1)
+    tail = remainder[1] if len(remainder) > 1 else ""
+    if " -- " not in tail:
+        return unsupported_command(
+            original_text, "session_send_requires_message_after_dashes"
+        )
+    left, message = tail.split(" -- ", 1)
+    message = message.strip()
+    try:
+        left_tokens = shlex.split(left)
+    except ValueError as error:
+        return unsupported_command(original_text, f"parse_error:{error}")
+    if not left_tokens or not message:
+        return unsupported_command(
+            original_text, "session_send_requires_session_and_message"
+        )
+    if len(left_tokens) > 2:
+        return unsupported_command(original_text, "session_send_accepts_id_and_hash")
+    return {
+        "supported": True,
+        "command": "session_send",
+        "argv": [],
+        "reason": "explicit_session_message_command",
+        "command_text": original_text,
+        "session_message_session_id": left_tokens[0],
+        "session_message_hash": left_tokens[1] if len(left_tokens) > 1 else "",
+        "session_message_text": message,
     }
 
 

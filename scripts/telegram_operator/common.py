@@ -7,6 +7,8 @@ import hashlib
 import json
 import os
 import pathlib
+import secrets
+import stat
 from typing import Any
 
 
@@ -14,19 +16,73 @@ class RemoteOperatorTelegramError(RuntimeError):
     pass
 
 
+PRIVATE_FILE_MODE = 0o600
+
+
+def private_file_mode_issue(path: pathlib.Path) -> str | None:
+    """Return a fail-closed reason when a local secret is readable by peers."""
+
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except OSError as error:
+        return f"unreadable:{error}"
+    if mode & 0o077:
+        return f"permissions_too_open:{mode:04o}"
+    return None
+
+
+def require_private_file(path: pathlib.Path, *, label: str) -> None:
+    issue = private_file_mode_issue(path)
+    if issue:
+        raise RemoteOperatorTelegramError(
+            f"{label} must be private ({issue}); run: chmod 600 {path}"
+        )
+
+
+def _private_text_writer(path: pathlib.Path, *, append: bool):
+    flags = os.O_WRONLY | os.O_CREAT | (os.O_APPEND if append else os.O_TRUNC)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags, PRIVATE_FILE_MODE)
+    try:
+        os.fchmod(descriptor, PRIVATE_FILE_MODE)
+        return os.fdopen(descriptor, "a" if append else "w", encoding="utf-8")
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
 def utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
 
 
 def write_json(path: pathlib.Path, value: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Write through a same-directory temp file and rename so a crash mid-write
-    # cannot leave a truncated JSON file behind. Clean up the temp file if the
-    # write or rename fails so failures do not accumulate orphans.
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    write_private_text_atomic(
+        path,
+        json.dumps(value, ensure_ascii=False, indent=2) + "\n",
+    )
+
+
+def write_private_text_atomic(path: pathlib.Path, content: str) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tmp = path.with_name(
+        f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+    )
     try:
-        tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        with _private_text_writer(tmp, append=False) as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
         tmp.replace(path)
+        path.chmod(PRIVATE_FILE_MODE)
+        flags = os.O_RDONLY
+        if hasattr(os, "O_DIRECTORY"):
+            flags |= os.O_DIRECTORY
+        parent_descriptor = os.open(path.parent, flags)
+        try:
+            os.fsync(parent_descriptor)
+        finally:
+            os.close(parent_descriptor)
     except BaseException:
         try:
             tmp.unlink()
@@ -35,10 +91,13 @@ def write_json(path: pathlib.Path, value: Any) -> None:
         raise
 
 
-def append_jsonl(path: pathlib.Path, value: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
+def append_jsonl(path: pathlib.Path, value: Any, *, durable: bool = False) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with _private_text_writer(path, append=True) as handle:
         handle.write(json.dumps(value, ensure_ascii=False, sort_keys=True) + "\n")
+        if durable:
+            handle.flush()
+            os.fsync(handle.fileno())
 
 
 def load_json(path: pathlib.Path) -> Any:
@@ -50,6 +109,7 @@ def parse_env_file(path: pathlib.Path, *, required: bool) -> dict[str, str]:
         if required:
             raise RemoteOperatorTelegramError(f"telegram env file not found: {path}")
         return {}
+    require_private_file(path, label="telegram env file")
     values: dict[str, str] = {}
     for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
         line = raw.strip()

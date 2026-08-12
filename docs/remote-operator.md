@@ -444,6 +444,7 @@ The current Telegram adapter exposes a small safe command surface:
 
 ```text
 /status
+/projects [project]
 /plans
 /show <plan_id>
 /pending
@@ -478,25 +479,20 @@ The following command classes are future design targets, not current Telegram
 runtime authority:
 
 ```text
-/projects
-/plan tonight
 /approve <approval_id>
 /deny <approval_id>
-/pause <run_id>
 /abort <run_id>
-/summary
 ```
 
-Allowed button callbacks:
+Current buttons carry the same bounded command text as the visible command
+surface. Conceptual action names exposed by read-only projections are not
+accepted as raw Telegram callback authority. New callbacks must remain
+unavailable until the corresponding bridge has explicit staleness checks,
+observed-hash binding, nonce and TTL validation, and local CLI recovery.
+Revision and rejection of a registered Plan Mode artifact are not yet exposed
+through Telegram.
 
-```text
-approve_plan
-request_revision
-reject_plan
-```
-
-Future button callbacks must remain unavailable until the corresponding bridge
-has explicit staleness checks, observed-hash binding, and local CLI recovery:
+Examples of unavailable direct callbacks include:
 
 ```text
 approve_launch
@@ -533,6 +529,9 @@ Remote Operator requires:
 - short TTL for approval callbacks;
 - append-only receipts for accepted and rejected remote actions;
 - secret redaction before persistence and before transport replies;
+- a Telegram env file with mode `0600`, rejected at startup if group or other
+  users can read it;
+- private `0600` listener state, feedback, conversation, and loop-status files;
 - rate limits for plan requests, status polling, and callback retries;
 - local CLI recovery for every remote-visible state.
 
@@ -656,8 +655,9 @@ to false. They are intended for Telegram or another transport adapter to
 render. The `pending` projection reads approval rows without resolving or
 expiring them.
 
-The Telegram adapter starts from these read-only commands and then adds bounded
-Plan Mode preparation receipts. Runtime mutation remains unavailable:
+The Telegram adapter starts from these read-only commands and adds bounded Plan
+Mode and task-bound action receipts. Mutation-capable actions remain behind the
+confirmation, observed-state, approval, and task-binding gates described later:
 
 ```bash
 scripts/offdesk_remote_operator_telegram.py \
@@ -689,13 +689,21 @@ scripts/offdesk_remote_operator_telegram.py \
   --forager-bin target/debug/forager
 ```
 
+The default credential file is
+`$XDG_CONFIG_HOME/forager/telegram.env` on Linux, falling back to
+`~/.config/forager/telegram.env`. On macOS it is
+`~/.forager/telegram.env`. Set `OFFDESK_TELEGRAM_ENV` or pass `--env-file` to
+override it. The service installer requires the file to exist with mode
+`0600` or stricter.
+
 The adapter accepts plain Telegram text as read-only chat. Structured surfaces
-are explicit slash commands: `/status`, `/pending`, `/plans`, `/show <plan-id>`,
-`/feedback`, `/remember`, `/plan`, `/decisions`, `/decision`, `/confirm`,
+are explicit slash commands: `/status`, `/projects [project]`, `/pending`,
+`/plans`, `/show <plan-id>`, `/feedback`, `/remember`, `/wiki [project]`,
+`/plan`, `/decisions`, `/decision`, `/confirm`,
 `/cancel`, `/help`, and `/guide` (aliases `/qna`, `/usage`, `/commands`), plus
 the bounded plan-session buttons described below. `/guide` renders the full
 grouped command reference sheet from `routing.py::COMMAND_SURFACE` under a
-relaxed reference-sheet budget (36 lines / 2000 chars) instead of the 5-line
+relaxed reference-sheet budget (40 lines / 2000 chars) instead of the 5-line
 mobile card contract; `/help` stays a compact card and points to `/guide`.
 Unsupported commands such as `/approve`, `/launch`, `/exec`, or `/git push`
 return an unsupported result and do not call mutation-capable local surfaces.
@@ -704,18 +712,59 @@ updates. `--once` is for one-shot probes, and `--max-polls` is available for
 bounded smoke tests. `--send-command-text` sends one read-only projection to
 the configured owner chat without consuming updates.
 
+The continuous poller takes an exclusive local listener lock so two service
+instances cannot both issue Telegram `getUpdates`. The systemd unit uses
+`Restart=on-failure`, a bounded start limit, and `UMask=0077`. The loop status
+records per-status counts, consecutive errors, and last success/error times in
+addition to the latest result. Health also verifies that registered projects
+resolve under the pinned workspace roots. A zero-project scan is degraded or
+unhealthy instead of being reported as a healthy project surface.
+
 ## Waiting-Session Notifications
 
 With `--session-notify` (the systemd installer enables it by default) each
 poll runs `forager status --json` and pushes one card per waiting-episode of
 a supervised agent session: a `forager go` session that hits a permission
 prompt or question while the operator is away produces
-`세션 입력 대기 / ⏸ <project> · <title> (<tool>)` with the attach command as
-the next action. The project tag comes from the session's registry match.
-Per-session backoff (`--session-notify-backoff-sec`, default 1800) damps
-repeats; a session that leaves the waiting state is cleared so the next
-episode notifies immediately. `--session-status-file` overrides the probe
-for replay tests. Read-only: the card never acts on the session.
+`세션 입력 대기 / ⏸ <project> · <title> (<tool>)` with prompt-bound approve,
+deny, or numbered-option buttons. The project tag comes from the session's
+registry match. Before sending a key, the listener rechecks both the waiting
+status and the pane hash shown on the card. It reports success only when the
+pane repaints; an unchanged pane returns `no_effect` and that exact prompt is
+not offered again.
+
+Plain Telegram text can also become a real local-agent message. The local
+intent model receives the current `running`, `idle`, and `waiting` supervised
+session list and returns a `send_agent` action with one exact session id and
+the text to deliver. A message that replies to a waiting-session card is bound
+to that card's session and pane hash. After one successful delivery, follow-up
+instructions may continue using the same session as chat context. If several
+sessions could match, a deterministic validator asks which one instead of
+trusting the model's first choice. An explicitly mentioned project, agent
+title, reply-card binding, full current session id, and minimum confidence all
+have to agree before any tmux input is sent.
+
+Text delivery uses a private tmux buffer with bracketed paste and never invokes
+a shell. This preserves multi-line instructions and indentation. The target
+must still be live when delivery starts. For a card-bound reply, the pane hash
+must still match. A successful tmux paste is reported as `input_queued`; a
+subsequent repaint upgrades the evidence to `pane_reacted`. Neither state is
+presented as proof that the agent accepted or completed the work.
+`/session_send <id> [hash] -- <text>` provides the same path explicitly for
+local recovery and testing. Direct `--dry-run --command-text` previews never
+send tmux input. Ordinary operators can write natural language such as
+`forager Codex에게 전체 테스트를 다시 돌리고 결과를 알려달라고 전해줘`.
+
+Reminders are bounded per prompt. `--session-notify-backoff-sec` defaults to
+1800 seconds and doubles on each repeat up to
+`--session-notify-max-backoff-sec` (default 14400). A prompt stops after
+`--session-notify-max-cards` cards (default 4; 0 disables the cap). A changed
+pane hash starts a fresh prompt budget even if the session remained in the
+waiting state between polls. Session cards are quiet from
+`--session-notify-quiet-from-hour` (default 23) until
+`--session-notify-quiet-to-hour` (default 8); an item still waiting after the
+window is eligible immediately. Equal quiet-hour bounds disable the window.
+`--session-status-file` overrides the probe for replay tests.
 
 ## Idle-Proposed Overnight Autonomy
 
@@ -743,12 +792,25 @@ are inert unless armed.
 ## One-look triage
 
 `/attention` is the fast "what needs me right now" summary. It reads the current
-operator-safe workstation surface and returns a single card aggregating every
-waiting item: open decisions, accepted-truth recovery follow-ups, and tasks the
-surface flags for operator review. The card shows the per-category counts, names
-the single most urgent action first (prioritizing decisions, then recovery, then
-tasks) with the exact command to run, and points at the detail commands
-(`/decisions`, `/recovery`, `/tasks`). It is read-only and never mutates state.
+operator-safe workstation surface and the registered wiki planes, then returns
+a single card aggregating open decisions, accepted-truth recovery follow-ups,
+tasks flagged for review, and the wiki candidate backlog. The card keeps
+runtime decisions ahead of wiki curation, names the single most urgent action,
+and points at `/decisions`, `/recovery`, `/tasks`, or `/wiki`. It is
+read-only and never mutates state.
+
+`/wiki` ranks registered projects by unpromoted candidate count and offers
+the busiest project as a one-tap next action. `/wiki <project-key>` shows one
+plane's candidate/promoted counts and newest candidate claims, then sets that
+project as the chat's sticky focus. This is a review surface only: promotion
+and rejection remain local governed mutations.
+
+`/projects` returns a compact portfolio with live session counts and workspace
+resolution. `/projects <project>` accepts the project key, display name,
+workspace folder, or configured alias, then sets the same chat focus used by
+plain text and `/remember`. The service installer resolves and pins the real
+workspace root before scripts are copied into `~/.local/share`; project lookup
+also supports one nested organization directory such as `0.1.NIMS/EpiMS`.
 
 ## Proactive attention notifications
 
@@ -760,11 +822,12 @@ operator-safe `workstation_surface.v1` for open decisions and accepted-truth
 recovery follow-ups and sends the owner chat a short card naming the top item
 and the exact command to run (for example `/decision <id> revise`).
 
-It is deduplicated: an item is pushed once, and a still-waiting item is only
-re-notified when `--attention-reminder-sec` is set above 0. A resolved item is
-pruned so it notifies afresh if it reopens. The scan is read-only, never
-mutates state, and never crashes the poll loop: a surface-export or send
-failure is recorded and the loop continues.
+It is deduplicated: an item is pushed once, and a still-waiting item is
+re-notified after `--attention-reminder-sec` (default 21600 seconds). Set the
+value to 0 to notify only once. A resolved item is pruned so it notifies
+afresh if it reopens. The scan is read-only, never mutates state, and never
+crashes the poll loop: a surface-export or send failure is recorded and the
+loop continues.
 
 ## Emergency stop
 
@@ -838,7 +901,9 @@ sharing the same confirmation token. `/confirm` on a recovery token runs
 `accepted-truth-recovery-envelope`, which validates the recovery envelope and
 records an `accepted_truth_recovery_action_receipt.v1`. This stops at
 validation: recording accepted truth or running the fallback command remains a
-separate explicit local step that this surface does not perform.
+separate explicit local step that this surface does not perform. A successful
+validation card shows the exact receipt-bound local fallback command so the
+operator does not need to rediscover it from `/recovery`.
 
 ### Runtime dispatch (opt-in)
 
@@ -900,17 +965,95 @@ Telegram messages should stay short enough for mobile scanning: a compact
 title, the current state, and the next local-safe action. Longer listener
 diagnostics belong in local health output, not in the chat message.
 
-Plain Telegram text is chat, not feedback capture and not a planning request.
+Plain Telegram text starts as chat. It can become a validated message to one
+live local agent, but it is not feedback capture and not a planning request.
 Use `/feedback <text>` to record an operator note in the decision inbox, and
 use `/plan <request>` to create a planning-request decision with an explicit
 note that no autonomous work has started. `/remember <text>` records an
-adaptive wiki candidate under the active profile; it is not promoted knowledge
-and cannot affect runtime behavior until local wiki review promotes it.
+adaptive wiki candidate. With an explicit or sticky project focus it uses the
+registry's `wiki_profile` and project scope; without a focus it uses the
+listener profile and user-global scope. It is not promoted knowledge and
+cannot affect runtime behavior until local wiki review promotes it.
 
 Chat keeps a small rolling history of recent turns per chat in local listener
-state so follow-up questions can be answered in context. The history is
-bounded, expires with `--context-max-age-sec`, never leaves the local state
-file, and grants no additional authority: chat stays read-only.
+state so follow-up questions can be answered in context. Assistant history uses
+the exact semantic text sent to Telegram, not an internal pre-render response.
+When the agent asks a clarification, that question is retained as clarification
+context for the next chat turn without refreshing an unrelated decision or wiki
+card. The history is bounded, expires with `--context-max-age-sec`, never leaves
+the local state file. Conversation history grants no additional authority;
+only the separately validated single-session delivery path can send tmux input.
+Project focus has its own 24-hour default expiry via
+`--project-focus-max-age-sec`.
+
+Project aliases are fail-closed. ASCII aliases match token boundaries instead
+of arbitrary substrings, and an alias shared by multiple registry entries does
+not select whichever entry happens to load first. Chat asks for the canonical
+project key, `/wiki` and `/projects` list the conflicting keys, and `/remember`
+records nothing until the target is unambiguous.
+
+Every handled inbound update also appends
+`remote_operator_telegram_conversation.v1` to the private conversation JSONL.
+It stores hashed chat/user IDs, inbound text, parsed command, selected project,
+read-only tools used, the exact semantic text sent, send receipt, and a result
+effect envelope. The effect envelope reports `read_only=false` only when a
+guarded write actually succeeded. It names the concrete authority domain, such
+as plan artifact, plan registry, Offdesk gate, task queue, runtime launch, or
+accepted-truth review, and includes the nested receipt schema and status when
+available. Conversation-ledger failure is reported in the result but does not
+replay an already handled Telegram mutation.
+
+Before handling an allowed inbound update, the listener fsyncs a `started` row
+to `remote_operator_telegram_updates.jsonl`. After the handler returns, it
+persists the handler-owned state and queues the exact Telegram reply in
+`remote_operator_telegram_reply_outbox.jsonl` before marking the update
+`effect_committed`. Only a delivered reply advances that row to `completed`.
+The Telegram offset can advance while delivery is pending because the next
+poll retries the private outbox without executing the effect handler again.
+
+If the process stops after a reply is queued, the outbox proves that handler
+processing reached the delivery boundary and repairs the journal on restart.
+A process stop while the journal is only `started` remains ambiguous and fails
+closed. Inspect it locally with:
+
+```bash
+scripts/offdesk_remote_operator_telegram.py --journal-inspect \
+  --journal-update-id <UPDATE_ID>
+```
+
+After checking downstream receipts, stop the listener and explicitly choose
+one resolution. `retry` asserts that no effect was applied and permits one
+fresh handler attempt. `complete` suppresses handler retry because the update
+was already handled or intentionally abandoned:
+
+```bash
+scripts/offdesk_remote_operator_telegram.py --journal-reconcile retry \
+  --journal-update-id <UPDATE_ID> \
+  --journal-reason "downstream receipts show no applied effect"
+```
+
+The reconcile command takes the normal listener lock, so it refuses to run
+while the service owns the poller. A malformed listener state, journal, or
+reply outbox is a health failure. The listener never resets a corrupt state
+file to offset zero. Telegram delivery itself cannot be exactly-once: a process
+stop after Telegram accepts `sendMessage` but before the local delivered row is
+fsynced can produce a duplicate reply, but it still cannot replay the guarded
+effect.
+
+Journal and outbox files are append-only during normal polling. During a
+maintenance stop, compact them against the trusted listener offset. Completed
+updates below that offset are removed, while every unresolved update and
+pending reply is preserved:
+
+```bash
+scripts/offdesk_remote_operator_telegram.py --journal-compact
+```
+
+Freeform service claims are treated as operator reports, not facts. A message
+that names a local port automatically seeds the agent with a `service_probe`
+observation, and the agent can request the same read-only TCP listener tool in
+its bounded tool loop. It must label a service report unverified when no live
+observation supports it.
 
 Planning requests open a short project-selection session. The operator can tap
 a candidate button or type a project number/name directly. If the typed project
@@ -979,6 +1122,15 @@ systemctl --user status forager-telegram-operator.service
 systemctl --user status forager-telegram-operator-watchdog.timer
 ```
 
+Run the same installer with `--dry-run` first to inspect the generated units.
+Dry-run does not copy scripts, write units, or call `systemctl`. A real install
+copies both the listener and watchdog into
+`~/.local/share/forager/scripts/`; both units execute from that stable copy so
+moving or switching the source checkout does not break the running service.
+The installer refuses to deploy from a dirty Git checkout by default. Use a
+clean checkout or verified release bundle for normal upgrades.
+`--allow-dirty-source` exists only for an intentional development deployment.
+
 The watchdog is separate from the listener. It reads the listener loop-status
 file, checks the user service state, sends at most one compact emergency
 Telegram alert per alert window, and reports concrete local recovery commands.
@@ -1011,10 +1163,12 @@ night run can continue.
 
 - Implemented: `계획 승인` records
   `forager offdesk plan-review <plan-id> --decision approved --json`.
+- Implemented: approval re-hashes the registered plan source and rejects a
+  stale source before recording the review.
 - Implemented: plan review does not build launch-preparation packets, enqueue
   work, or start runtime execution.
-- Remaining: revision-required and rejected decisions, stale approval rejection
-  by observed hash, and complete callback nonce/TTL checks.
+- Remaining: revision-required and rejected decisions, and complete callback
+  nonce/TTL checks outside the guarded dispatch confirmation surface.
 
 ### Phase 5: Launch-Prep And Gate Bridge - Partially Implemented
 

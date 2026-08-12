@@ -13,6 +13,7 @@ import argparse
 from typing import Any
 
 from .common import utc_now
+from .effects import no_effect
 from .rendering import choice_keyboard, choice_surface_contract
 from .schemas import FORBIDDEN_REMOTE_INTENTS, RESULT_SCHEMA
 
@@ -29,6 +30,9 @@ def result_base(args: argparse.Namespace, config: dict[str, Any], mode: str) -> 
         "read_only": True,
         "mutation_authorized": False,
         "approval_authorized": False,
+        "approval_resolution_authorized": False,
+        "authority_domain": "none",
+        "effect": no_effect(),
         "forbidden_remote_intents": list(FORBIDDEN_REMOTE_INTENTS),
     }
 

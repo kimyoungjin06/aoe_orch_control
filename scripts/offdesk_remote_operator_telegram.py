@@ -16,6 +16,7 @@ import html
 import json
 import os
 import pathlib
+import re
 import shlex
 import subprocess
 import sys
@@ -24,9 +25,12 @@ from typing import Any
 
 from telegram_operator.agent import (
     DEFAULT_AGENT_CONFIG_FILE,
+    SESSION_MESSAGE_MIN_CONFIDENCE,
     chat_with_agent,
     classify_feedback_kind,
     classify_feedback_with_agent,
+    looks_like_session_relay_request,
+    validate_session_message_intent,
 )
 from telegram_operator.common import (
     RemoteOperatorTelegramError,
@@ -41,7 +45,7 @@ from telegram_operator.allowlist import (
     find_dispatch_template,
     load_dispatch_allowlist,
 )
-from telegram_operator.config import resolve_telegram_config
+from telegram_operator.config import default_telegram_env_file, resolve_telegram_config
 from telegram_operator.health import listener_health
 from telegram_operator.redaction import public_remote_plan_session
 from telegram_operator.base import attach_choice_surface, result_base
@@ -62,6 +66,7 @@ from telegram_operator.plan_messages import render_project_selection_message
 from telegram_operator.dispatch import (
     apply_cancel_task,
     apply_session_input,
+    apply_session_text_input,
     apply_decision_action,
     apply_operator_pause,
     apply_operator_resume,
@@ -81,7 +86,27 @@ from telegram_operator.dispatch import (
     open_runtime_dispatch,
     pop_confirmation,
     runtime_dispatch_item,
+    run_forager_json,
     store_confirmation,
+)
+from telegram_operator.effects import annotate_result_effect
+from telegram_operator.reply_outbox import (
+    compact_reply_outbox,
+    latest_delivery_records,
+    mark_delivery_delivered,
+    mark_delivery_failed,
+    outbox_inspection,
+    pending_deliveries,
+    queue_reply,
+)
+from telegram_operator.update_journal import (
+    begin_update,
+    compact_update_journal,
+    complete_update,
+    journal_inspection,
+    latest_update_records,
+    mark_effect_committed,
+    reconcile_update,
 )
 from telegram_operator.notifier import (
     attention_summary,
@@ -95,25 +120,34 @@ from telegram_operator.project_candidates import (
 )
 from telegram_operator.projects import (
     build_project_focus,
+    build_project_portfolio_summary,
+    build_wiki_plane_summary,
+    build_wiki_portfolio_summary,
     find_project_dir,
     inspect_project_workspace,
     inspection_summary_lines,
     list_project_dir,
     load_registry,
+    project_mention_matches,
+    project_selector_matches,
     read_project_file,
     registry_summary,
     resolve_chat_focus,
 )
 from telegram_operator.persistence import (
+    RemoteOperatorStateError,
     append_chat_history,
     chat_history_for_chat_hash,
+    clear_session_focus_for_chat_hash,
     last_context_for_chat_hash,
     load_state,
+    project_focus_for_chat_hash,
+    remember_session_focus,
     remember_context_for_chat_hash,
     save_state,
+    session_focus_for_chat_hash,
 )
 from telegram_operator.rendering import (
-    agent_assistant_reply,
     choice_keyboard,
     render_decisions_message,
     render_dispatch_cancel_message,
@@ -149,7 +183,9 @@ from telegram_operator.rendering import (
     projection_payload,
     render_chat_message,
     render_feedback_message,
+    render_project_portfolio_message,
     render_wiki_candidate_message,
+    render_wiki_summary_message,
     render_projection_message,
     sanitize_text,
     status_summary,
@@ -162,12 +198,7 @@ from telegram_operator.transport import edit_message, get_updates, send_message
 from telegram_operator.wiki import record_remember_candidate
 
 
-DEFAULT_TELEGRAM_ENV_FILE = pathlib.Path(
-    os.environ.get(
-        "OFFDESK_TELEGRAM_ENV",
-        "/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram.env",
-    )
-)
+DEFAULT_TELEGRAM_ENV_FILE = default_telegram_env_file()
 DEFAULT_STATE_FILE = pathlib.Path(
     os.environ.get(
         "OFFDESK_REMOTE_OPERATOR_TELEGRAM_STATE",
@@ -178,6 +209,39 @@ DEFAULT_FEEDBACK_FILE = pathlib.Path(
     os.environ.get(
         "OFFDESK_REMOTE_OPERATOR_TELEGRAM_FEEDBACK",
         str(pathlib.Path.home() / ".cache" / "forager" / "remote_operator_telegram_feedback.jsonl"),
+    )
+)
+DEFAULT_CONVERSATION_FILE = pathlib.Path(
+    os.environ.get(
+        "OFFDESK_REMOTE_OPERATOR_TELEGRAM_CONVERSATION",
+        str(
+            pathlib.Path.home()
+            / ".cache"
+            / "forager"
+            / "remote_operator_telegram_conversation.jsonl"
+        ),
+    )
+)
+DEFAULT_UPDATE_JOURNAL_FILE = pathlib.Path(
+    os.environ.get(
+        "OFFDESK_REMOTE_OPERATOR_TELEGRAM_UPDATE_JOURNAL",
+        str(
+            pathlib.Path.home()
+            / ".cache"
+            / "forager"
+            / "remote_operator_telegram_updates.jsonl"
+        ),
+    )
+)
+DEFAULT_REPLY_OUTBOX_FILE = pathlib.Path(
+    os.environ.get(
+        "OFFDESK_REMOTE_OPERATOR_TELEGRAM_REPLY_OUTBOX",
+        str(
+            pathlib.Path.home()
+            / ".cache"
+            / "forager"
+            / "remote_operator_telegram_reply_outbox.jsonl"
+        ),
     )
 )
 DEFAULT_FEEDBACK_INGEST_DIR = pathlib.Path(
@@ -198,6 +262,12 @@ DEFAULT_LOOP_STATUS_FILE = pathlib.Path(
         str(pathlib.Path.home() / ".cache" / "forager" / "remote_operator_telegram_loop.json"),
     )
 )
+DEFAULT_LISTENER_LOCK_FILE = pathlib.Path(
+    os.environ.get(
+        "OFFDESK_REMOTE_OPERATOR_TELEGRAM_LISTENER_LOCK",
+        str(pathlib.Path.home() / ".cache" / "forager" / "remote_operator_telegram_listener.lock"),
+    )
+)
 # Off by default: curated /run is opt-in, the operator must point this at a file
 # of vetted command templates. Kept distinct from --enable-runtime-dispatch so a
 # setup can allow named commands without allowing free-form ones.
@@ -212,9 +282,54 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--env-file", type=pathlib.Path, default=DEFAULT_TELEGRAM_ENV_FILE)
     parser.add_argument("--state-file", type=pathlib.Path, default=DEFAULT_STATE_FILE)
     parser.add_argument("--feedback-file", type=pathlib.Path, default=DEFAULT_FEEDBACK_FILE)
+    parser.add_argument(
+        "--conversation-file", type=pathlib.Path, default=DEFAULT_CONVERSATION_FILE
+    )
+    parser.add_argument(
+        "--update-journal-file",
+        type=pathlib.Path,
+        default=DEFAULT_UPDATE_JOURNAL_FILE,
+        help="Durable inbound-update journal used to prevent replayed mutations.",
+    )
+    parser.add_argument(
+        "--reply-outbox-file",
+        type=pathlib.Path,
+        default=DEFAULT_REPLY_OUTBOX_FILE,
+        help="Durable Telegram reply outbox for committed inbound updates.",
+    )
+    parser.add_argument(
+        "--journal-inspect",
+        action="store_true",
+        help="Inspect durable update and reply-delivery state, then exit.",
+    )
+    parser.add_argument(
+        "--journal-reconcile",
+        choices=("retry", "complete"),
+        help="Resolve one ambiguous started update after local evidence review.",
+    )
+    parser.add_argument(
+        "--journal-compact",
+        action="store_true",
+        help="Remove completed journal/outbox history older than the trusted listener offset.",
+    )
+    parser.add_argument(
+        "--journal-update-id",
+        type=int,
+        help="Telegram update id selected by --journal-inspect or --journal-reconcile.",
+    )
+    parser.add_argument(
+        "--journal-reason",
+        help="Required operator reason for --journal-reconcile.",
+    )
     parser.add_argument("--feedback-ingest-dir", type=pathlib.Path, default=DEFAULT_FEEDBACK_INGEST_DIR)
     parser.add_argument("--remote-plan-artifact-dir", type=pathlib.Path, default=DEFAULT_REMOTE_PLAN_ARTIFACT_DIR)
     parser.add_argument("--loop-status-file", type=pathlib.Path, default=DEFAULT_LOOP_STATUS_FILE)
+    parser.add_argument(
+        "--listener-lock-file",
+        type=pathlib.Path,
+        default=DEFAULT_LISTENER_LOCK_FILE,
+        help="Local lock that prevents two continuous Telegram pollers from running.",
+    )
     parser.add_argument(
         "--no-decision-feedback-ingest",
         dest="decision_feedback_ingest",
@@ -236,6 +351,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=int(os.environ.get("OFFDESK_REMOTE_OPERATOR_CONTEXT_MAX_AGE_SEC", "86400")),
         help="Maximum age for remembered Telegram card context; negative disables expiry.",
+    )
+    parser.add_argument(
+        "--project-focus-max-age-sec",
+        type=int,
+        default=int(os.environ.get("OFFDESK_REMOTE_OPERATOR_PROJECT_FOCUS_MAX_AGE_SEC", "86400")),
+        help="Maximum age for a sticky chat project. Negative disables expiry.",
     )
     parser.add_argument(
         "--dispatch-confirm-ttl-sec",
@@ -295,14 +416,29 @@ def parse_args() -> argparse.Namespace:
         "(permission prompt / question) so the operator hears about it away from the desk.",
     )
     parser.add_argument("--session-notify-backoff-sec", type=int, default=1800,
-                        help="Minimum seconds between cards for the same session.")
+                        help="Base seconds between cards for the same session. Each repeat for "
+                        "one continuously-waiting prompt doubles the wait.")
+    parser.add_argument("--session-notify-max-backoff-sec", type=int, default=14400,
+                        help="Ceiling for the doubling reminder interval.")
+    parser.add_argument("--session-notify-max-cards", type=int, default=4,
+                        help="Stop re-notifying a single continuously-waiting prompt after this "
+                        "many cards. A prompt the operator has not cleared in four tries is not "
+                        "going to be cleared by a fifth card. 0 disables the cap.")
+    parser.add_argument("--session-notify-quiet-from-hour", type=int, default=23,
+                        help="Local hour when session cards stop being pushed. Sessions still "
+                        "waiting when the window ends are carded then. Equal from/to disables.")
+    parser.add_argument("--session-notify-quiet-to-hour", type=int, default=8,
+                        help="Local hour when session cards resume.")
     parser.add_argument("--session-status-file", type=pathlib.Path, default=None,
                         help="Read session status JSON from this file instead of running "
                         "`forager status --json` (replay/testing).")
     parser.add_argument(
         "--attention-reminder-sec",
         type=int,
-        default=int(os.environ.get("OFFDESK_REMOTE_OPERATOR_ATTENTION_REMINDER_SEC", "0")),
+        # A decision nobody answers is the one worth repeating. Announcing it
+        # once meant a real item sat unread for two months while a misdetected
+        # session was re-carded every 30 minutes.
+        default=int(os.environ.get("OFFDESK_REMOTE_OPERATOR_ATTENTION_REMINDER_SEC", "21600")),
         help="Re-notify a still-waiting attention item after this many seconds. 0 notifies once.",
     )
     parser.add_argument(
@@ -395,6 +531,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--poll-timeout-sec", type=int, default=5)
     parser.add_argument("--api-timeout-sec", type=int, default=20)
     parser.add_argument("--poll-error-backoff-sec", type=int, default=5)
+    parser.add_argument(
+        "--reply-outbox-retry-limit",
+        type=int,
+        default=10,
+        help="Maximum pending replies retried before one inbound poll.",
+    )
     parser.add_argument("--max-message-chars", type=int, default=3500)
     return parser.parse_args()
 
@@ -974,6 +1116,97 @@ def finalize_dispatch_result(
     return result
 
 
+def render_session_message_delivery(
+    args: argparse.Namespace,
+    result: dict[str, Any],
+    *,
+    session_id: str,
+    message: str,
+    expected_hash: str = "",
+    require_exact_id: bool = False,
+) -> dict[str, Any]:
+    if result.get("mode") == "dry_run":
+        message_preview = "\n".join(
+            [
+                "<b>로컬 에이전트 전달 준비</b>",
+                f"대상: {html.escape(sanitize_text(session_id, max_chars=64))}",
+                f"내용: {html.escape(sanitize_text(message, max_chars=240))}",
+                "dry-run에서는 tmux 입력을 보내지 않았습니다.",
+            ]
+        )
+        result["session_message_preview"] = {
+            "session_id": session_id,
+            "message_hash": hashlib.sha256(message.encode("utf-8")).hexdigest()[:16],
+            "message_chars": len(message),
+        }
+        return finalize_dispatch_result(result, message_preview)
+    try:
+        dispatch_result = apply_session_text_input(
+            args.forager_bin,
+            args.profile,
+            session_id,
+            message,
+            status_file=args.session_status_file,
+            expected_hash=expected_hash,
+            require_exact_id=require_exact_id,
+        )
+    except Exception as error:  # noqa: BLE001 - poll loop must never crash here
+        dispatch_result = {
+            "ok": False,
+            "kind": "session_message",
+            "action": "send_text",
+            "error": sanitize_text(str(error), max_chars=200),
+        }
+    result["dispatch_result"] = dispatch_result
+    target = " · ".join(
+        part
+        for part in (
+            str(dispatch_result.get("project") or ""),
+            str(dispatch_result.get("session_title") or ""),
+            str(dispatch_result.get("tool") or ""),
+        )
+        if part
+    )
+    if dispatch_result.get("ok"):
+        reacted = bool(dispatch_result.get("pane_reacted"))
+        message_preview = "\n".join(
+            [
+                "<b>로컬 에이전트에 입력 전송됨</b>",
+                html.escape(target or str(dispatch_result.get("session_id") or "")),
+                f"전달: {html.escape(sanitize_text(message, max_chars=240))}",
+                (
+                    "tmux 입력 후 화면 변화를 감지했습니다. 작업 수락 여부는 아직 확인 전입니다."
+                    if reacted
+                    else "tmux 입력을 보냈습니다. 화면 반응과 작업 수락 여부는 아직 확인 전입니다."
+                ),
+            ]
+        )
+    elif str(dispatch_result.get("error") or "") == "prompt_changed":
+        message_preview = "\n".join(
+            [
+                "<b>에이전트 화면이 바뀌어 전달하지 않았습니다</b>",
+                f"현재: {html.escape(str(dispatch_result.get('prompt_line') or ''))}",
+                "새 화면을 기준으로 다시 지시해 주세요.",
+            ]
+        )
+    elif str(dispatch_result.get("error") or "") == "no_effect":
+        message_preview = "\n".join(
+            [
+                "<b>에이전트 전달을 확인하지 못했습니다</b>",
+                html.escape(target or session_id),
+                "텍스트 전송 후에도 화면이 바뀌지 않아 성공으로 기록하지 않았습니다.",
+            ]
+        )
+    else:
+        message_preview = render_dispatch_error_message(
+            profile=args.profile,
+            generated_at=result["generated_at"],
+            headline="로컬 에이전트에 전달하지 못했습니다",
+            detail=str(dispatch_result.get("error") or "unknown"),
+        )
+    return finalize_dispatch_result(result, message_preview)
+
+
 def render_dispatch_command(
     args: argparse.Namespace,
     config: dict[str, Any],
@@ -1263,6 +1496,17 @@ def render_dispatch_command(
         try:
             surface = export_workstation_surface(args.forager_bin, args.profile)
             summary = attention_summary(surface)
+            wiki = build_wiki_portfolio_summary(args.forager_bin, load_registry())
+            wiki_candidate_count = int(wiki.get("candidate_count") or 0)
+            summary["wiki_candidate_count"] = wiki_candidate_count
+            if wiki_candidate_count:
+                summary["total"] = int(summary.get("total") or 0) + wiki_candidate_count
+                if not summary.get("top"):
+                    summary["top"] = {
+                        "kind": "wiki",
+                        "title": f"위키 후보 {wiki_candidate_count}개 검토 대기",
+                        "command_hint": "/wiki",
+                    }
             message_preview = render_attention_summary_message(
                 profile=args.profile, generated_at=generated_at, summary=summary
             )
@@ -1285,6 +1529,15 @@ def render_dispatch_command(
         # still re-verifies the session is waiting before sending the key.
         session_id = str(parsed.get("session_input_session_id") or "")
         action = "approve" if command == "session_approve" else "deny"
+        if result.get("mode") == "dry_run":
+            message_preview = "\n".join(
+                [
+                    "<b>세션 입력 준비</b>",
+                    f"대상: {html.escape(session_id)}",
+                    "dry-run에서는 tmux 키 입력을 보내지 않았습니다.",
+                ]
+            )
+            return finalize_dispatch_result(result, message_preview)
         try:
             dispatch_result = apply_session_input(
                 args.forager_bin, args.profile, session_id, action,
@@ -1301,6 +1554,19 @@ def render_dispatch_command(
                     "<b>세션 입력 전송됨</b>",
                     f"{html.escape(str(dispatch_result.get('project') or ''))} · {html.escape(str(dispatch_result.get('session_title') or ''))}",
                     "승인 키(Enter)를 보냈습니다." if action == "approve" else "거부 키(Esc)를 보냈습니다.",
+                    "다음 조치: /status",
+                ]
+            )
+        elif str(dispatch_result.get("error") or "") == "no_effect":
+            # The key was delivered but the pane never repainted, so the
+            # session was not really holding a prompt. Say so instead of
+            # letting the operator retry the same dead keystroke.
+            message_preview = "\n".join(
+                [
+                    "<b>입력이 먹히지 않았습니다</b>",
+                    f"{html.escape(str(dispatch_result.get('project') or ''))} · {html.escape(str(dispatch_result.get('session_title') or ''))}",
+                    f"{html.escape(str(dispatch_result.get('key') or ''))} 전송 후에도 화면이 그대로입니다.",
+                    "원격 승인으로는 해결되지 않습니다. 직접 확인이 필요합니다.",
                     "다음 조치: /status",
                 ]
             )
@@ -1331,6 +1597,14 @@ def render_dispatch_command(
                 detail=str(dispatch_result.get("error") or "unknown"),
             )
         return finalize_dispatch_result(result, message_preview)
+    if command == "session_send":
+        return render_session_message_delivery(
+            args,
+            result,
+            session_id=str(parsed.get("session_message_session_id") or ""),
+            message=str(parsed.get("session_message_text") or ""),
+            expected_hash=str(parsed.get("session_message_hash") or ""),
+        )
     if command == "cancel_task":
         task_id = str(parsed.get("cancel_task_id") or "")
         reason = str(parsed.get("cancel_reason") or "")
@@ -1649,6 +1923,7 @@ def build_chat_operator_snapshot(
     *,
     focus_entry: dict[str, Any] | None = None,
     focus_source: str | None = None,
+    session_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Compact live read-only state handed to the local chat agent.
 
@@ -1686,6 +1961,56 @@ def build_chat_operator_snapshot(
             "status": "unavailable",
             "error": sanitize_text(str(error), max_chars=120),
         }
+    try:
+        if args.session_status_file is not None:
+            session_status = json.loads(args.session_status_file.read_text())
+        else:
+            session_status = run_forager_json(
+                args.forager_bin,
+                args.profile,
+                ["status", "--json"],
+                label="agent session status",
+            )
+        live_sessions = [
+            {
+                "id": str(row.get("id") or ""),
+                "title": sanitize_text(str(row.get("title") or ""), max_chars=60),
+                "tool": sanitize_text(str(row.get("tool") or ""), max_chars=24),
+                "project": sanitize_text(str(row.get("project") or ""), max_chars=60),
+                "status": str(row.get("status") or ""),
+            }
+            for row in session_status.get("sessions") or []
+            if isinstance(row, dict)
+            and str(row.get("status") or "") in {"running", "idle", "waiting"}
+            and str(row.get("id") or "")
+        ]
+        snapshot["live_agent_sessions"] = live_sessions
+        context_id = str((session_context or {}).get("session_id") or "")
+        context_match = next(
+            (
+                row
+                for row in live_sessions
+                if context_id and str(row.get("id") or "") == context_id
+            ),
+            None,
+        )
+        if (
+            context_match
+            and focus_source == "mention"
+            and isinstance(snapshot.get("project_focus"), dict)
+            and str(context_match.get("project") or "")
+            != str(snapshot["project_focus"].get("key") or "")
+        ):
+            context_match = None
+        if context_match:
+            snapshot["conversation_session"] = {
+                **context_match,
+                "source": str((session_context or {}).get("source") or "sticky"),
+                "prompt_hash": str((session_context or {}).get("prompt_hash") or ""),
+            }
+    except (OSError, json.JSONDecodeError, RemoteOperatorTelegramError) as error:
+        snapshot["live_agent_sessions"] = []
+        snapshot["agent_session_error"] = sanitize_text(str(error), max_chars=120)
     snapshot["autonomy_armed"] = autonomy_is_armed(args.profile)
     registry = load_registry()
     if registry:
@@ -1713,6 +2038,46 @@ def run_chat_tool(
     """
 
     tool = str(request.get("tool") or "")
+    if tool == "service_probe":
+        try:
+            port = int(request.get("port"))
+        except (TypeError, ValueError):
+            return {"status": "invalid_port", "port": request.get("port")}
+        if not 1 <= port <= 65535:
+            return {"status": "invalid_port", "port": port}
+        commands = (
+            ["ss", "-ltnp", f"sport = :{port}"],
+            ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"],
+        )
+        unavailable: list[str] = []
+        for command in commands:
+            try:
+                process = subprocess.run(
+                    command,
+                    check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                    timeout=3,
+                )
+            except (OSError, subprocess.TimeoutExpired) as error:
+                unavailable.append(type(error).__name__)
+                continue
+            lines = [line.strip() for line in process.stdout.splitlines() if line.strip()]
+            # ss includes one header line; lsof includes one header line. A
+            # second line is a live listener observation.
+            listening = len(lines) >= 2
+            return {
+                "status": "listening" if listening else "not_listening",
+                "port": port,
+                "observed_by": command[0],
+                "listener": sanitize_text(lines[-1], max_chars=180) if listening else None,
+            }
+        return {
+            "status": "probe_unavailable",
+            "port": port,
+            "errors": unavailable[:2],
+        }
     key = str(request.get("project") or "").strip() or str((focus_entry or {}).get("key") or "")
     entry = registry.get(key)
     if not isinstance(entry, dict):
@@ -1743,6 +2108,71 @@ def run_chat_tool(
     return {"status": "unknown_tool", "tool": tool[:40]}
 
 
+def requested_service_port(text: str) -> int | None:
+    """Extract an explicitly named TCP port for an automatic read-only probe."""
+
+    patterns = (
+        r"(?<!\d)(\d{2,5})\s*포트",
+        r"\bport\s*[:#]?\s*(\d{2,5})\b",
+        r"(?<!\d)(\d{2,5})\s*(?:리스닝|listen(?:ing)?)\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            port = int(match.group(1))
+            return port if 1 <= port <= 65535 else None
+    return None
+
+
+def telegram_message_text(preview: Any) -> str:
+    """Convert the exact rendered Telegram card into compact conversation text."""
+
+    raw = html.unescape(re.sub(r"<[^>]+>", "", str(preview or "")))
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    semantic = [
+        line
+        for line in lines
+        if not line.startswith(("다음 조치:", "참조:", "관련:"))
+        and line not in {"Forager 응답", "확인 필요"}
+    ]
+    return sanitize_text("\n".join(semantic), max_chars=800)
+
+
+def record_conversation_event(
+    args: argparse.Namespace,
+    rendered: dict[str, Any],
+    *,
+    chat_hash: str,
+    user_hash: str,
+    message_id: int | None,
+) -> None:
+    parsed = rendered.get("parsed_command")
+    parsed = parsed if isinstance(parsed, dict) else {}
+    append_jsonl(
+        args.conversation_file,
+        {
+            "schema": "remote_operator_telegram_conversation.v1",
+            "recorded_at": utc_now(),
+            "profile": args.profile,
+            "chat_id_hash": chat_hash,
+            "user_id_hash": user_hash,
+            "source_message_id": message_id,
+            "processed_update_id": rendered.get("processed_update_id"),
+            "command": parsed.get("command"),
+            "command_reason": parsed.get("reason"),
+            "operator_text": sanitize_text(
+                str(rendered.get("command_text") or ""), max_chars=800
+            ),
+            "project_focus": rendered.get("project_focus"),
+            "tools_used": rendered.get("chat_tools_used") or [],
+            "sent_text": telegram_message_text(rendered.get("message_preview")),
+            "send_status": rendered.get("send_status"),
+            "sent_message_id": rendered.get("sent_message_id"),
+            "effect": rendered.get("effect"),
+        },
+    )
+
+
 def render_command_result(
     args: argparse.Namespace,
     config: dict[str, Any],
@@ -1752,6 +2182,7 @@ def render_command_result(
     feedback_context: dict[str, Any] | None = None,
     chat_history: list[dict[str, Any]] | None = None,
     sticky_focus_key: str | None = None,
+    session_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     result = result_base(args, config, mode)
     result["command_text"] = sanitize_text(command_text, max_chars=400)
@@ -1813,10 +2244,21 @@ def render_command_result(
                 "key": focus_entry.get("key"),
                 "source": focus_source,
             }
+        ambiguous_projects = (
+            project_mention_matches(chat_text, registry)
+            if focus_source == "ambiguous"
+            else []
+        )
+        if ambiguous_projects:
+            result["project_resolution"] = {
+                "status": "ambiguous",
+                "candidates": [entry.get("key") for entry in ambiguous_projects],
+            }
         operator_snapshot = build_chat_operator_snapshot(
             args,
             focus_entry=focus_entry,
             focus_source=focus_source,
+            session_context=session_context,
         )
         tool_outcomes: list[dict[str, Any]] = []
 
@@ -1825,14 +2267,42 @@ def render_command_result(
             tool_outcomes.append({"request": request, "result": outcome})
             return outcome
 
-        agent_intent = chat_with_agent(
-            args,
-            chat_text,
-            feedback_context=feedback_context,
-            chat_history=chat_history,
-            operator_snapshot=operator_snapshot,
-            tool_executor=execute_chat_tool,
-        )
+        initial_tool_results: list[dict[str, Any]] = []
+        service_port = requested_service_port(chat_text) if not ambiguous_projects else None
+        if service_port is not None:
+            request = {"tool": "service_probe", "port": service_port, "project": "", "path": ""}
+            initial_tool_results.append(
+                {"request": request, "result": execute_chat_tool(request)}
+            )
+
+        if ambiguous_projects:
+            choices = ", ".join(str(entry.get("key") or "") for entry in ambiguous_projects)
+            agent_intent = {
+                "status": "classified",
+                "intent": "chat",
+                "confidence": 1.0,
+                "requires_clarification": True,
+                "clarifying_question": f"어느 프로젝트인가요? {choices}",
+                "assistant_reply": "",
+                "reason": "ambiguous_project_reference",
+                "non_authorized": ["execution", "approval", "shell"],
+            }
+        else:
+            agent_intent = chat_with_agent(
+                args,
+                chat_text,
+                feedback_context=feedback_context,
+                chat_history=chat_history,
+                operator_snapshot=operator_snapshot,
+                tool_executor=execute_chat_tool,
+                initial_tool_results=initial_tool_results,
+            )
+            if isinstance(agent_intent, dict):
+                agent_intent = validate_session_message_intent(
+                    agent_intent,
+                    chat_text=chat_text,
+                    operator_snapshot=operator_snapshot,
+                )
         if isinstance(agent_intent, dict) and agent_intent.get("tools_used"):
             result["chat_tools_used"] = agent_intent.get("tools_used")
         if (
@@ -1872,13 +2342,82 @@ def render_command_result(
             feedback_context=feedback_context,
             agent_intent=agent_intent if isinstance(agent_intent, dict) else None,
         )
-        attach_choice_surface(result, feedback_context)
+        if (
+            mode == "dry_run"
+            and isinstance(agent_intent, dict)
+            and agent_intent.get("intent") == "session_message"
+        ):
+            message_preview = "\n".join(
+                [
+                    "<b>로컬 에이전트 전달 준비</b>",
+                    f"대상: {sanitize_text(str(agent_intent.get('session_id') or ''), max_chars=24)}",
+                    f"내용: {sanitize_text(str(agent_intent.get('session_message') or ''), max_chars=180)}",
+                    "dry-run에서는 실제 입력을 보내지 않았습니다.",
+                    "다음 조치: Telegram에서 같은 평문 전송",
+                ]
+            )
+        clarification_context = None
+        if isinstance(agent_intent, dict) and agent_intent.get("requires_clarification"):
+            clarification_context = {
+                "schema": INTERACTION_CONTEXT_SCHEMA,
+                "context_kind": "chat_clarification",
+                "question": sanitize_text(
+                    str(agent_intent.get("clarifying_question") or ""), max_chars=180
+                ),
+                "project_key": str((focus_entry or {}).get("key") or "") or None,
+            }
+        attach_choice_surface(result, clarification_context)
         if isinstance(feedback_context, dict):
             result["feedback_context"] = feedback_context
         result.update(
             {
                 "status": "rendered",
                 "projection": None,
+                "message_preview": message_preview,
+                "mobile_card_contract": mobile_card_contract(message_preview),
+            }
+        )
+        return result
+    if parsed.get("command") == "projects":
+        registry = load_registry()
+        summary = build_project_portfolio_summary(
+            args.forager_bin,
+            args.profile,
+            registry,
+            workspace_roots(args),
+        )
+        selector = str(parsed.get("project_selector") or "")
+        selector_matches = project_selector_matches(selector, registry) if selector else []
+        selected = selector_matches[0] if len(selector_matches) == 1 else None
+        selected_key = str((selected or {}).get("key") or "") or None
+        context = None
+        if selected:
+            result["project_focus"] = {"key": selected_key, "source": "explicit"}
+        elif selector:
+            summary["selection_status"] = (
+                "ambiguous" if len(selector_matches) > 1 else "unknown"
+            )
+            summary["project_selector"] = selector
+            summary["selection_candidates"] = [
+                entry.get("key") for entry in selector_matches
+            ]
+        elif not selector:
+            rows = [row for row in summary.get("projects") or [] if isinstance(row, dict)]
+            if rows:
+                context = {"next_command": f"/projects {rows[0].get('key')}"}
+        result["parsed_command"] = parsed
+        message_preview = render_project_portfolio_message(
+            profile=args.profile,
+            generated_at=result["generated_at"],
+            summary=summary,
+            selected_key=selected_key,
+        )
+        attach_choice_surface(result, context)
+        result.update(
+            {
+                "status": "rendered",
+                "projection": None,
+                "project_summary": summary,
                 "message_preview": message_preview,
                 "mobile_card_contract": mobile_card_contract(message_preview),
             }
@@ -1906,11 +2445,54 @@ def render_command_result(
         )
         return result
     if parsed.get("command") == "remember":
+        remember_text = str(parsed.get("remember_text") or command_text)
+        registry = load_registry()
+        focus_entry, focus_source = resolve_chat_focus(
+            remember_text,
+            registry,
+            sticky_focus_key,
+        )
+        target_profile = args.profile
+        if focus_source == "ambiguous":
+            matches = project_mention_matches(remember_text, registry)
+            parsed["remember_target_status"] = "ambiguous"
+            parsed["remember_target_candidates"] = [entry.get("key") for entry in matches]
+            result["parsed_command"] = parsed
+            result["project_resolution"] = {
+                "status": "ambiguous",
+                "candidates": parsed["remember_target_candidates"],
+            }
+            choices = ", ".join(str(value) for value in parsed["remember_target_candidates"])
+            message_preview = "\n".join(
+                [
+                    "<b>위키 대상 확인 필요</b>",
+                    f"같은 별칭을 쓰는 프로젝트가 여러 개입니다: {html.escape(choices)}",
+                    "프로젝트 키를 포함해 /remember를 다시 보내세요.",
+                    "아직 위키 후보를 저장하지 않았습니다.",
+                ]
+            )
+            attach_choice_surface(result, None)
+            result.update(
+                {
+                    "status": "rendered",
+                    "projection": None,
+                    "message_preview": message_preview,
+                    "mobile_card_contract": mobile_card_contract(message_preview),
+                }
+            )
+            return result
+        if focus_entry:
+            target_profile = str(focus_entry.get("wiki_profile") or args.profile)
+            result["project_focus"] = {
+                "key": focus_entry.get("key"),
+                "source": focus_source,
+            }
+        parsed["wiki_profile"] = target_profile
         result["parsed_command"] = parsed
         message_preview = render_wiki_candidate_message(
-            profile=args.profile,
+            profile=target_profile,
             generated_at=result["generated_at"],
-            remember_text=str(parsed.get("remember_text") or command_text),
+            remember_text=remember_text,
         )
         attach_choice_surface(result, feedback_context)
         if isinstance(feedback_context, dict):
@@ -1919,6 +2501,61 @@ def render_command_result(
             {
                 "status": "rendered",
                 "projection": None,
+                "message_preview": message_preview,
+                "mobile_card_contract": mobile_card_contract(message_preview),
+            }
+        )
+        return result
+    if parsed.get("command") == "wiki":
+        registry = load_registry()
+        selector = str(parsed.get("project_selector") or "")
+        wiki_context = None
+        if selector:
+            selector_matches = project_selector_matches(selector, registry)
+            focus_entry = selector_matches[0] if len(selector_matches) == 1 else None
+            if focus_entry:
+                summary = build_wiki_plane_summary(
+                    args.forager_bin,
+                    focus_entry,
+                    include_entries=True,
+                )
+                result["project_focus"] = {
+                    "key": focus_entry.get("key"),
+                    "source": "explicit",
+                }
+            else:
+                summary = {
+                    "status": "ambiguous_project"
+                    if len(selector_matches) > 1
+                    else "unknown_project",
+                    "project_selector": selector,
+                    "project_candidates": [
+                        entry.get("key") for entry in selector_matches
+                    ],
+                }
+        else:
+            summary = build_wiki_portfolio_summary(args.forager_bin, registry)
+            top_projects = [
+                row
+                for row in summary.get("projects") or []
+                if isinstance(row, dict) and int(row.get("candidate_count") or 0) > 0
+            ]
+            if top_projects:
+                top_key = str(top_projects[0].get("project_key") or "")
+                if top_key:
+                    wiki_context = {"next_command": f"/wiki {top_key}"}
+        result["parsed_command"] = parsed
+        message_preview = render_wiki_summary_message(
+            profile=args.profile,
+            generated_at=result["generated_at"],
+            summary=summary,
+        )
+        attach_choice_surface(result, wiki_context)
+        result.update(
+            {
+                "status": "rendered",
+                "projection": None,
+                "wiki_summary": summary,
                 "message_preview": message_preview,
                 "mobile_card_contract": mobile_card_contract(message_preview),
             }
@@ -1968,6 +2605,7 @@ def render_command_result(
         "cancel_task",
         "session_approve",
         "session_deny",
+        "session_send",
         "pause",
         "resume",
         "attention",
@@ -2032,6 +2670,44 @@ def user_id_for(message: dict[str, Any]) -> str:
 def message_id_for(message: dict[str, Any]) -> int | None:
     value = message.get("message_id")
     return int(value) if isinstance(value, int) else None
+
+
+def replied_message_id_for(message: dict[str, Any]) -> int | None:
+    replied = message.get("reply_to_message")
+    if not isinstance(replied, dict):
+        return None
+    value = replied.get("message_id")
+    return int(value) if isinstance(value, int) else None
+
+
+def replied_session_context(
+    state: dict[str, Any], message: dict[str, Any]
+) -> dict[str, Any] | None:
+    replied_message_id = replied_message_id_for(message)
+    if replied_message_id is None:
+        return None
+    notified = state.get("waiting_notified_by_session")
+    if not isinstance(notified, dict):
+        return None
+    matches = [
+        (str(session_id), entry)
+        for session_id, entry in notified.items()
+        if isinstance(entry, dict)
+        and not entry.get("resolved")
+        and entry.get("message_id") == replied_message_id
+    ]
+    if len(matches) != 1:
+        return None
+    session_id, entry = matches[0]
+    return {
+        "session_id": session_id,
+        "project": str(entry.get("project") or ""),
+        "title": str(entry.get("title") or ""),
+        "tool": str(entry.get("tool") or ""),
+        "prompt_hash": str(entry.get("prompt_hash") or ""),
+        "source": "reply_card",
+        "updated_at": utc_now(),
+    }
 
 
 def record_feedback(
@@ -2254,6 +2930,71 @@ def summarize_waiting_prompt(args: argparse.Namespace, tail: str) -> str:
         return ""
 
 
+def in_quiet_hours(from_hour: int, to_hour: int, *, local_hour: int) -> bool:
+    """True when ``local_hour`` falls inside the do-not-disturb window.
+
+    Equal bounds disable the window. The usual window wraps midnight (23 to 8).
+    """
+
+    from_hour %= 24
+    to_hour %= 24
+    if from_hour == to_hour:
+        return False
+    if from_hour < to_hour:
+        return from_hour <= local_hour < to_hour
+    return local_hour >= from_hour or local_hour < to_hour
+
+
+def session_notify_threshold(args: argparse.Namespace, cards_sent: int) -> int:
+    """Seconds to wait before re-carding a prompt already carded ``cards_sent`` times.
+
+    The wait doubles per repeat. A prompt that stays open is either being
+    handled or cannot be handled remotely; either way the reminder should fade
+    rather than hold a fixed 30-minute cadence all night.
+    """
+
+    base = int(args.session_notify_backoff_sec)
+    ceiling = int(args.session_notify_max_backoff_sec)
+    return min(base * (2 ** max(0, cards_sent - 1)), ceiling)
+
+
+def session_input_dead_keys(state: dict[str, Any]) -> dict[str, Any]:
+    """Prompts where a remote keystroke provably did nothing, keyed sid8:hash."""
+
+    dead = state.get("session_input_no_effect_by_key")
+    if not isinstance(dead, dict):
+        dead = {}
+        state["session_input_no_effect_by_key"] = dead
+    return dead
+
+
+def record_session_input_outcome(state: dict[str, Any], rendered: dict[str, Any]) -> None:
+    """Remember prompts a remote keystroke failed to move, and forget the rest.
+
+    A prompt that swallowed Enter without repainting will swallow the next one
+    too. Recording it lets the card stop asking; any other outcome clears the
+    mark so a later, live prompt is not muted by an old failure.
+    """
+
+    dispatch = rendered.get("dispatch_result")
+    parsed = rendered.get("parsed_command")
+    if not isinstance(dispatch, dict) or not isinstance(parsed, dict):
+        return
+    if dispatch.get("kind") != "session_input":
+        return
+    sid8 = str(parsed.get("session_input_session_id") or "")[:8]
+    prompt_hash = str(parsed.get("session_input_hash") or "")
+    if not sid8 or not prompt_hash:
+        return
+    dead = session_input_dead_keys(state)
+    key = f"{sid8}:{prompt_hash}"
+    if str(dispatch.get("error") or "") == "no_effect":
+        entry = dead.get(key) if isinstance(dead.get(key), dict) else {}
+        dead[key] = {"count": int(entry.get("count") or 0) + 1, "at": utc_now()}
+    else:
+        dead.pop(key, None)
+
+
 def scan_and_notify_waiting_sessions(
     args: argparse.Namespace,
     config: dict[str, Any],
@@ -2261,10 +3002,11 @@ def scan_and_notify_waiting_sessions(
 ) -> dict[str, Any] | None:
     """Push one card per waiting-episode of a supervised agent session.
 
-    A session that flips to waiting gets a card once, then again only after
-    the per-session backoff. Sessions that leave the waiting state are
-    cleared so the next episode notifies immediately. Never raises into the
-    poll loop.
+    A session that flips to waiting gets a card once, then again on a doubling
+    backoff up to a card cap. Sessions that leave the waiting state are cleared
+    so the next episode notifies immediately. Cards are suppressed inside the
+    quiet-hours window, and for prompts a remote keystroke has already failed
+    to move. Never raises into the poll loop.
     """
 
     if not getattr(args, "session_notify", False):
@@ -2294,6 +3036,22 @@ def scan_and_notify_waiting_sessions(
             state["waiting_notified_by_session"] = notified
         now = time.time()
         waiting_ids = {str(s.get("id") or "") for s in waiting}
+        chat_hash = config.get("target_chat_id_hash")
+        if len(waiting) > 1:
+            # A plain follow-up cannot safely choose between several waiting
+            # cards. Only an explicit Telegram reply remains session-bound.
+            clear_session_focus_for_chat_hash(
+                state,
+                chat_hash,
+                sources={"waiting_card"},
+            )
+        # A dead-key mark belongs to one waiting episode. Once the session
+        # stops waiting, drop it so the next prompt is carded normally.
+        dead_keys = session_input_dead_keys(state)
+        waiting_prefixes = {sid[:8] for sid in waiting_ids}
+        for key in list(dead_keys):
+            if key.split(":", 1)[0] not in waiting_prefixes:
+                del dead_keys[key]
         # Normalize legacy float entries to dicts so cards can be expired.
         for session_id, value in list(notified.items()):
             if isinstance(value, (int, float)):
@@ -2307,6 +3065,12 @@ def scan_and_notify_waiting_sessions(
             entry = notified[session_id]
             if session_id in waiting_ids:
                 continue
+            clear_session_focus_for_chat_hash(
+                state,
+                chat_hash,
+                session_id=session_id,
+                sources={"waiting_card"},
+            )
             message_id = entry.get("message_id")
             if message_id and not entry.get("resolved"):
                 edit_message(
@@ -2323,19 +3087,24 @@ def scan_and_notify_waiting_sessions(
                 del notified[session_id]
         prev_waiting = {str(x) for x in state.get("waiting_ids_last_scan") or []}
         state["waiting_ids_last_scan"] = sorted(waiting_ids)
+        # Cards go silent overnight. Nothing is dropped: a session still
+        # waiting when the window ends is carded then, because its registry
+        # entry was never advanced.
+        if in_quiet_hours(
+            int(args.session_notify_quiet_from_hour),
+            int(args.session_notify_quiet_to_hour),
+            local_hour=time.localtime(now).tm_hour,
+        ):
+            return {"status": "quiet_hours", "waiting_count": len(waiting)}
         sent = []
+        muted = []
         for session in waiting:
             session_id = str(session.get("id") or "")
             if not session_id:
                 continue
-            last = float((notified.get(session_id) or {}).get("at") or 0)
-            # A session that was not waiting at the previous scan hit a NEW
-            # prompt: notify right away (60s flap guard only). The long
-            # backoff is a reminder cadence for one continuously-waiting
-            # prompt, not a mute for the session.
-            threshold = 60 if session_id not in prev_waiting else int(args.session_notify_backoff_sec)
-            if now - last < threshold:
-                continue
+            entry = notified.get(session_id) or {}
+            last = float(entry.get("at") or 0)
+            cards_sent = int(entry.get("cards") or 0)
             title = sanitize_text(str(session.get("title") or session_id), max_chars=60)
             tool = sanitize_text(str(session.get("tool") or "agent"), max_chars=24)
             project = sanitize_text(str(session.get("project") or "미등록"), max_chars=40)
@@ -2349,6 +3118,39 @@ def scan_and_notify_waiting_sessions(
             tmux_name = find_tmux_session_name(session_id)
             tail = capture_session_tail(tmux_name, lines=15) if tmux_name else ""
             prompt_hash = pane_prompt_hash(tail)
+            previous_prompt_hash = str(entry.get("prompt_hash") or "")
+            # A session that was not waiting at the previous scan hit a NEW
+            # waiting episode. A changed pane hash is also a new prompt even
+            # when status stayed continuously waiting between polls. Notify
+            # either right away (60s flap guard only). The doubling
+            # backoff is a reminder cadence for one continuously-waiting
+            # prompt, not a mute for the session.
+            is_new_prompt = session_id not in prev_waiting or bool(
+                prompt_hash and prompt_hash != previous_prompt_hash
+            )
+            prompt_cards_sent = 0 if is_new_prompt else cards_sent
+            threshold = (
+                60
+                if is_new_prompt
+                else session_notify_threshold(args, prompt_cards_sent)
+            )
+            if now - last < threshold:
+                continue
+            max_cards = int(args.session_notify_max_cards)
+            if not is_new_prompt and max_cards > 0 and prompt_cards_sent >= max_cards:
+                muted.append(
+                    {
+                        "session_id": session_id,
+                        "reason": "card_cap",
+                        "cards": prompt_cards_sent,
+                    }
+                )
+                continue
+            # A keystroke already proved inert against this exact prompt. Re-carding
+            # it just invites the operator to retry something that cannot work.
+            if dead_keys.get(f"{session_id[:8]}:{prompt_hash}"):
+                muted.append({"session_id": session_id, "reason": "no_effect", "prompt_hash": prompt_hash})
+                continue
             options = parse_prompt_options(tail)
             ask_summary = summarize_waiting_prompt(args, tail)
             lines = [
@@ -2392,10 +3194,25 @@ def scan_and_notify_waiting_sessions(
                 continue
             notified[session_id] = {
                 "at": now,
+                "cards": 1 if is_new_prompt else prompt_cards_sent + 1,
                 "message_id": message_id,
                 "prompt_hash": prompt_hash,
                 "label": f"{project} · {title} ({tool})",
+                "project": project,
+                "title": title,
+                "tool": tool,
             }
+            if len(waiting) == 1:
+                remember_session_focus(
+                    state,
+                    chat_hash,
+                    session_id=session_id,
+                    project=project,
+                    title=title,
+                    tool=tool,
+                    prompt_hash=prompt_hash,
+                    source="waiting_card",
+                )
             sent.append(
                 {
                     "session_id": session_id,
@@ -2407,8 +3224,14 @@ def scan_and_notify_waiting_sessions(
                 }
             )
         if not sent:
-            return {"status": "no_new_waiting", "waiting_count": len(waiting)}
-        return {"status": "notified", "sent": sent, "waiting_count": len(waiting)}
+            result = {"status": "no_new_waiting", "waiting_count": len(waiting)}
+            if muted:
+                result["muted"] = muted
+            return result
+        result = {"status": "notified", "sent": sent, "waiting_count": len(waiting)}
+        if muted:
+            result["muted"] = muted
+        return result
     except Exception as error:  # noqa: BLE001 - poll loop must never crash here
         return {"status": "scan_failed", "error": sanitize_text(str(error), max_chars=240)}
 
@@ -2459,11 +3282,178 @@ def scan_and_notify_attention(
     }
 
 
+def synchronize_reply_delivery_journal(args: argparse.Namespace) -> None:
+    """Repair crash gaps between the outbox and update journal.
+
+    The outbox row is written first. Its presence proves handler processing
+    reached the delivery boundary, so a restarted listener can safely advance
+    `started` to `effect_committed` without running the handler again.
+    """
+
+    journal = latest_update_records(args.update_journal_file)
+    deliveries = latest_delivery_records(args.reply_outbox_file)
+    for delivery in deliveries.values():
+        update_id = int(delivery["update_id"])
+        previous = journal.get(update_id)
+        if previous is None:
+            raise RemoteOperatorStateError(
+                f"reply outbox delivery {delivery['delivery_id']} has no update journal entry"
+            )
+        result = {
+            "status": delivery.get("result_status"),
+            "effect": delivery.get("effect"),
+            "delivery_id": delivery.get("delivery_id"),
+        }
+        if previous.get("status") == "started":
+            mark_effect_committed(
+                args.update_journal_file,
+                update_id=update_id,
+                input_hash=str(delivery["input_hash"]),
+                result=result,
+            )
+            previous = latest_update_records(args.update_journal_file)[update_id]
+        if previous.get("status") == "completed" and delivery.get("status") != "delivered":
+            raise RemoteOperatorStateError(
+                f"completed update {update_id} still has a pending reply delivery"
+            )
+        if delivery.get("status") == "delivered" and previous.get("status") == "effect_committed":
+            complete_update(
+                args.update_journal_file,
+                update_id=update_id,
+                input_hash=str(delivery["input_hash"]),
+                result={
+                    **result,
+                    "send_status": "sent",
+                    "sent_message_id": delivery.get("sent_message_id"),
+                    "conversation_record_status": "unknown_after_recovery",
+                },
+            )
+
+
+def attempt_reply_delivery(
+    args: argparse.Namespace,
+    config: dict[str, Any],
+    delivery: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        message_id = send_message(
+            config,
+            str(delivery["chat_id"]),
+            str(delivery["message"]),
+            args,
+            reply_markup=(
+                delivery.get("reply_markup")
+                if isinstance(delivery.get("reply_markup"), dict)
+                else None
+            ),
+        )
+    except RemoteOperatorTelegramError as error:
+        failed = mark_delivery_failed(
+            args.reply_outbox_file,
+            delivery,
+            error=sanitize_text(str(error), max_chars=240),
+        )
+        return {
+            "status": "failed",
+            "delivery": failed,
+            "error": failed.get("last_error"),
+        }
+    delivered = mark_delivery_delivered(
+        args.reply_outbox_file,
+        delivery,
+        message_id=message_id,
+    )
+    return {
+        "status": "delivered",
+        "delivery": delivered,
+        "sent_message_id": message_id,
+        "send_status": "dry_run" if args.dry_run else "sent",
+    }
+
+
+def drain_reply_outbox(
+    args: argparse.Namespace, config: dict[str, Any]
+) -> dict[str, Any]:
+    synchronize_reply_delivery_journal(args)
+    pending = pending_deliveries(args.reply_outbox_file)
+    if not pending:
+        return {"status": "empty", "delivered_count": 0, "remaining_count": 0}
+    limit = max(1, int(args.reply_outbox_retry_limit))
+    delivered_count = 0
+    last_delivery_id = None
+    for delivery in pending[:limit]:
+        attempt = attempt_reply_delivery(args, config, delivery)
+        last_delivery_id = delivery.get("delivery_id")
+        if attempt.get("status") != "delivered":
+            return {
+                "status": "failed",
+                "delivered_count": delivered_count,
+                "remaining_count": len(pending) - delivered_count,
+                "delivery_id": last_delivery_id,
+                "error": attempt.get("error"),
+            }
+        delivered = attempt["delivery"]
+        complete_update(
+            args.update_journal_file,
+            update_id=int(delivered["update_id"]),
+            input_hash=str(delivered["input_hash"]),
+            result={
+                "status": delivered.get("result_status"),
+                "effect": delivered.get("effect"),
+                "delivery_id": delivered.get("delivery_id"),
+                "send_status": attempt.get("send_status"),
+                "sent_message_id": attempt.get("sent_message_id"),
+                "conversation_record_status": "recorded_before_retry_or_unknown",
+            },
+        )
+        delivered_count += 1
+    remaining_count = len(pending) - delivered_count
+    return {
+        "status": "delivered" if remaining_count == 0 else "pending",
+        "delivered_count": delivered_count,
+        "remaining_count": remaining_count,
+        "delivery_id": last_delivery_id,
+    }
+
+
 def run_once(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]:
     state = load_state(args.state_file)
+    outbox_delivery = drain_reply_outbox(args, config)
+    if outbox_delivery.get("status") == "failed":
+        result = result_base(args, config, "live_once")
+        result.update(
+            {
+                "status": "send_failed",
+                "reason": "reply_outbox_delivery_failed",
+                "updates_seen": 0,
+                "reply_outbox_delivery": outbox_delivery,
+            }
+        )
+        return result
+    if outbox_delivery.get("status") == "pending":
+        result = result_base(args, config, "live_once")
+        result.update(
+            {
+                "status": "reply_delivery_pending",
+                "updates_seen": 0,
+                "reply_outbox_delivery": outbox_delivery,
+            }
+        )
+        return result
     updates = get_updates(config, int(state.get("offset") or 0), args)
     result = result_base(args, config, "live_once")
-    result.update({"status": "no_update", "updates_seen": len(updates)})
+    result.update(
+        {
+            "status": (
+                "reply_delivered"
+                if outbox_delivery.get("status") == "delivered"
+                and int(outbox_delivery.get("delivered_count") or 0) > 0
+                else "no_update"
+            ),
+            "updates_seen": len(updates),
+            "reply_outbox_delivery": outbox_delivery,
+        }
+    )
     max_update_id = int(state.get("offset") or 0) - 1
     for update in updates:
         update_id = update.get("update_id")
@@ -2487,7 +3477,45 @@ def run_once(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]
         if not text:
             result.update({"status": "ignored", "reason": "empty_message"})
             continue
+        if isinstance(update_id, bool) or not isinstance(update_id, int):
+            raise RemoteOperatorStateError(
+                "allowed Telegram update is missing an integer update_id"
+            )
         chat_hash = sha256_short(chat_id_for(message))
+        user_hash = sha256_short(user_id_for(message))
+        input_hash = sha256_short(
+            json.dumps(
+                {
+                    "update_id": update_id,
+                    "message_id": message_id_for(message),
+                    "chat_id_hash": chat_hash,
+                    "user_id_hash": user_hash,
+                    "text": text,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        completed_record = begin_update(
+            args.update_journal_file,
+            update_id=update_id,
+            input_hash=input_hash,
+            chat_hash=chat_hash,
+            user_hash=user_hash,
+        )
+        if completed_record is not None:
+            result.update(
+                {
+                    "status": "already_processed",
+                    "reason": "durable_update_journal_completed",
+                    "processed_update_id": update_id,
+                    "updates_seen": len(updates),
+                    "update_journal_status": "completed",
+                    "recovered_effect": completed_record.get("effect"),
+                }
+            )
+            break
+        session_context: dict[str, Any] | None = None
         active_session = active_remote_plan_session(state, chat_hash)
         session_payload = remote_plan_session_command_payload(text) if active_session else None
         if active_session and session_payload:
@@ -2516,7 +3544,18 @@ def run_once(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]
                 chat_hash,
                 max_age_sec=args.context_max_age_sec,
             )
-            sticky_focus = (state.get("chat_focus_by_chat") or {}).get(chat_hash)
+            session_context = replied_session_context(state, message)
+            if session_context is None:
+                session_context = session_focus_for_chat_hash(
+                    state,
+                    chat_hash,
+                    max_age_sec=args.context_max_age_sec,
+                )
+            sticky_focus = project_focus_for_chat_hash(
+                state,
+                chat_hash,
+                max_age_sec=args.project_focus_max_age_sec,
+            )
             rendered = render_command_result(
                 args,
                 config,
@@ -2529,43 +3568,67 @@ def run_once(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]
                     max_age_sec=args.context_max_age_sec,
                 ),
                 sticky_focus_key=str((sticky_focus or {}).get("project_key") or "") or None,
+                session_context=session_context,
             )
         rendered["updates_seen"] = len(updates)
         if isinstance(update_id, int):
             rendered["processed_update_id"] = update_id
         parsed_command = rendered.get("parsed_command") if isinstance(rendered.get("parsed_command"), dict) else {}
         focus = rendered.get("project_focus")
-        if isinstance(focus, dict) and focus.get("source") == "mention" and focus.get("key"):
+        if (
+            isinstance(focus, dict)
+            and focus.get("source") in {"mention", "explicit"}
+            and focus.get("key")
+        ):
             state.setdefault("chat_focus_by_chat", {})[chat_hash] = {
                 "project_key": focus.get("key"),
                 "updated_at": utc_now(),
             }
         if parsed_command.get("command") == "remember":
             remember_text = str(parsed_command.get("remember_text") or text)
+            target_profile = str(parsed_command.get("wiki_profile") or args.profile)
+            if parsed_command.get("remember_target_status") == "ambiguous":
+                rendered.update(
+                    {
+                        "wiki_candidate_recorded": False,
+                        "wiki_candidate_status": "blocked",
+                        "wiki_candidate_error": "ambiguous_project_reference",
+                    }
+                )
+            else:
             # A persistence failure must not raise before the offset save:
             # that would re-deliver the same update on every poll.
-            try:
-                record_result = record_remember_candidate(
-                    profile=args.profile,
-                    text=remember_text,
-                    chat_hash=chat_hash,
-                    user_hash=sha256_short(user_id_for(message)),
-                    message_id=message_id_for(message),
+                try:
+                    focus_value = rendered.get("project_focus")
+                    focus_key = (
+                        str(focus_value.get("key") or "")
+                        if isinstance(focus_value, dict)
+                        else ""
+                    )
+                    record_result = record_remember_candidate(
+                        profile=target_profile,
+                        text=remember_text,
+                        chat_hash=chat_hash,
+                        user_hash=user_hash,
+                        message_id=message_id_for(message),
+                        project_key=focus_key or None,
+                    )
+                except (OSError, RemoteOperatorTelegramError) as error:
+                    record_result = {
+                        "wiki_candidate_recorded": False,
+                        "wiki_candidate_status": "failed",
+                        "wiki_candidate_error": sanitize_text(str(error), max_chars=240),
+                    }
+                rendered.update(record_result)
+                rendered["message_preview"] = render_wiki_candidate_message(
+                    profile=target_profile,
+                    generated_at=rendered["generated_at"],
+                    remember_text=remember_text,
+                    record_result=record_result,
                 )
-            except (OSError, RemoteOperatorTelegramError) as error:
-                record_result = {
-                    "wiki_candidate_recorded": False,
-                    "wiki_candidate_status": "failed",
-                    "wiki_candidate_error": sanitize_text(str(error), max_chars=240),
-                }
-            rendered.update(record_result)
-            rendered["message_preview"] = render_wiki_candidate_message(
-                profile=args.profile,
-                generated_at=rendered["generated_at"],
-                remember_text=remember_text,
-                record_result=record_result,
-            )
-            rendered["mobile_card_contract"] = mobile_card_contract(rendered["message_preview"])
+                rendered["mobile_card_contract"] = mobile_card_contract(
+                    rendered["message_preview"]
+                )
         if parsed_command.get("command") in {"feedback", "plan_request"}:
             feedback_context = last_context_for_chat_hash(
                 state,
@@ -2621,16 +3684,81 @@ def run_once(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]
                 if isinstance(parsed_command.get("agent_intent"), dict)
                 else {}
             )
+            wants_session_message = (
+                agent_intent.get("status") == "classified"
+                and agent_intent.get("intent") == "session_message"
+                and agent_intent.get("session_target_status") == "resolved"
+                and not agent_intent.get("requires_clarification")
+            )
+            if wants_session_message:
+                target_session_id = str(agent_intent.get("session_id") or "")
+                session_message = str(agent_intent.get("session_message") or "")
+                expected_hash = ""
+                context_session_id = str((session_context or {}).get("session_id") or "")
+                same_context_session = bool(
+                    target_session_id
+                    and context_session_id
+                    and (
+                        target_session_id.startswith(context_session_id)
+                        or context_session_id.startswith(target_session_id)
+                    )
+                )
+                if same_context_session and str((session_context or {}).get("source") or "") in {
+                    "reply_card",
+                    "waiting_card",
+                }:
+                    expected_hash = str((session_context or {}).get("prompt_hash") or "")
+                if (
+                    float(agent_intent.get("confidence") or 0.0)
+                    < SESSION_MESSAGE_MIN_CONFIDENCE
+                ):
+                    preview = "\n".join(
+                        [
+                            "<b>어느 로컬 에이전트에 전달할지 확실하지 않습니다</b>",
+                            "프로젝트나 세션 이름을 포함해 다시 말씀해 주세요.",
+                            "예: forager Codex에게 전체 테스트를 다시 돌려줘",
+                        ]
+                    )
+                    rendered["message_preview"] = preview
+                    rendered["mobile_card_contract"] = mobile_card_contract(preview)
+                    rendered["session_message_status"] = "clarification_required"
+                else:
+                    render_session_message_delivery(
+                        args,
+                        rendered,
+                        session_id=target_session_id,
+                        message=session_message,
+                        expected_hash=expected_hash,
+                        require_exact_id=True,
+                    )
             if agent_intent.get("status") == "classified":
                 # The chat agent owns the routing decision (function-calling
                 # style); keyword markers are only the no-agent fallback.
-                wants_capture = agent_intent.get("intent") == "delegate_work"
+                wants_capture = (
+                    agent_intent.get("intent") == "delegate_work"
+                    and not wants_session_message
+                )
                 capture_note = str(agent_intent.get("delegation_goal") or "").strip() or text
             else:
-                from telegram_operator.agent import classify_feedback_kind  # noqa: PLC0415
-
-                wants_capture = classify_feedback_kind(text) == "planning_request"
+                relay_fallback = looks_like_session_relay_request(
+                    text, has_session_context=bool(session_context)
+                )
+                wants_capture = (
+                    not relay_fallback
+                    and classify_feedback_kind(text) == "planning_request"
+                )
                 capture_note = text
+                if relay_fallback:
+                    preview = "\n".join(
+                        [
+                            "<b>로컬 에이전트에 전달하지 않았습니다</b>",
+                            "평문 대상 해석 모델을 사용할 수 없습니다.",
+                            "모델 연결이 복구되면 같은 지시를 다시 보내 주세요.",
+                        ]
+                    )
+                    rendered["message_preview"] = preview
+                    rendered["mobile_card_contract"] = mobile_card_contract(preview)
+                    rendered["session_message_status"] = "agent_runtime_unavailable"
             pending_now = (state.get("pending_dispatch_confirmations_by_chat") or {}).get(chat_hash)
             if (
                 wants_capture
@@ -2709,26 +3837,59 @@ def run_once(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]
                     )
                     attach_choice_surface(rendered, remote_plan_selection_context(session))
                     rendered["mobile_card_contract"] = mobile_card_contract(rendered["message_preview"])
-        try:
-            message_id = send_message(
-                config,
-                chat_id_for(message),
-                rendered["message_preview"],
-                args,
-                reply_markup=rendered.get("reply_markup_preview")
-                if isinstance(rendered.get("reply_markup_preview"), dict)
-                else None,
+        dispatch_result = (
+            rendered.get("dispatch_result")
+            if isinstance(rendered.get("dispatch_result"), dict)
+            else {}
+        )
+        if dispatch_result.get("kind") == "session_message" and dispatch_result.get("ok"):
+            remember_session_focus(
+                state,
+                chat_hash,
+                session_id=str(dispatch_result.get("session_id") or ""),
+                project=str(dispatch_result.get("project") or ""),
+                title=str(dispatch_result.get("session_title") or ""),
+                tool=str(dispatch_result.get("tool") or ""),
+                source="delivered_message",
             )
-            rendered["send_status"] = "dry_run" if args.dry_run else "sent"
-        except RemoteOperatorTelegramError as error:
-            if "Telegram API" not in str(error):
-                raise
+        annotate_result_effect(rendered)
+        # Persist handler-owned state and the reply payload before attempting
+        # delivery. A restart can then retry the reply without re-running the
+        # guarded effect handler.
+        save_state(args.state_file, state)
+        reply_markup = (
+            rendered.get("reply_markup_preview")
+            if isinstance(rendered.get("reply_markup_preview"), dict)
+            else None
+        )
+        delivery = queue_reply(
+            args.reply_outbox_file,
+            update_id=update_id,
+            input_hash=input_hash,
+            chat_id=chat_id_for(message),
+            message=str(rendered["message_preview"]),
+            reply_markup=reply_markup,
+            result=rendered,
+        )
+        rendered["delivery_id"] = delivery["delivery_id"]
+        mark_effect_committed(
+            args.update_journal_file,
+            update_id=update_id,
+            input_hash=input_hash,
+            result=rendered,
+        )
+        delivery_attempt = attempt_reply_delivery(args, config, delivery)
+        if delivery_attempt.get("status") == "delivered":
+            message_id = delivery_attempt.get("sent_message_id")
+            rendered["send_status"] = delivery_attempt.get("send_status")
+        else:
             message_id = None
             rendered["status"] = "send_failed"
             rendered["send_status"] = "failed"
-            rendered["send_error"] = sanitize_text(str(error), max_chars=240)
+            rendered["send_error"] = delivery_attempt.get("error")
         rendered["sent_message_id"] = message_id
         remember_context_for_chat_hash(state, chat_hash, rendered)
+        record_session_input_outcome(state, rendered)
         rendered_parsed = (
             rendered.get("parsed_command")
             if isinstance(rendered.get("parsed_command"), dict)
@@ -2741,20 +3902,56 @@ def run_once(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]
                 role="operator",
                 text=str(rendered_parsed.get("chat_text") or text),
             )
-            assistant_reply = agent_assistant_reply(rendered_parsed.get("agent_intent"))
-            if assistant_reply:
-                append_chat_history(state, chat_hash, role="assistant", text=assistant_reply)
+            sent_text = telegram_message_text(rendered.get("message_preview"))
+            if sent_text:
+                append_chat_history(state, chat_hash, role="assistant", text=sent_text)
+        try:
+            record_conversation_event(
+                args,
+                rendered,
+                chat_hash=chat_hash,
+                user_hash=sha256_short(user_id_for(message)),
+                message_id=message_id_for(message),
+            )
+            rendered["conversation_record_status"] = "recorded"
+        except OSError as error:
+            # The inbound update must still advance when the optional audit
+            # ledger is temporarily unavailable; otherwise Telegram replays
+            # the same guarded action.
+            rendered["conversation_record_status"] = "failed"
+            rendered["conversation_record_error"] = sanitize_text(
+                str(error), max_chars=160
+            )
+        if delivery_attempt.get("status") == "delivered":
+            complete_update(
+                args.update_journal_file,
+                update_id=update_id,
+                input_hash=input_hash,
+                result=rendered,
+            )
+            rendered["update_journal_status"] = "completed"
+        else:
+            rendered["update_journal_status"] = "effect_committed"
+            rendered["reply_delivery_pending"] = True
+        if int(outbox_delivery.get("delivered_count") or 0) > 0:
+            rendered["reply_outbox_delivery"] = outbox_delivery
         result = rendered
         break
-    attention = scan_and_notify_attention(args, config, state)
-    if attention is not None:
-        result["attention_notification"] = attention
-    autonomy = scan_and_propose_autonomy(args, config, state)
-    if autonomy is not None:
-        result["autonomy_proposal"] = autonomy
-    session_notification = scan_and_notify_waiting_sessions(args, config, state)
-    if session_notification is not None:
-        result["session_notification"] = session_notification
+    attention = None
+    autonomy = None
+    session_notification = None
+    # Do not stack proactive cards behind a failed reply. The next poll first
+    # drains the durable reply outbox, then resumes notification scans.
+    if result.get("status") != "send_failed":
+        attention = scan_and_notify_attention(args, config, state)
+        if attention is not None:
+            result["attention_notification"] = attention
+        autonomy = scan_and_propose_autonomy(args, config, state)
+        if autonomy is not None:
+            result["autonomy_proposal"] = autonomy
+        session_notification = scan_and_notify_waiting_sessions(args, config, state)
+        if session_notification is not None:
+            result["session_notification"] = session_notification
     offset_advanced = max_update_id >= int(state.get("offset") or 0)
     if offset_advanced:
         state["offset"] = max_update_id + 1
@@ -2781,6 +3978,10 @@ def loop_summary_base(args: argparse.Namespace, config: dict[str, Any]) -> dict[
             "poll_count": 0,
             "updates_seen": 0,
             "handled_result_count": 0,
+            "status_counts": {},
+            "consecutive_error_count": 0,
+            "last_error_at": None,
+            "last_success_at": None,
             "last_result": None,
             "last_handled_result": None,
         }
@@ -2792,9 +3993,48 @@ def update_loop_summary(summary: dict[str, Any], result: dict[str, Any]) -> None
     summary["poll_count"] = int(summary.get("poll_count") or 0) + 1
     summary["updates_seen"] = int(summary.get("updates_seen") or 0) + int(result.get("updates_seen") or 0)
     summary["last_result"] = result
-    if result.get("status") not in {"no_update", "poll_error", "loop_error"}:
+    status = str(result.get("status") or "unknown")
+    status_counts = summary.setdefault("status_counts", {})
+    status_counts[status] = int(status_counts.get(status) or 0) + 1
+    if status in {"poll_error", "send_failed", "loop_error", "state_error"}:
+        summary["consecutive_error_count"] = (
+            int(summary.get("consecutive_error_count") or 0) + 1
+        )
+        summary["last_error_at"] = result.get("generated_at") or utc_now()
+    else:
+        summary["consecutive_error_count"] = 0
+        summary["last_success_at"] = result.get("generated_at") or utc_now()
+    if status not in {"no_update", "poll_error", "loop_error", "state_error"}:
         summary["handled_result_count"] = int(summary.get("handled_result_count") or 0) + 1
         summary["last_handled_result"] = result
+
+
+def acquire_listener_lock(path: pathlib.Path) -> int:
+    """Hold one local continuous poller so Telegram long polling stays single-owner."""
+
+    try:
+        import fcntl
+    except ImportError as error:
+        raise RemoteOperatorTelegramError(
+            "continuous Telegram polling requires local file-lock support"
+        ) from error
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        os.close(descriptor)
+        raise RemoteOperatorTelegramError(
+            f"another Telegram listener already holds {path}"
+        ) from error
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
 
 
 def loop_transport_error_result(
@@ -2831,13 +4071,30 @@ def loop_internal_error_result(
     return result
 
 
+def loop_state_error_result(
+    args: argparse.Namespace,
+    config: dict[str, Any],
+    error: RemoteOperatorStateError,
+) -> dict[str, Any]:
+    result = result_base(args, config, "live_once")
+    result.update(
+        {
+            "status": "state_error",
+            "updates_seen": 0,
+            "reason": "listener_state_unreadable",
+            "error": sanitize_text(str(error), max_chars=240),
+        }
+    )
+    return result
+
+
 def loop_backoff_if_needed(
     args: argparse.Namespace,
     result: dict[str, Any],
     consecutive_errors: int,
 ) -> int:
     status = str(result.get("status") or "")
-    if status not in {"poll_error", "send_failed", "loop_error"}:
+    if status not in {"poll_error", "send_failed", "loop_error", "state_error"}:
         return 0
     consecutive_errors += 1
     if args.max_polls is None:
@@ -2880,6 +4137,8 @@ def run_loop(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]
         while max_polls is None or int(summary["poll_count"]) < max_polls:
             try:
                 result = run_once(args, config)
+            except RemoteOperatorStateError as error:
+                result = loop_state_error_result(args, config, error)
             except RemoteOperatorTelegramError as error:
                 if "Telegram API" not in str(error):
                     result = loop_internal_error_result(args, config, error)
@@ -2956,6 +4215,89 @@ def main() -> int:
             raise RemoteOperatorTelegramError("--replay-update-file is only allowed with --dry-run")
         if args.max_polls is not None and not args.replay_update_file and (args.dry_run or args.once or args.send_command_text):
             raise RemoteOperatorTelegramError("--max-polls is only used by the live poller or dry-run replay poller")
+        if args.reply_outbox_retry_limit < 1:
+            raise RemoteOperatorTelegramError(
+                "--reply-outbox-retry-limit must be at least 1"
+            )
+        journal_tool_count = sum(
+            [
+                bool(args.journal_inspect),
+                bool(args.journal_reconcile),
+                bool(args.journal_compact),
+            ]
+        )
+        if journal_tool_count > 1:
+            raise RemoteOperatorTelegramError(
+                "journal inspect, reconcile, and compact modes cannot be combined"
+            )
+        if args.journal_reconcile:
+            if args.journal_update_id is None:
+                raise RemoteOperatorTelegramError(
+                    "--journal-reconcile requires --journal-update-id"
+                )
+            if not str(args.journal_reason or "").strip():
+                raise RemoteOperatorTelegramError(
+                    "--journal-reconcile requires --journal-reason"
+                )
+            if args.dry_run or args.once or args.max_polls is not None:
+                raise RemoteOperatorTelegramError(
+                    "--journal-reconcile cannot be combined with listener or dry-run modes"
+                )
+        if args.journal_inspect:
+            result = journal_inspection(
+                args.update_journal_file,
+                update_id=args.journal_update_id,
+            )
+            result["reply_outbox"] = outbox_inspection(args.reply_outbox_file)
+            emit_result(args, result)
+            return 0
+        if args.journal_compact:
+            if args.dry_run or args.once or args.max_polls is not None:
+                raise RemoteOperatorTelegramError(
+                    "--journal-compact cannot be combined with listener or dry-run modes"
+                )
+            listener_lock = acquire_listener_lock(args.listener_lock_file)
+            try:
+                state = load_state(args.state_file)
+                synchronize_reply_delivery_journal(args)
+                offset = int(state.get("offset") or 0)
+                journal_compaction = compact_update_journal(
+                    args.update_journal_file,
+                    committed_before_update_id=offset,
+                )
+                outbox_compaction = compact_reply_outbox(
+                    args.reply_outbox_file,
+                    committed_before_update_id=offset,
+                )
+            finally:
+                os.close(listener_lock)
+            result = {
+                "schema": "remote_operator_telegram_journal_compaction.v1",
+                "generated_at": utc_now(),
+                "status": "compacted",
+                "trusted_offset": offset,
+                "update_journal": journal_compaction,
+                "reply_outbox": outbox_compaction,
+                "read_only": False,
+                "mutation_authorized": True,
+                "authority_domain": "telegram_update_journal",
+                "approval_authorized": False,
+            }
+            emit_result(args, result)
+            return 0
+        if args.journal_reconcile:
+            listener_lock = acquire_listener_lock(args.listener_lock_file)
+            try:
+                result = reconcile_update(
+                    args.update_journal_file,
+                    update_id=args.journal_update_id,
+                    resolution=args.journal_reconcile,
+                    reason=args.journal_reason,
+                )
+            finally:
+                os.close(listener_lock)
+            emit_result(args, result)
+            return 0
         if args.health:
             config = resolve_telegram_config(args.env_file, required=False)
             result = listener_health(args, config)
@@ -2999,7 +4341,14 @@ def main() -> int:
                 file=sys.stderr,
                 flush=True,
             )
-        result = run_once(args, config) if args.once else run_loop(args, config)
+        if args.once:
+            result = run_once(args, config)
+        else:
+            listener_lock = acquire_listener_lock(args.listener_lock_file)
+            try:
+                result = run_loop(args, config)
+            finally:
+                os.close(listener_lock)
         emit_result(args, result)
         return 0
     except RemoteOperatorTelegramError as error:

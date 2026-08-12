@@ -31,15 +31,11 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from operator_state_card import mobile_card_contract
+from telegram_operator.config import default_telegram_env_file
 
 
 REPO_ROOT = SCRIPT_DIR.parents[0]
-DEFAULT_TELEGRAM_ENV_FILE = pathlib.Path(
-    os.environ.get(
-        "OFFDESK_TELEGRAM_ENV",
-        "/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram.env",
-    )
-)
+DEFAULT_TELEGRAM_ENV_FILE = default_telegram_env_file()
 DEFAULT_LIVE_ACTIVE_REQUEST_REGISTRY = pathlib.Path(
     os.environ.get(
         "OFFDESK_TELEGRAM_ACTIVE_REQUEST_REGISTRY",
