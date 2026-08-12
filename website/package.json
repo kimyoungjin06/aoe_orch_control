@@ -1,6 +1,10 @@
 {
   "name": "forager-website",
   "type": "module",
+  "engines": {
+    "node": ">=22.12.0",
+    "npm": ">=9.6.5"
+  },
   "scripts": {
     "dev": "astro dev",
     "build": "node scripts/build-with-lock.mjs -- astro build",
@@ -14,13 +18,13 @@
   },
   "dependencies": {
     "@astrojs/sitemap": "^3.7.3",
-    "@tailwindcss/vite": "^4.3.1",
-    "astro": "^6.4.7",
-    "plotly.js-dist-min": "^3.7.0",
-    "tailwindcss": "^4.3.1"
+    "@tailwindcss/vite": "^4.3.3",
+    "astro": "^7.2.1",
+    "plotly.js-basic-dist-min": "^3.7.0",
+    "tailwindcss": "^4.3.3"
   },
   "devDependencies": {
-    "@playwright/test": "^1.61.0"
+    "@playwright/test": "^1.62.1"
   },
   "overrides": {
     "esbuild": "0.28.1"

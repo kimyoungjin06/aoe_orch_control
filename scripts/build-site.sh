@@ -37,7 +37,7 @@ cp "$ROOT_DIR/docs/assets/tui.png" "$ROOT_DIR/website/public/assets/"
 
 # 3. Build Astro website
 echo "Building Astro website..."
-(cd "$ROOT_DIR/website" && npm install && npm run build)
+(cd "$ROOT_DIR/website" && npm ci && npm run build)
 
 # 4. Copy Astro output to dist/
 echo "Copying website..."

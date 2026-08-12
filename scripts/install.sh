@@ -41,6 +41,45 @@ get_latest_version() {
         | sed -E 's/.*"([^"]+)".*/\1/'
 }
 
+sha256_file() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{print $1}'
+    else
+        error "No SHA-256 tool found. Install sha256sum or shasum and retry."
+    fi
+}
+
+verify_archive() {
+    local archive checksum_file expected actual
+    archive="$1"
+    checksum_file="$2"
+    expected=$(awk 'NR == 1 {print $1}' "$checksum_file")
+    if ! printf '%s\n' "$expected" | grep -qE '^[[:xdigit:]]{64}$'; then
+        error "Release checksum file is malformed"
+    fi
+    actual=$(sha256_file "$archive")
+    if [ "$(printf '%s' "$actual" | tr '[:upper:]' '[:lower:]')" != \
+         "$(printf '%s' "$expected" | tr '[:upper:]' '[:lower:]')" ]; then
+        error "Release checksum verification failed"
+    fi
+}
+
+extract_archive() {
+    local archive archive_member destination
+    archive="$1"
+    archive_member="$2"
+    destination="$3"
+    if [ "$(tar tzf "$archive")" != "$archive_member" ]; then
+        error "Release archive contains unexpected files"
+    fi
+    tar xzf "$archive" -C "$destination" "$archive_member"
+    if [ ! -f "$destination/$archive_member" ] || [ -L "$destination/$archive_member" ]; then
+        error "Release archive does not contain a regular binary"
+    fi
+}
+
 main() {
     info "Detecting platform..."
     platform=$(detect_platform)
@@ -61,6 +100,7 @@ main() {
 
     download_url="https://github.com/${REPO}/releases/download/${version}/forager-${platform}.tar.gz"
     legacy_download_url="https://github.com/${REPO}/releases/download/${version}/aoe-${platform}.tar.gz"
+    checksum_url="${download_url}.sha256"
     archive_member="forager-${platform}"
     info "Downloading from: $download_url"
 
@@ -70,12 +110,19 @@ main() {
     if ! curl -fsSL "$download_url" -o "$tmp_dir/forager.tar.gz"; then
         info "Primary Forager artifact not found; trying legacy artifact: $legacy_download_url"
         archive_member="aoe-${platform}"
+        checksum_url="${legacy_download_url}.sha256"
         curl -fsSL "$legacy_download_url" -o "$tmp_dir/forager.tar.gz" || error "Download failed"
     fi
     success "Downloaded successfully"
 
+    info "Verifying release checksum..."
+    curl -fsSL "$checksum_url" -o "$tmp_dir/forager.tar.gz.sha256" \
+        || error "Release checksum download failed"
+    verify_archive "$tmp_dir/forager.tar.gz" "$tmp_dir/forager.tar.gz.sha256"
+    success "Checksum verified"
+
     info "Extracting..."
-    tar xzf "$tmp_dir/forager.tar.gz" -C "$tmp_dir"
+    extract_archive "$tmp_dir/forager.tar.gz" "$archive_member" "$tmp_dir"
 
     info "Installing to $INSTALL_DIR..."
     if [ -w "$INSTALL_DIR" ]; then
@@ -107,4 +154,6 @@ main() {
     info "For shell completions, run: forager completion --help"
 }
 
-main "$@"
+if [ "${FORAGER_INSTALL_LIBRARY_ONLY:-0}" != "1" ]; then
+    main "$@"
+fi

@@ -26,7 +26,15 @@ jobs:
           else
             brew install tmux
           fi
-      - run: cargo test
+      - run: cargo test --locked --all-targets --all-features
+
+  msrv:
+    name: Rust 1.88 MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - run: cargo check --locked --all-targets --all-features
 
   fmt:
     name: Format
@@ -46,7 +54,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - run: cargo clippy -- -D warnings
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+  python:
+    name: Python Scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Compile operational scripts
+        run: python3 -m compileall -q scripts
+      - name: Test release installer integrity checks
+        run: bash tests/install_script.sh
 
   website:
     name: Website Build
@@ -55,7 +73,24 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
         with:
-          node-version: '22'
-      - name: Install and build
+          node-version: '22.12.0'
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - name: Install locked dependencies
         working-directory: website
-        run: npm install && npm run build
+        run: npm ci
+      - name: Audit production and build dependencies
+        working-directory: website
+        run: npm audit --audit-level=high
+      - name: Test local action bridge
+        working-directory: website
+        run: npm run test:bridge
+      - name: Build
+        working-directory: website
+        run: npm run build
+      - name: Install Playwright Chromium
+        working-directory: website
+        run: npx playwright install --with-deps chromium
+      - name: Test visual operator surfaces
+        working-directory: website
+        run: npm run test:visual
