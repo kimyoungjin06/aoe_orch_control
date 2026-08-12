@@ -2,11 +2,10 @@
 
 use ratatui::prelude::*;
 use ratatui::widgets::*;
-use std::time::Instant;
 
 use super::{
-    get_indent, HomeView, ViewMode, ICON_COLLAPSED, ICON_DELETING, ICON_ERROR, ICON_EXPANDED,
-    ICON_IDLE, ICON_RUNNING, ICON_STARTING, ICON_WAITING,
+    get_indent, HomeView, PreviewKind, ViewMode, ICON_COLLAPSED, ICON_DELETING, ICON_ERROR,
+    ICON_EXPANDED, ICON_IDLE, ICON_RUNNING, ICON_STARTING, ICON_WAITING,
 };
 use crate::session::{Item, Status};
 use crate::tui::components::{HelpOverlay, Preview};
@@ -185,8 +184,15 @@ impl HomeView {
 
         let list =
             List::new(list_items).highlight_style(Style::default().bg(theme.session_selection));
+        let mut list_state = ListState::default();
+        list_state.select((!indices.is_empty()).then_some(self.cursor));
 
-        frame.render_widget(list, inner);
+        // A plain List always renders from row zero. Keeping the cursor only
+        // in HomeView therefore let the selected session move below the
+        // viewport after repeated Down presses. Stateful rendering keeps the
+        // selected row visible and makes the initial screen stable at any
+        // session count.
+        frame.render_stateful_widget(list, inner, &mut list_state);
 
         // Render search bar if active
         if self.search_active {
@@ -304,11 +310,19 @@ impl HomeView {
 
         if let Item::Session { id, .. } = item {
             if let Some(inst) = self.instance_map.get(id) {
-                if let Some(wt_info) = &inst.worktree_info {
-                    line_spans.push(Span::styled(
-                        format!("  {}", wt_info.branch),
-                        Style::default().fg(Color::Cyan),
-                    ));
+                let show_branch = self
+                    .instance_configs
+                    .get(id)
+                    .unwrap_or(&self.effective_config)
+                    .worktree
+                    .show_branch_in_tui;
+                if show_branch {
+                    if let Some(wt_info) = &inst.worktree_info {
+                        line_spans.push(Span::styled(
+                            format!("  {}", wt_info.branch),
+                            Style::default().fg(Color::Cyan),
+                        ));
+                    }
                 }
                 if inst.is_sandboxed() {
                     line_spans.push(Span::styled(
@@ -325,66 +339,6 @@ impl HomeView {
             ListItem::new(line).style(Style::default().bg(theme.session_selection))
         } else {
             ListItem::new(line)
-        }
-    }
-
-    /// Refresh preview cache if needed (session changed, dimensions changed, or timer expired)
-    fn refresh_preview_cache_if_needed(&mut self, width: u16, height: u16) {
-        const PREVIEW_REFRESH_MS: u128 = 250; // Refresh preview 4x/second max
-
-        let needs_refresh = match &self.selected_session {
-            Some(id) => {
-                self.preview_cache.session_id.as_ref() != Some(id)
-                    || self.preview_cache.dimensions != (width, height)
-                    || self.preview_cache.last_refresh.elapsed().as_millis() > PREVIEW_REFRESH_MS
-            }
-            None => false,
-        };
-
-        if needs_refresh {
-            if let Some(id) = &self.selected_session {
-                if let Some(inst) = self.instance_map.get(id) {
-                    self.preview_cache.content = inst
-                        .capture_output_with_size(height as usize, width, height)
-                        .unwrap_or_default();
-                    self.preview_cache.session_id = Some(id.clone());
-                    self.preview_cache.dimensions = (width, height);
-                    self.preview_cache.last_refresh = Instant::now();
-                }
-            }
-        }
-    }
-
-    /// Refresh terminal preview cache if needed (for host terminals)
-    fn refresh_terminal_preview_cache_if_needed(&mut self, width: u16, height: u16) {
-        const PREVIEW_REFRESH_MS: u128 = 250;
-
-        let needs_refresh = match &self.selected_session {
-            Some(id) => {
-                self.terminal_preview_cache.session_id.as_ref() != Some(id)
-                    || self.terminal_preview_cache.dimensions != (width, height)
-                    || self
-                        .terminal_preview_cache
-                        .last_refresh
-                        .elapsed()
-                        .as_millis()
-                        > PREVIEW_REFRESH_MS
-            }
-            None => false,
-        };
-
-        if needs_refresh {
-            if let Some(id) = &self.selected_session {
-                if let Some(inst) = self.instance_map.get(id) {
-                    self.terminal_preview_cache.content = inst
-                        .terminal_tmux_session()
-                        .and_then(|s| s.capture_pane(height as usize))
-                        .unwrap_or_default();
-                    self.terminal_preview_cache.session_id = Some(id.clone());
-                    self.terminal_preview_cache.dimensions = (width, height);
-                    self.terminal_preview_cache.last_refresh = Instant::now();
-                }
-            }
         }
     }
 
@@ -469,8 +423,11 @@ impl HomeView {
 
         match self.view_mode {
             ViewMode::Agent => {
-                // Refresh cache before borrowing from instance_map to avoid borrow conflicts
-                self.refresh_preview_cache_if_needed(content_area.width, content_area.height);
+                self.request_preview_refresh_if_needed(
+                    PreviewKind::Agent,
+                    content_area.width,
+                    content_area.height,
+                );
 
                 if let Some(id) = &self.selected_session {
                     if let Some(inst) = self.instance_map.get(id) {
@@ -493,22 +450,18 @@ impl HomeView {
                 let selected_id = self.selected_session.clone();
 
                 if let Some(id) = selected_id {
-                    self.refresh_terminal_preview_cache_if_needed(
+                    self.request_preview_refresh_if_needed(
+                        PreviewKind::Terminal,
                         content_area.width,
                         content_area.height,
                     );
 
                     if let Some(inst) = self.instance_map.get(&id) {
-                        let terminal_running = inst
-                            .terminal_tmux_session()
-                            .map(|s| s.exists())
-                            .unwrap_or(false);
-
                         Preview::render_terminal_preview(
                             frame,
                             content_area,
                             inst,
-                            terminal_running,
+                            self.terminal_preview_cache.terminal_running,
                             &self.terminal_preview_cache.content,
                             theme,
                         );

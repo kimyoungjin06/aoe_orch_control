@@ -73,14 +73,13 @@ pub struct DiffView {
 
 impl DiffView {
     /// Create a new diff view for a repository
-    pub fn new(repo_path: PathBuf) -> anyhow::Result<Self> {
-        let config = Config::load().unwrap_or_default();
-
+    pub fn new(repo_path: PathBuf, config: &Config) -> anyhow::Result<Self> {
         // Determine base branch
         let base_branch = config
             .diff
             .default_branch
             .clone()
+            .filter(|branch| !branch.trim().is_empty())
             .or_else(|| get_default_branch(&repo_path).ok())
             .unwrap_or_else(|| "main".to_string());
 

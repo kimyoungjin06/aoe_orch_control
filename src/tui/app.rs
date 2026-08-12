@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use super::home::HomeView;
 use super::styles::Theme;
-use crate::session::{get_update_settings, load_config, save_config, Storage};
+use crate::session::{load_config, resolve_config, save_config, Storage, UpdatesConfig};
 use crate::tmux::AvailableTools;
 use crate::update::{check_for_update, UpdateInfo};
 
@@ -57,6 +57,7 @@ pub struct App {
     needs_redraw: bool,
     update_info: Option<UpdateInfo>,
     update_rx: Option<tokio::sync::oneshot::Receiver<anyhow::Result<UpdateInfo>>>,
+    update_settings: UpdatesConfig,
 }
 
 /// Check if the app version changed and return the previous version if changelog should be shown.
@@ -79,6 +80,7 @@ impl App {
         let storage = Storage::new(profile)?;
         let mut home = HomeView::new(storage, available_tools)?;
         let theme = Theme::default();
+        let update_settings = resolve_config(profile)?.updates;
 
         // Check if we need to show welcome or changelog dialogs
         let mut config = load_config()?.unwrap_or_default();
@@ -103,6 +105,7 @@ impl App {
             needs_redraw: true,
             update_info: None,
             update_rx: None,
+            update_settings,
         })
     }
 
@@ -118,19 +121,19 @@ impl App {
         crate::tmux::refresh_session_cache();
 
         // Spawn async update check
-        let settings = get_update_settings();
+        let settings = self.update_settings.clone();
         if settings.check_enabled {
             let (tx, rx) = tokio::sync::oneshot::channel();
             self.update_rx = Some(rx);
             tokio::spawn(async move {
                 let version = env!("CARGO_PKG_VERSION");
-                let _ = tx.send(check_for_update(version, false).await);
+                let _ = tx.send(check_for_update(version, false, &settings).await);
             });
         }
 
-        let mut last_status_refresh = std::time::Instant::now();
+        let mut last_status_schedule = std::time::Instant::now();
         let mut last_disk_refresh = std::time::Instant::now();
-        const STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
+        const STATUS_SCHEDULER_INTERVAL: Duration = Duration::from_millis(500);
         const DISK_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
         loop {
@@ -174,14 +177,18 @@ impl App {
             // Periodic refreshes (only when no input pending)
             let mut refresh_needed = false;
 
-            // Request status refresh every interval (non-blocking)
-            if last_status_refresh.elapsed() >= STATUS_REFRESH_INTERVAL {
+            // Check whether selected or background sessions are due (non-blocking).
+            if last_status_schedule.elapsed() >= STATUS_SCHEDULER_INTERVAL {
                 self.home.request_status_refresh();
-                last_status_refresh = std::time::Instant::now();
+                last_status_schedule = std::time::Instant::now();
             }
 
             // Always check for and apply status updates (non-blocking)
             if self.home.apply_status_updates() {
+                refresh_needed = true;
+            }
+
+            if self.home.apply_preview_update() {
                 refresh_needed = true;
             }
 
@@ -358,15 +365,19 @@ impl App {
 
             // Skip on_launch hooks if they already ran in the background creation poller
             let skip_on_launch = self.home.take_on_launch_hooks_ran(session_id);
+            let config = self.home.resolved_config_for_instance(session_id)?;
 
             let mut inst = instance.clone();
-            if let Err(e) = inst.start_with_size_opts(size, skip_on_launch) {
+            if let Err(e) = inst.start_with_size_opts(size, skip_on_launch, &config) {
                 self.home
                     .set_instance_error(session_id, Some(e.to_string()));
                 return Ok(());
             }
             self.home.set_instance_error(session_id, None);
         }
+
+        let config = self.home.resolved_config_for_instance(session_id)?;
+        instance.refresh_tmux_options(&config);
 
         let attach_result = with_raw_mode_disabled(terminal, || tmux_session.attach())?;
 

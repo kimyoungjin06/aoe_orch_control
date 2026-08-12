@@ -3779,7 +3779,7 @@ fn decision_severity(record: &DecisionRecord) -> &'static str {
 }
 
 fn update_latest(target: &mut Option<DateTime<Utc>>, candidate: DateTime<Utc>) {
-    if target.map_or(true, |current| candidate > current) {
+    if target.is_none_or(|current| candidate > current) {
         *target = Some(candidate);
     }
 }

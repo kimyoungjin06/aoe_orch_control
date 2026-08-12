@@ -7,6 +7,7 @@ mod deletion_poller;
 pub mod dialogs;
 pub mod diff;
 mod home;
+mod preview_poller;
 pub mod settings;
 mod status_poller;
 mod styles;
@@ -15,15 +16,19 @@ pub use app::*;
 
 use anyhow::Result;
 use crossterm::{
+    cursor::{Hide, MoveTo, Show},
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{
+        disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen,
+        LeaveAlternateScreen,
+    },
 };
 use ratatui::prelude::*;
 use std::io::{self, Write};
 
 use crate::migrations;
-use crate::session::get_update_settings;
+use crate::session::resolve_config;
 use crate::update::check_for_update;
 
 pub async fn run(profile: &str) -> Result<()> {
@@ -78,13 +83,15 @@ pub async fn run(profile: &str) -> Result<()> {
     // If version changed, refresh the update cache before showing TUI.
     // This ensures we have release notes for the changelog dialog.
     if check_version_change()?.is_some() {
-        let settings = get_update_settings();
+        let settings = resolve_config(profile)
+            .map(|config| config.updates)
+            .unwrap_or_default();
         if settings.check_enabled {
             let current_version = env!("CARGO_PKG_VERSION");
             // Don't let a network issue block startup
             let _ = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                check_for_update(current_version, true),
+                check_for_update(current_version, true, &settings),
             )
             .await;
         }
@@ -93,22 +100,36 @@ pub async fn run(profile: &str) -> Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    // Some terminals preserve the previous alternate-screen buffer between
+    // applications. Clear it explicitly before ratatui starts diffing against
+    // its own blank buffer, otherwise rapid first-frame navigation can expose
+    // stale cells until the user runs `clear` outside Forager.
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        Clear(ClearType::All),
+        MoveTo(0, 0),
+        Hide
+    )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Create app and run
-    let mut app = App::new(profile, available_tools)?;
-    let result = app.run(&mut terminal).await;
+    // Create app and run. Keep terminal restoration on the common path even
+    // if application initialization fails after raw mode is active.
+    let result = match App::new(profile, available_tools) {
+        Ok(mut app) => app.run(&mut terminal).await,
+        Err(error) => Err(error),
+    };
 
     // Restore terminal
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
-        DisableMouseCapture
+        DisableMouseCapture,
+        Show
     )?;
-    terminal.show_cursor()?;
 
     result
 }

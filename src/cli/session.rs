@@ -107,8 +107,12 @@ async fn start_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     let (mut instances, groups) = storage.load_with_groups()?;
 
     let idx = super::resolve_session_index(&args.identifier, &instances)?;
+    let config = crate::session::resolve_config_with_repo(
+        profile,
+        std::path::Path::new(&instances[idx].project_path),
+    )?;
 
-    instances[idx].start_with_size(crate::terminal::get_size())?;
+    instances[idx].start_with_size(crate::terminal::get_size(), &config)?;
     let title = instances[idx].title.clone();
 
     let group_tree = GroupTree::new_with_groups(&instances, &groups);
@@ -140,8 +144,12 @@ async fn restart_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     let (mut instances, groups) = storage.load_with_groups()?;
 
     let idx = super::resolve_session_index(&args.identifier, &instances)?;
+    let config = crate::session::resolve_config_with_repo(
+        profile,
+        std::path::Path::new(&instances[idx].project_path),
+    )?;
 
-    instances[idx].restart_with_size(crate::terminal::get_size())?;
+    instances[idx].restart_with_size(crate::terminal::get_size(), &config)?;
     let title = instances[idx].title.clone();
 
     let group_tree = GroupTree::new_with_groups(&instances, &groups);

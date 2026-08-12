@@ -9,6 +9,8 @@ use uuid::Uuid;
 
 use crate::tmux;
 
+use super::Config;
+
 fn default_true() -> bool {
     true
 }
@@ -168,6 +170,41 @@ impl Instance {
         tmux::Session::new(&self.id, &self.title)
     }
 
+    fn resolve_on_launch_hooks(&self, config: &Config) -> Vec<String> {
+        let mut hooks = config.hooks.on_launch.clone();
+        if let Ok(super::repo_config::HookTrustStatus::Trusted(repo_hooks)) =
+            super::repo_config::check_hook_trust(Path::new(&self.project_path))
+        {
+            if !repo_hooks.on_launch.is_empty() {
+                hooks = repo_hooks.on_launch;
+            }
+        }
+        hooks
+    }
+
+    fn agent_environment(&self, config: &Config) -> Vec<(String, String)> {
+        if self.tool != "claude" {
+            return Vec::new();
+        }
+
+        let mut environment = vec![(
+            "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN".to_string(),
+            "1".to_string(),
+        )];
+
+        if let Some(path) = config
+            .claude
+            .config_dir
+            .as_deref()
+            .filter(|path| !path.trim().is_empty())
+            .map(expand_home_path)
+        {
+            environment.push(("CLAUDE_CONFIG_DIR".to_string(), path));
+        }
+
+        environment
+    }
+
     pub fn terminal_tmux_session(&self) -> Result<tmux::TerminalSession> {
         tmux::TerminalSession::new(&self.id, &self.title)
     }
@@ -179,11 +216,15 @@ impl Instance {
             .unwrap_or(false)
     }
 
-    pub fn start_terminal(&mut self) -> Result<()> {
-        self.start_terminal_with_size(None)
+    pub fn start_terminal(&mut self, config: &Config) -> Result<()> {
+        self.start_terminal_with_size(None, config)
     }
 
-    pub fn start_terminal_with_size(&mut self, size: Option<(u16, u16)>) -> Result<()> {
+    pub fn start_terminal_with_size(
+        &mut self,
+        size: Option<(u16, u16)>,
+        config: &Config,
+    ) -> Result<()> {
         let session = self.terminal_tmux_session()?;
 
         let is_new = !session.exists();
@@ -193,7 +234,7 @@ impl Instance {
 
         // Apply all configured tmux options to terminal sessions too
         if is_new {
-            self.apply_terminal_tmux_options();
+            self.apply_terminal_tmux_options(config);
         }
 
         self.terminal_info = Some(TerminalInfo {
@@ -225,7 +266,7 @@ impl Instance {
     }
 
     /// Apply all configured tmux options to a session with the given name and title.
-    fn apply_session_tmux_options(&self, session_name: &str, display_title: &str) {
+    fn apply_session_tmux_options(&self, session_name: &str, display_title: &str, config: &Config) {
         let branch = self.worktree_info.as_ref().map(|w| w.branch.as_str());
         let sandbox = self.sandbox_display();
         let project = Some(self.group_path.as_str()).filter(|g| !g.trim().is_empty());
@@ -235,15 +276,16 @@ impl Instance {
             project,
             branch,
             sandbox.as_ref(),
+            &config.tmux,
         );
     }
 
-    pub fn start(&mut self) -> Result<()> {
-        self.start_with_size(None)
+    pub fn start(&mut self, config: &Config) -> Result<()> {
+        self.start_with_size(None, config)
     }
 
-    pub fn start_with_size(&mut self, size: Option<(u16, u16)>) -> Result<()> {
-        self.start_with_size_opts(size, false)
+    pub fn start_with_size(&mut self, size: Option<(u16, u16)>, config: &Config) -> Result<()> {
+        self.start_with_size_opts(size, false, config)
     }
 
     /// Start the session, optionally skipping on_launch hooks (e.g. when they
@@ -252,6 +294,7 @@ impl Instance {
         &mut self,
         size: Option<(u16, u16)>,
         skip_on_launch: bool,
+        config: &Config,
     ) -> Result<()> {
         if self.is_sandboxed() {
             anyhow::bail!(
@@ -270,23 +313,9 @@ impl Instance {
         let on_launch_hooks = if skip_on_launch {
             None
         } else {
-            // Start with global+profile hooks as the base
-            let profile = super::config::Config::load()
-                .map(|c| c.default_profile)
-                .unwrap_or_else(|_| "default".to_string());
-            let mut resolved_on_launch = super::profile_config::resolve_config(&profile)
-                .map(|c| c.hooks.on_launch)
-                .unwrap_or_default();
-
-            // Check if repo has trusted hooks that override
-            match super::repo_config::check_hook_trust(Path::new(&self.project_path)) {
-                Ok(super::repo_config::HookTrustStatus::Trusted(hooks))
-                    if !hooks.on_launch.is_empty() =>
-                {
-                    resolved_on_launch = hooks.on_launch.clone();
-                }
-                _ => {}
-            }
+            // The caller supplies the already resolved active-profile config.
+            // Never reload the global default profile from this low-level path.
+            let resolved_on_launch = self.resolve_on_launch_hooks(config);
 
             if resolved_on_launch.is_empty() {
                 None
@@ -344,10 +373,11 @@ impl Instance {
         };
 
         tracing::debug!("session cmd: {}", cmd.as_ref().map_or("none", |v| v));
-        session.create_with_size(&self.project_path, cmd.as_deref(), size)?;
+        let environment = self.agent_environment(config);
+        session.create_with_size_env(&self.project_path, cmd.as_deref(), size, &environment)?;
 
         // Apply all configured tmux options (status bar, mouse, etc.)
-        self.apply_tmux_options();
+        self.apply_tmux_options(config);
 
         self.status = Status::Starting;
         self.last_start_time = Some(std::time::Instant::now());
@@ -355,21 +385,28 @@ impl Instance {
         Ok(())
     }
 
-    fn apply_tmux_options(&self) {
+    fn apply_tmux_options(&self, config: &Config) {
         let name = tmux::Session::generate_name(&self.id, &self.title);
-        self.apply_session_tmux_options(&name, &self.title);
+        self.apply_session_tmux_options(&name, &self.title, config);
     }
 
-    fn apply_terminal_tmux_options(&self) {
+    /// Reapply non-destructive tmux metadata and interaction policy to an
+    /// existing session before attaching. This also upgrades sessions created
+    /// by an older Forager process without restarting the agent.
+    pub fn refresh_tmux_options(&self, config: &Config) {
+        self.apply_tmux_options(config);
+    }
+
+    fn apply_terminal_tmux_options(&self, config: &Config) {
         let name = tmux::TerminalSession::generate_name(&self.id, &self.title);
-        self.apply_session_tmux_options(&name, &format!("{} (terminal)", self.title));
+        self.apply_session_tmux_options(&name, &format!("{} (terminal)", self.title), config);
     }
 
-    pub fn restart(&mut self) -> Result<()> {
-        self.restart_with_size(None)
+    pub fn restart(&mut self, config: &Config) -> Result<()> {
+        self.restart_with_size(None, config)
     }
 
-    pub fn restart_with_size(&mut self, size: Option<(u16, u16)>) -> Result<()> {
+    pub fn restart_with_size(&mut self, size: Option<(u16, u16)>, config: &Config) -> Result<()> {
         let session = self.tmux_session()?;
 
         if session.exists() {
@@ -379,7 +416,7 @@ impl Instance {
         // Small delay to ensure tmux cleanup
         std::thread::sleep(std::time::Duration::from_millis(100));
 
-        self.start_with_size(size)
+        self.start_with_size(size, config)
     }
 
     pub fn kill(&self) -> Result<()> {
@@ -453,6 +490,15 @@ fn generate_id() -> String {
     Uuid::new_v4().to_string().replace("-", "")[..16].to_string()
 }
 
+fn expand_home_path(path: &str) -> String {
+    if let Some(stripped) = path.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(stripped).to_string_lossy().into_owned();
+        }
+    }
+    path.to_string()
+}
+
 /// Wrap a command to disable Ctrl-Z (SIGTSTP) suspension.
 ///
 /// When running agents directly as tmux session commands (without a parent shell),
@@ -476,6 +522,39 @@ mod tests {
         assert_eq!(inst.project_path, "/tmp/test");
         assert_eq!(inst.status, Status::Idle);
         assert_eq!(inst.id.len(), 16);
+    }
+
+    #[test]
+    fn claude_environment_comes_from_the_supplied_effective_config() {
+        let mut config = Config::default();
+        let mut instance = Instance::new("test", "/tmp/test");
+        instance.tool = "claude".to_string();
+
+        assert_eq!(
+            instance.agent_environment(&config),
+            vec![(
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN".to_string(),
+                "1".to_string()
+            )]
+        );
+
+        config.claude.config_dir = Some("/tmp/profile-claude".to_string());
+        assert_eq!(
+            instance.agent_environment(&config),
+            vec![
+                (
+                    "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN".to_string(),
+                    "1".to_string()
+                ),
+                (
+                    "CLAUDE_CONFIG_DIR".to_string(),
+                    "/tmp/profile-claude".to_string()
+                )
+            ]
+        );
+
+        instance.tool = "codex".to_string();
+        assert!(instance.agent_environment(&config).is_empty());
     }
 
     #[test]
@@ -570,10 +649,36 @@ mod tests {
             extra_env_values: None,
         });
 
-        let err = inst.start_with_size_opts(None, false).unwrap_err();
+        let err = inst
+            .start_with_size_opts(None, false, &Config::default())
+            .unwrap_err();
         assert!(err
             .to_string()
             .contains("Legacy Docker sandbox sessions cannot be started"));
+    }
+
+    #[test]
+    fn launch_hooks_come_from_the_supplied_active_profile_config() {
+        let project = tempfile::tempdir().unwrap();
+        let mut global = Config {
+            default_profile: "wrong-default".to_string(),
+            ..Config::default()
+        };
+        global.hooks.on_launch = vec!["wrong-global-hook".to_string()];
+        let active_profile = super::super::profile_config::ProfileConfig {
+            hooks: Some(super::super::profile_config::HooksConfigOverride {
+                on_create: None,
+                on_launch: Some(vec!["active-profile-hook".to_string()]),
+            }),
+            ..Default::default()
+        };
+        let active_config = super::super::profile_config::merge_configs(global, &active_profile);
+        let instance = Instance::new("test", project.path().to_str().unwrap());
+
+        assert_eq!(
+            instance.resolve_on_launch_hooks(&active_config),
+            vec!["active-profile-hook"]
+        );
     }
 
     // Tests for get_tool_command

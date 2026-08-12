@@ -51,9 +51,12 @@ on_launch = ["npm install"]
 ```toml
 [session]
 default_tool = "opencode"   # Override the default agent for this repo
+auto_orchestrator = true
 ```
 
 Available tools: `claude`, `opencode`, `vibe`, `codex`, `gemini`.
+The executable `session.orchestrator_command` setting remains global/profile
+only and is not applied from checked-in repo config.
 
 ### Worktree
 
@@ -61,13 +64,17 @@ Override worktree settings for this repo:
 
 ```toml
 [worktree]
-enabled = true
 path_template = "../{repo-name}-worktrees/{branch}"
 bare_repo_path_template = "./{branch}"
 auto_cleanup = true
 show_branch_in_tui = true
 delete_branch_on_cleanup = false
 ```
+
+Repo config can also override `[sandbox]`, `[tmux]`, and `[diff]`. The settings
+TUI exposes exactly the active repo-supported categories when the Repo tab is
+available. Updates, sound, Claude config directory, and the default profile are
+personal settings and stay out of active repo config.
 
 ## Hook Trust System
 
@@ -106,7 +113,7 @@ on_launch = ["npm install"]
 default_tool = "claude"
 
 [worktree]
-enabled = true
+show_branch_in_tui = true
 ```
 
 ## Checking Into Version Control

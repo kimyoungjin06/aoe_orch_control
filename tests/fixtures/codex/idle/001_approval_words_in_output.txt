@@ -1,0 +1,36 @@
+# FIXTURE: Codex - Idle with approval words in tool output
+# Captured from: gpt-5.6-sol session on 97.scoreboard, 2026-08-07
+# Capture date: 2026-08-07
+#
+# Expected status: Idle
+# Key indicators: the agent's own output contains 'approved_only' and
+#   'ALLOWED_POSTS'. No prompt is open. Substring matching on
+#   'approve'/'allow' misread this as Waiting and pushed 27 false
+#   Telegram approval cards overnight on 2026-08-06.
+#
+
+• 이번 전수 검토는 현재 등록부 14종을 그대로 평가하는 데서 끝내지 않고, 방금 정한 편성 원칙으로 재배치될 13종 작업안까지 연결하겠습니다. 각 시나리오를 정책 질문의 독
+  립성 → 서사 흐름 → 지표·관측창 정합성 → 실행 가능성 → 공개 준비도 → 유지·분리·통합·보류 순으로 판정하겠습니다. 먼저 정본과 생성 검증물을 한 번에 대조하겠습니다.
+
+• Updated Plan
+  └ □ 현행 14종·생성 검증·지표 정의·guardrail 정본 대조
+    □ 수정 원칙에 따른 13종 후보별 질문·흐름·지표·공개준비도 판정
+    □ 관점별 과밀·공백·통합·분리·연결 구조 검토
+    □ 전수 검토 결론과 우선 저작·정의 보강 순서 제안
+
+• Ran nl -ba /home/kimyoungjin06/.codex/memories/MEMORY.md | sed -n '77,108p'
+  │ jq 'keys, {version,scenario_count:(.scenarios|length),composition_rules,scenarios:[.scenarios[]|
+  │ {scenario_id,perspective,title_ko,question_ko,policy_job_ko,publication_status,approval_status,mapping_policy,primary_indicators,plot_count:(.plots|
+  │ … +3 lines
+  └     77    # Task Group: Scoreboard v2 core structure, authority contracts, and implementation audit
+        78
+    … +1316 lines (ctrl + t to view transcript)
+      ]
+    }
+
+• Ran jq -r '.scenarios[] | [.scenario_id,.perspective,.title_ko,.publication_status,.mapping_policy,([.plots[].indicator_ids[]]|unique|join(",")),
+  │ ([.plots[].time_ko]|unique|join(" / ")),([.plots[].graph_type // "verification"]|join(","))] | @tsv' design-v2/contracts/v2-scenario-registry.v1.draft.json
+  │ jq '.tally, .note_ko, .compiler_version, .registry_version' design-v2/contracts/v2-scenario-verification.generated.json
+  │ … +4 lines
+  └ v2-collab    협력    협력과 영향력    draft    approved_only    c-1,c-2,c-4,c-5-count,c-5-share     / 최신 완결연도    bar,profile,scatter
+    v2-chase    규모·산출    격차와 역전    draft    approved_only    a-2     / 완결연도 전체    time-series,time-series,time-series

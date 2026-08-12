@@ -118,14 +118,7 @@ impl SettingsView {
             .map(repo_config_to_profile)
             .unwrap_or_default();
 
-        let categories = vec![
-            SettingsCategory::Session,
-            SettingsCategory::Hooks,
-            SettingsCategory::Worktree,
-            SettingsCategory::Updates,
-            SettingsCategory::Tmux,
-            SettingsCategory::Sound,
-        ];
+        let categories = Self::categories_for_scope(SettingsScope::Global);
 
         let mut view = Self {
             profile: profile.to_string(),
@@ -156,6 +149,15 @@ impl SettingsView {
 
     /// Rebuild the fields list based on current category and scope
     pub(super) fn rebuild_fields(&mut self) {
+        let current_category = self.categories.get(self.selected_category).copied();
+        let categories = Self::categories_for_scope(self.scope);
+        if categories != self.categories {
+            self.selected_category = current_category
+                .and_then(|current| categories.iter().position(|item| *item == current))
+                .unwrap_or(0);
+            self.categories = categories;
+        }
+
         let category = self.categories[self.selected_category];
         let (scope_for_fields, global_ref, profile_ref) = match self.scope {
             SettingsScope::Global => (
@@ -169,7 +171,7 @@ impl SettingsView {
                 &self.profile_config,
             ),
             SettingsScope::Repo => (
-                SettingsScope::Profile,
+                SettingsScope::Repo,
                 &self.resolved_base,
                 &self.repo_as_profile,
             ),
@@ -180,6 +182,35 @@ impl SettingsView {
             self.selected_field = 0;
         }
         self.fields_scroll_offset = 0;
+    }
+
+    fn categories_for_scope(scope: SettingsScope) -> Vec<SettingsCategory> {
+        if scope == SettingsScope::Repo {
+            return vec![
+                SettingsCategory::Session,
+                SettingsCategory::Diff,
+                SettingsCategory::Hooks,
+                SettingsCategory::Worktree,
+                SettingsCategory::Cleanup,
+                SettingsCategory::Tmux,
+            ];
+        }
+
+        let mut categories = vec![
+            SettingsCategory::Session,
+            SettingsCategory::Diff,
+            SettingsCategory::Hooks,
+            SettingsCategory::Worktree,
+            SettingsCategory::Cleanup,
+            SettingsCategory::Updates,
+            SettingsCategory::Tmux,
+            SettingsCategory::Sound,
+        ];
+        categories.insert(1, SettingsCategory::Claude);
+        if scope == SettingsScope::Global {
+            categories.insert(0, SettingsCategory::General);
+        }
+        categories
     }
 
     /// Ensure the selected field is visible within the given viewport height.
@@ -282,5 +313,28 @@ impl SettingsView {
     /// Check if currently in an editing state (text field, list, dialog, etc.)
     pub fn is_editing(&self) -> bool {
         self.editing_input.is_some() || self.list_edit_state.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scope_categories_hide_non_overridable_settings() {
+        let global = SettingsView::categories_for_scope(SettingsScope::Global);
+        assert!(global.contains(&SettingsCategory::General));
+        assert!(global.contains(&SettingsCategory::Claude));
+
+        let profile = SettingsView::categories_for_scope(SettingsScope::Profile);
+        assert!(!profile.contains(&SettingsCategory::General));
+        assert!(profile.contains(&SettingsCategory::Claude));
+
+        let repo = SettingsView::categories_for_scope(SettingsScope::Repo);
+        assert!(!repo.contains(&SettingsCategory::General));
+        assert!(!repo.contains(&SettingsCategory::Claude));
+        assert!(!repo.contains(&SettingsCategory::Updates));
+        assert!(!repo.contains(&SettingsCategory::Sound));
+        assert!(repo.contains(&SettingsCategory::Diff));
     }
 }

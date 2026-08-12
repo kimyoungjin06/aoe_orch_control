@@ -383,6 +383,7 @@ impl SettingsView {
         };
 
         match key {
+            FieldKey::DefaultProfile => {}
             // Updates
             FieldKey::CheckEnabled => {
                 if let Some(ref mut u) = config.updates {
@@ -415,9 +416,20 @@ impl SettingsView {
                     w.auto_cleanup = None;
                 }
             }
+            FieldKey::ShowBranchInTui => {
+                if let Some(ref mut w) = config.worktree {
+                    w.show_branch_in_tui = None;
+                }
+            }
             FieldKey::DeleteBranchOnCleanup => {
                 if let Some(ref mut w) = config.worktree {
                     w.delete_branch_on_cleanup = None;
+                }
+            }
+            // Legacy cleanup
+            FieldKey::SandboxAutoCleanup => {
+                if let Some(ref mut s) = config.sandbox {
+                    s.auto_cleanup = None;
                 }
             }
             // Tmux
@@ -440,6 +452,38 @@ impl SettingsView {
             FieldKey::YoloModeDefault => {
                 if let Some(ref mut s) = config.session {
                     s.yolo_mode_default = None;
+                }
+            }
+            FieldKey::AutoOrchestrator => {
+                if let Some(ref mut s) = config.session {
+                    s.auto_orchestrator = None;
+                }
+            }
+            FieldKey::OrchestratorTitle => {
+                if let Some(ref mut s) = config.session {
+                    s.orchestrator_title = None;
+                }
+            }
+            FieldKey::OrchestratorCommand => {
+                if let Some(ref mut s) = config.session {
+                    s.orchestrator_command = None;
+                }
+            }
+            // Claude
+            FieldKey::ClaudeConfigDir => {
+                if let Some(ref mut c) = config.claude {
+                    c.config_dir = None;
+                }
+            }
+            // Diff
+            FieldKey::DiffDefaultBranch => {
+                if let Some(ref mut d) = config.diff {
+                    d.default_branch = None;
+                }
+            }
+            FieldKey::DiffContextLines => {
+                if let Some(ref mut d) = config.diff {
+                    d.context_lines = None;
                 }
             }
             // Sound

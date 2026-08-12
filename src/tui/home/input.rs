@@ -462,7 +462,11 @@ impl HomeView {
                 };
 
                 let repo_path = std::path::PathBuf::from(&inst.project_path);
-                match DiffView::new(repo_path) {
+                let config = self
+                    .instance_configs
+                    .get(session_id)
+                    .unwrap_or(&self.effective_config);
+                match DiffView::new(repo_path, config) {
                     Ok(view) => self.diff_view = Some(view),
                     Err(e) => {
                         tracing::error!("Failed to open diff view: {}", e);
@@ -496,13 +500,21 @@ impl HomeView {
                                 .map(|wt| wt.branch.clone()),
                             has_sandbox: inst.sandbox_info.as_ref().is_some_and(|s| s.enabled),
                         };
+                        let user_config = self
+                            .instance_configs
+                            .get(session_id)
+                            .unwrap_or(&self.effective_config);
 
-                        self.unified_delete_dialog =
-                            Some(UnifiedDeleteDialog::new(inst.title.clone(), config));
+                        self.unified_delete_dialog = Some(UnifiedDeleteDialog::new(
+                            inst.title.clone(),
+                            config,
+                            user_config,
+                        ));
                     } else {
                         self.unified_delete_dialog = Some(UnifiedDeleteDialog::new(
                             "Unknown Session".to_string(),
                             DeleteDialogConfig::default(),
+                            &self.effective_config,
                         ));
                     }
                 } else if let Some(group_path) = &self.selected_group {

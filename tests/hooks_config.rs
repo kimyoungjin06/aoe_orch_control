@@ -2,8 +2,8 @@
 
 use anyhow::Result;
 use forager::session::{
-    merge_configs, merge_repo_config, resolve_config, save_config, save_profile_config, Config,
-    HooksConfig, HooksConfigOverride, ProfileConfig, RepoConfig,
+    merge_configs, merge_repo_config_unchecked, resolve_config, save_config, save_profile_config,
+    Config, HooksConfig, HooksConfigOverride, ProfileConfig, RepoConfig,
 };
 use serial_test::serial;
 
@@ -55,7 +55,7 @@ fn test_repo_hooks_override_global_per_field() -> Result<()> {
         ..Default::default()
     };
 
-    let merged = merge_repo_config(resolved, &repo);
+    let merged = merge_repo_config_unchecked(resolved, &repo);
 
     // Repo on_create should override global
     assert_eq!(merged.hooks.on_create, vec!["repo_create"]);
@@ -86,7 +86,7 @@ fn test_repo_hooks_override_both_fields() -> Result<()> {
         ..Default::default()
     };
 
-    let merged = merge_repo_config(resolved, &repo);
+    let merged = merge_repo_config_unchecked(resolved, &repo);
     assert_eq!(merged.hooks.on_create, vec!["repo_create"]);
     assert_eq!(merged.hooks.on_launch, vec!["repo_launch"]);
 
@@ -228,7 +228,7 @@ fn test_three_level_resolution() -> Result<()> {
         ..Default::default()
     };
 
-    let final_config = merge_repo_config(resolved, &repo);
+    let final_config = merge_repo_config_unchecked(resolved, &repo);
     // on_create: profile > global (repo is empty, so profile value stays)
     assert_eq!(final_config.hooks.on_create, vec!["profile_create"]);
     // on_launch: repo > profile > global

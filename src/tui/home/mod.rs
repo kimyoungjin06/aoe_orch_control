@@ -27,6 +27,7 @@ use super::dialogs::{
     NewSessionData, NewSessionDialog, RenameDialog, UnifiedDeleteDialog, WelcomeDialog,
 };
 use super::diff::DiffView;
+use super::preview_poller::{PreviewKind, PreviewPoller, PreviewRequest};
 use super::settings::SettingsView;
 use super::status_poller::StatusPoller;
 
@@ -44,6 +45,7 @@ pub(super) struct PreviewCache {
     pub(super) content: String,
     pub(super) last_refresh: Instant,
     pub(super) dimensions: (u16, u16),
+    pub(super) terminal_running: bool,
 }
 
 impl Default for PreviewCache {
@@ -53,7 +55,18 @@ impl Default for PreviewCache {
             content: String::new(),
             last_refresh: Instant::now(),
             dimensions: (0, 0),
+            terminal_running: false,
         }
+    }
+}
+
+impl PreviewCache {
+    fn needs_refresh(&self, session_id: &str, dimensions: (u16, u16)) -> bool {
+        const PREVIEW_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(750);
+
+        self.session_id.as_deref() != Some(session_id)
+            || self.dimensions != dimensions
+            || self.last_refresh.elapsed() >= PREVIEW_REFRESH_INTERVAL
     }
 }
 
@@ -319,7 +332,6 @@ pub struct HomeView {
 
     // Performance: background status polling
     pub(super) status_poller: StatusPoller,
-    pub(super) pending_status_refresh: bool,
 
     // Performance: background deletion
     pub(super) deletion_poller: DeletionPoller,
@@ -332,11 +344,17 @@ pub struct HomeView {
     pub(super) on_launch_hooks_ran: HashSet<String>,
 
     // Performance: preview caching
+    pub(super) preview_poller: PreviewPoller,
+    pub(super) pending_preview_refresh: bool,
     pub(super) preview_cache: PreviewCache,
     pub(super) terminal_preview_cache: PreviewCache,
 
     // Sound config for state transition sounds
     pub(super) sound_config: crate::sound::SoundConfig,
+
+    // Resolved active-profile config for all runtime decisions in this view
+    pub(super) effective_config: crate::session::Config,
+    pub(super) instance_configs: HashMap<String, crate::session::Config>,
 
     // Settings view
     pub(super) settings_view: Option<SettingsView>,
@@ -370,14 +388,17 @@ pub(super) use crate::offdesk::{
 impl HomeView {
     pub fn new(storage: Storage, available_tools: AvailableTools) -> anyhow::Result<Self> {
         let (mut instances, groups) = storage.load_with_groups()?;
+        let resolved = resolve_config(storage.profile())?;
 
         for inst in &mut instances {
             inst.update_search_cache();
         }
 
         // Backfill orchestrator sessions for profiles created before this feature existed.
-        let created =
-            crate::session::auto_orchestrator::ensure_for_existing_sessions(&mut instances);
+        let created = crate::session::auto_orchestrator::ensure_for_existing_sessions(
+            &mut instances,
+            &resolved,
+        );
         if created > 0 {
             let group_tree = GroupTree::new_with_groups(&instances, &groups);
             storage.save_with_groups(&instances, &group_tree)?;
@@ -391,13 +412,10 @@ impl HomeView {
         let flat_items = flatten_tree(&group_tree, &instances);
 
         // Load the resolved config to get sound config
-        let resolved = resolve_config(storage.profile());
-        let sound_config = resolved
-            .as_ref()
-            .map(|config| config.sound.clone())
-            .unwrap_or_default();
+        let sound_config = resolved.sound.clone();
         let offdesk_resume = load_offdesk_summary(storage.profile());
         let profile_name = storage.profile().to_string();
+        let instance_configs = build_instance_configs(&profile_name, &instances, &resolved);
 
         let mut view = Self {
             storage,
@@ -426,14 +444,17 @@ impl HomeView {
             filtered_items: None,
             available_tools,
             status_poller: StatusPoller::new(),
-            pending_status_refresh: false,
             deletion_poller: DeletionPoller::new(),
             creation_poller: CreationPoller::new(),
             creation_cancelled: false,
             on_launch_hooks_ran: HashSet::new(),
+            preview_poller: PreviewPoller::new(),
+            pending_preview_refresh: false,
             preview_cache: PreviewCache::default(),
             terminal_preview_cache: PreviewCache::default(),
             sound_config,
+            effective_config: resolved,
+            instance_configs,
             settings_view: None,
             projects_view: None,
             settings_close_confirm: false,
@@ -455,6 +476,7 @@ impl HomeView {
 
     pub fn reload(&mut self) -> anyhow::Result<()> {
         let (mut instances, groups) = self.storage.load_with_groups()?;
+        let resolved = resolve_config(self.storage.profile())?;
 
         for inst in &mut instances {
             if let Some(prev) = self.instance_map.get(&inst.id) {
@@ -467,8 +489,10 @@ impl HomeView {
         }
 
         // Backfill orchestrator sessions for pre-existing project sessions when enabled.
-        let created =
-            crate::session::auto_orchestrator::ensure_for_existing_sessions(&mut instances);
+        let created = crate::session::auto_orchestrator::ensure_for_existing_sessions(
+            &mut instances,
+            &resolved,
+        );
         if created > 0 {
             let group_tree = GroupTree::new_with_groups(&instances, &groups);
             self.storage.save_with_groups(&instances, &group_tree)?;
@@ -485,6 +509,10 @@ impl HomeView {
         self.flat_items = flatten_tree(&self.group_tree, &self.instances);
         self.offdesk_resume = load_offdesk_summary(self.storage.profile());
         self.orchestration = load_orchestration_summary(self.storage.profile());
+        self.sound_config = resolved.sound.clone();
+        self.instance_configs =
+            build_instance_configs(self.storage.profile(), &self.instances, &resolved);
+        self.effective_config = resolved;
 
         if self.cursor >= self.flat_items.len() && !self.flat_items.is_empty() {
             self.cursor = self.flat_items.len() - 1;
@@ -497,11 +525,68 @@ impl HomeView {
     /// Request a status refresh in the background (non-blocking).
     /// Call `apply_status_updates` to check for and apply results.
     pub fn request_status_refresh(&mut self) {
-        if !self.pending_status_refresh {
-            let instances: Vec<Instance> = self.instances.clone();
-            self.status_poller.request_refresh(instances);
-            self.pending_status_refresh = true;
+        self.status_poller
+            .request_refresh(&self.instances, self.selected_session.as_deref());
+    }
+
+    pub(super) fn request_preview_refresh_if_needed(
+        &mut self,
+        kind: PreviewKind,
+        width: u16,
+        height: u16,
+    ) {
+        if self.pending_preview_refresh || width == 0 || height == 0 {
+            return;
         }
+
+        let Some(session_id) = self.selected_session.clone() else {
+            return;
+        };
+        let dimensions = (width, height);
+        let cache = match kind {
+            PreviewKind::Agent => &self.preview_cache,
+            PreviewKind::Terminal => &self.terminal_preview_cache,
+        };
+        if !cache.needs_refresh(&session_id, dimensions) {
+            return;
+        }
+
+        let Some(instance) = self.instance_map.get(&session_id).cloned() else {
+            return;
+        };
+        self.pending_preview_refresh = self.preview_poller.request_refresh(PreviewRequest {
+            instance,
+            kind,
+            width,
+            height,
+        });
+    }
+
+    pub fn apply_preview_update(&mut self) -> bool {
+        let Some(update) = self.preview_poller.try_recv_update() else {
+            return false;
+        };
+        self.pending_preview_refresh = false;
+
+        if self.selected_session.as_deref() == Some(update.session_id.as_str())
+            && self.view_mode
+                == match update.kind {
+                    PreviewKind::Agent => ViewMode::Agent,
+                    PreviewKind::Terminal => ViewMode::Terminal,
+                }
+        {
+            let cache = match update.kind {
+                PreviewKind::Agent => &mut self.preview_cache,
+                PreviewKind::Terminal => &mut self.terminal_preview_cache,
+            };
+            cache.session_id = Some(update.session_id);
+            cache.content = update.content;
+            cache.dimensions = update.dimensions;
+            cache.terminal_running = update.terminal_running;
+            cache.last_refresh = Instant::now();
+        }
+
+        true
     }
 
     /// Apply any pending status updates from the background poller.
@@ -532,7 +617,6 @@ impl HomeView {
                     }
                 }
             }
-            self.pending_status_refresh = false;
             return true;
         }
         false
@@ -586,7 +670,7 @@ impl HomeView {
     /// Request background session creation. Used for slow hooks to avoid blocking UI.
     pub fn request_creation(
         &mut self,
-        data: NewSessionData,
+        mut data: NewSessionData,
         hooks: Option<crate::session::HooksConfig>,
     ) {
         let has_hooks = hooks
@@ -598,12 +682,49 @@ impl HomeView {
         }
 
         self.creation_cancelled = false;
+        let config = match crate::session::resolve_config_with_repo(
+            self.storage.profile(),
+            std::path::Path::new(&data.path),
+        ) {
+            Ok(config) => config,
+            Err(error) => {
+                if let Some(dialog) = &mut self.new_dialog {
+                    dialog.set_loading(false);
+                    dialog.set_error(format!("Failed to resolve active profile: {error:#}"));
+                }
+                return;
+            }
+        };
+        self.apply_effective_session_defaults(&mut data, &config);
         let request = CreationRequest {
             data,
             existing_instances: self.instances.clone(),
             hooks,
+            config,
         };
         self.creation_poller.request_creation(request);
+    }
+
+    pub(super) fn apply_effective_session_defaults(
+        &self,
+        data: &mut NewSessionData,
+        config: &crate::session::Config,
+    ) {
+        if !data.tool_explicitly_selected {
+            if let Some(tool) = config
+                .session
+                .default_tool
+                .as_deref()
+                .map(str::trim)
+                .filter(|tool| !tool.is_empty())
+                .filter(|tool| self.available_tools.available_list().contains(tool))
+            {
+                data.tool = tool.to_string();
+            }
+        }
+        if !data.yolo_explicitly_selected {
+            data.yolo_mode = config.session.yolo_mode_default;
+        }
     }
 
     /// Mark the current creation operation as cancelled (user pressed Esc)
@@ -650,10 +771,16 @@ impl HomeView {
             } => {
                 let instance = *instance;
                 self.instances.push(instance.clone());
-                let _ = crate::session::auto_orchestrator::maybe_create_for_instance(
-                    &mut self.instances,
-                    &instance,
-                );
+                if let Ok(config) = crate::session::resolve_config_with_repo(
+                    self.storage.profile(),
+                    std::path::Path::new(&instance.project_path),
+                ) {
+                    let _ = crate::session::auto_orchestrator::maybe_create_for_instance(
+                        &mut self.instances,
+                        &instance,
+                        &config,
+                    );
+                }
                 self.group_tree = GroupTree::new_with_groups(&self.instances, &self.groups);
                 if !instance.group_path.is_empty() {
                     self.group_tree.create_group(&instance.group_path);
@@ -803,15 +930,23 @@ impl HomeView {
         id: &str,
         size: Option<(u16, u16)>,
     ) -> anyhow::Result<()> {
+        let config = self.resolved_config_for_instance(id)?;
         if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
-            inst.start_terminal_with_size(size)?;
+            inst.start_terminal_with_size(size, &config)?;
         }
         if let Some(inst) = self.instance_map.get_mut(id) {
-            inst.start_terminal_with_size(size)?;
+            inst.start_terminal_with_size(size, &config)?;
         }
         self.storage
             .save_with_groups(&self.instances, &self.group_tree)?;
         Ok(())
+    }
+
+    pub fn resolved_config_for_instance(&self, id: &str) -> anyhow::Result<crate::session::Config> {
+        if let Some(config) = self.instance_configs.get(id) {
+            return Ok(config.clone());
+        }
+        resolve_config(self.storage.profile())
     }
 
     pub fn select_session_by_id(&mut self, session_id: &str) {
@@ -847,10 +982,36 @@ impl HomeView {
     /// Call this after settings are saved to pick up any changes.
     pub fn refresh_from_config(&mut self) {
         if let Ok(config) = resolve_config(self.storage.profile()) {
-            // Refresh sound config
             self.sound_config = config.sound.clone();
+            self.instance_configs =
+                build_instance_configs(self.storage.profile(), &self.instances, &config);
+            self.effective_config = config;
         }
     }
+}
+
+fn build_instance_configs(
+    profile: &str,
+    instances: &[Instance],
+    fallback: &crate::session::Config,
+) -> HashMap<String, crate::session::Config> {
+    instances
+        .iter()
+        .map(|instance| {
+            let config = crate::session::resolve_config_with_repo(
+                profile,
+                std::path::Path::new(&instance.project_path),
+            )
+            .unwrap_or_else(|error| {
+                tracing::warn!(
+                    "Failed to resolve repo config for '{}': {error:#}",
+                    instance.project_path
+                );
+                fallback.clone()
+            });
+            (instance.id.clone(), config)
+        })
+        .collect()
 }
 
 fn load_offdesk_summary(profile: &str) -> OffdeskResumeSummary {

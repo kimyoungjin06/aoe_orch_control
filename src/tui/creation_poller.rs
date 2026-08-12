@@ -8,7 +8,7 @@ use std::thread;
 
 use crate::session::builder::{self, CreatedWorktree, InstanceParams};
 use crate::session::repo_config::{self, HookProgress, HooksConfig};
-use crate::session::Instance;
+use crate::session::{Config, Instance};
 use crate::tui::dialogs::NewSessionData;
 
 pub struct CreationRequest {
@@ -17,6 +17,8 @@ pub struct CreationRequest {
     pub existing_instances: Vec<Instance>,
     /// Trusted hooks to execute after instance creation (already approved by user).
     pub hooks: Option<HooksConfig>,
+    /// Effective configuration for the active profile at request time.
+    pub config: Config,
 }
 
 #[derive(Debug)]
@@ -89,6 +91,7 @@ impl CreationPoller {
     ) -> CreationResult {
         let data = request.data;
         let hooks = request.hooks;
+        let config = request.config;
 
         let existing_titles: Vec<&str> = request
             .existing_instances
@@ -106,7 +109,7 @@ impl CreationPoller {
             yolo_mode: data.yolo_mode,
         };
 
-        let build_result = match builder::build_instance(params, &existing_titles) {
+        let build_result = match builder::build_instance(params, &existing_titles, &config) {
             Ok(r) => r,
             Err(e) => return CreationResult::Error(format!("{:#}", e)),
         };

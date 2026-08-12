@@ -6,6 +6,129 @@ use super::utils::strip_ansi;
 
 const SPINNER_CHARS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+/// How far up from the bottom of the pane an interactive prompt can start.
+///
+/// Agent tools draw their prompt, options and footer at the bottom; anything
+/// further up is scrolled-back tool output. Scanning the whole capture made a
+/// session that merely printed the word "approved" read as waiting for input.
+const PROMPT_SCAN_LINES: usize = 8;
+
+/// Longest line still plausible as interactive UI. Prompts and menu rows are
+/// short; diff hunks, grep hits and JSON rows are not.
+const PROMPT_MAX_CHARS: usize = 80;
+
+/// Diff, tree-drawing and table framing that only ever appears in captured
+/// tool output, never at the start of a prompt line.
+const OUTPUT_LINE_MARKERS: &[char] = &['+', '|', '│', '└', '├', '╭', '╰'];
+
+/// True when `needle` occurs in `haystack` on identifier boundaries.
+///
+/// Without this, `approve` matches `reviewing_not_approved` and `allow`
+/// matches `ALLOWED_POSTS`, so any agent working on review or permission code
+/// reports itself as waiting for approval.
+fn contains_word(haystack: &str, needle: &str) -> bool {
+    let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
+    let mut from = 0;
+    while let Some(offset) = haystack[from..].find(needle) {
+        let start = from + offset;
+        let end = start + needle.len();
+        let boundary_before = haystack[..start].chars().next_back().is_none_or(|c| {
+            // Only guard the boundary when the needle itself starts with a
+            // word character; `(y/n)` may legitimately follow one.
+            !needle.starts_with(is_word_char) || !is_word_char(c)
+        });
+        let boundary_after = haystack[end..]
+            .chars()
+            .next()
+            .is_none_or(|c| !needle.ends_with(is_word_char) || !is_word_char(c));
+        if boundary_before && boundary_after {
+            return true;
+        }
+        from = end;
+    }
+    false
+}
+
+/// True when a line looks like interactive UI rather than captured output.
+fn is_prompt_like(trimmed: &str) -> bool {
+    if trimmed.is_empty() || trimmed.chars().count() > PROMPT_MAX_CHARS {
+        return false;
+    }
+    if trimmed.starts_with(OUTPUT_LINE_MARKERS) {
+        return false;
+    }
+    // grep and diff hunks render as "149:  code" or "25 +  code"; menu rows
+    // render as "1. Yes", so only reject a leading number followed by a
+    // non-menu separator.
+    let after_digits = trimmed.trim_start_matches(|c: char| c.is_ascii_digit());
+    if after_digits.len() < trimmed.len() && after_digits.trim_start().starts_with([':', '+', '-'])
+    {
+        return false;
+    }
+    true
+}
+
+/// True when the bottom of the pane contains a Codex activity status line.
+///
+/// Ordinary output frequently contains words such as "working" and
+/// "thinking". Codex's activity line has a much narrower shape, with the
+/// activity word followed by parenthesized timing/status detail.
+fn has_codex_activity_status(non_empty_lines: &[&str]) -> bool {
+    non_empty_lines
+        .iter()
+        .rev()
+        .take(PROMPT_SCAN_LINES)
+        .any(|line| {
+            let clean = strip_ansi(line);
+            let trimmed = clean.trim().trim_start_matches('•').trim_start();
+            ["working (", "thinking ("]
+                .iter()
+                .any(|prefix| trimmed.starts_with(prefix))
+        })
+}
+
+/// Scan the bottom of the pane for one of `prompts`, ignoring matches that sit
+/// inside tool output rather than in an actual prompt.
+fn has_approval_prompt(non_empty_lines: &[&str], prompts: &[&str]) -> bool {
+    non_empty_lines
+        .iter()
+        .rev()
+        .take(PROMPT_SCAN_LINES)
+        .any(|line| {
+            let clean = strip_ansi(line);
+            let trimmed = clean.trim();
+            if !is_prompt_like(trimmed) || !prompts.iter().any(|p| contains_word(trimmed, p)) {
+                return false;
+            }
+            // Bare approval words also appear in ordinary agent output. A
+            // standalone prompt is a question; non-question selector hints
+            // carry their own explicit keyboard marker.
+            trimmed.contains('?')
+                || ["(y/n)", "[y/n]", "enter to select", "esc to cancel"]
+                    .iter()
+                    .any(|marker| contains_word(trimmed, marker))
+        })
+}
+
+/// True when the bottom of the pane shows a numbered selection menu.
+fn has_numbered_selection(non_empty_lines: &[&str]) -> bool {
+    non_empty_lines
+        .iter()
+        .rev()
+        .take(PROMPT_SCAN_LINES)
+        .any(|line| {
+            let clean = strip_ansi(line);
+            let trimmed = clean.trim();
+            let Some(after_cursor) = trimmed.strip_prefix('❯') else {
+                return false;
+            };
+            let after_cursor = after_cursor.trim_start();
+            ["1.", "2.", "3."]
+                .iter()
+                .any(|n| after_cursor.starts_with(n))
+        })
+}
+
 pub fn detect_status_from_content(content: &str, tool: &str, _fg_pid: Option<u32>) -> Status {
     crate::agents::get_agent(tool)
         .map(|a| (a.detect_status)(content))
@@ -333,11 +456,13 @@ pub fn detect_codex_status(raw_content: &str) -> Status {
         .join("\n");
     let last_lines_lower = last_lines.to_lowercase();
 
-    // RUNNING: Codex shows "esc to interrupt" or similar when processing
+    // RUNNING: Codex shows "esc to interrupt" or similar when processing. The
+    // interrupt hints are specific enough to trust anywhere in the tail;
+    // "working"/"thinking" are ordinary words that also occur in tool output,
+    // so they only count on the status line at the bottom.
     if last_lines_lower.contains("esc to interrupt")
         || last_lines_lower.contains("ctrl+c to interrupt")
-        || last_lines_lower.contains("working")
-        || last_lines_lower.contains("thinking")
+        || has_codex_activity_status(&non_empty_lines)
     {
         return Status::Running;
     }
@@ -350,9 +475,11 @@ pub fn detect_codex_status(raw_content: &str) -> Status {
         }
     }
 
-    // WAITING: Approval prompts (Codex uses ask-for-approval modes)
-    let approval_prompts = [
+    // WAITING: Approval prompts (Codex uses ask-for-approval modes) and
+    // selection menus, both drawn at the bottom of the pane.
+    const CODEX_APPROVAL_PROMPTS: &[&str] = &[
         "approve",
+        "approval",
         "allow",
         "(y/n)",
         "[y/n]",
@@ -360,30 +487,13 @@ pub fn detect_codex_status(raw_content: &str) -> Status {
         "proceed?",
         "execute?",
         "run command?",
+        "enter to select",
+        "esc to cancel",
     ];
-    for prompt in &approval_prompts {
-        if last_lines_lower.contains(prompt) {
-            return Status::Waiting;
-        }
-    }
-
-    // WAITING: Selection menus
-    if last_lines_lower.contains("enter to select") || last_lines_lower.contains("esc to cancel") {
+    if has_approval_prompt(&non_empty_lines, CODEX_APPROVAL_PROMPTS)
+        || has_numbered_selection(&non_empty_lines)
+    {
         return Status::Waiting;
-    }
-
-    // WAITING: Numbered selection
-    for line in &lines {
-        let trimmed = line.trim();
-        if trimmed.starts_with("❯") && trimmed.len() > 2 {
-            let after_cursor = trimmed.get(3..).unwrap_or("").trim_start();
-            if after_cursor.starts_with("1.")
-                || after_cursor.starts_with("2.")
-                || after_cursor.starts_with("3.")
-            {
-                return Status::Waiting;
-            }
-        }
     }
 
     // WAITING: Input prompt ready
@@ -437,20 +547,19 @@ pub fn detect_gemini_status(raw_content: &str) -> Status {
         }
     }
 
-    // WAITING: Approval prompts
-    let approval_prompts = [
+    // WAITING: Approval prompts, drawn at the bottom of the pane
+    const GEMINI_APPROVAL_PROMPTS: &[&str] = &[
         "(y/n)",
         "[y/n]",
         "allow",
         "approve",
+        "approval",
         "execute?",
         "enter to select",
         "esc to cancel",
     ];
-    for prompt in &approval_prompts {
-        if last_lines_lower.contains(prompt) {
-            return Status::Waiting;
-        }
+    if has_approval_prompt(&non_empty_lines, GEMINI_APPROVAL_PROMPTS) {
+        return Status::Waiting;
     }
 
     // WAITING: Input prompt
@@ -676,10 +785,13 @@ mod tests {
             Status::Running
         );
         assert_eq!(
-            detect_codex_status("thinking about your request"),
+            detect_codex_status("• Thinking (4s • esc to interrupt)"),
             Status::Running
         );
-        assert_eq!(detect_codex_status("working on task"), Status::Running);
+        assert_eq!(
+            detect_codex_status("• Working (12s • esc to interrupt)"),
+            Status::Running
+        );
         assert_eq!(detect_codex_status("generating ⠋"), Status::Running);
     }
 
@@ -702,6 +814,99 @@ mod tests {
     fn test_detect_codex_status_idle() {
         assert_eq!(detect_codex_status("file saved"), Status::Idle);
         assert_eq!(detect_codex_status("random output text"), Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_codex_status_ignores_approval_words_in_output() {
+        // Captured from a session auditing a review workflow: the agent's own
+        // diff and grep output mention approval, but nothing waits on the
+        // operator. This shape pushed 27 false "waiting" cards in one night.
+        let content = concat!(
+            "• Ran jq '{pairs:[.pairs[]|select(.pair_id==\"a-1\")]}' audit.json\n",
+            " 25 +    def test_review_is_explicitly_not_an_approved_registry(self):\n",
+            " 27 +        self.assertEqual('reviewing_not_approved', self.review)\n",
+            "149:        if path not in ALLOWED_POSTS:\n",
+            "• Explored\n",
+            "  └ Read MEMORY.md",
+        );
+        assert_eq!(detect_codex_status(content), Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_codex_status_waiting_on_real_prompt() {
+        let content = concat!(
+            "• Ran cargo test\n",
+            "  └ 42 passed\n",
+            "Allow Codex to run `rm -rf target`?\n",
+            "❯ 1. Yes, run it\n",
+            "  2. No, and tell Codex what to do differently\n",
+            "  Press Enter to select · Esc to cancel",
+        );
+        assert_eq!(detect_codex_status(content), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_codex_status_running_from_status_line() {
+        let content = concat!(
+            "• Explored\n",
+            "  └ Read MEMORY.md\n",
+            "• Working (2m 27s • esc to interrupt) · 11 background terminals running\n",
+            "› Write tests for @filename\n",
+            "  gpt-5.6-sol xhigh · ~/Desktop/Workspace/97.scoreboard",
+        );
+        assert_eq!(detect_codex_status(content), Status::Running);
+    }
+
+    #[test]
+    fn test_detect_codex_status_prompt_beats_stale_activity_word() {
+        // "working" scrolled up in tool output must not mask an open prompt.
+        let content = concat!(
+            "• Ran ls\n",
+            "  └ changed working directory to /tmp\n",
+            "  └ ok\n  └ ok\n  └ ok\n  └ ok\n  └ ok\n  └ ok\n",
+            "Approve this change?\n",
+            "❯ 1. Yes\n",
+            "  2. No",
+        );
+        assert_eq!(detect_codex_status(content), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_codex_status_prompt_beats_adjacent_activity_word_in_output() {
+        let content = concat!(
+            "changed working directory to /tmp\n",
+            "Approve this change?\n",
+            "❯ 1. Yes\n",
+            "  2. No",
+        );
+        assert_eq!(detect_codex_status(content), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_codex_status_ignores_bare_approval_sentence() {
+        assert_eq!(
+            detect_codex_status("This change still needs approval"),
+            Status::Idle
+        );
+    }
+
+    #[test]
+    fn test_detect_gemini_status_ignores_approval_words_in_output() {
+        let content = concat!(
+            "read src/policy.py\n",
+            "149:        if path not in ALLOWED_POSTS:\n",
+            "  └ wrote 3 files",
+        );
+        assert_eq!(detect_gemini_status(content), Status::Idle);
+    }
+
+    #[test]
+    fn test_contains_word_respects_identifier_boundaries() {
+        assert!(contains_word("approve this change?", "approve"));
+        assert!(contains_word("run it? (y/n)", "(y/n)"));
+        assert!(!contains_word("reviewing_not_approved", "approve"));
+        assert!(!contains_word("allowed_posts", "allow"));
+        assert!(!contains_word("disallow", "allow"));
     }
 
     #[test]

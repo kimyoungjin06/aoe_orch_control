@@ -9,13 +9,31 @@ use std::fs;
 use tempfile::TempDir;
 use tui_input::Input;
 
-use super::{HomeView, OffdeskResumeSummary, ViewMode};
+use super::{HomeView, OffdeskResumeSummary, PreviewCache, ViewMode};
 use crate::offdesk::{OffdeskCloseoutStateSummary, OffdeskNextSafeAction};
 use crate::session::{Instance, Item, Storage};
 use crate::tmux::AvailableTools;
 use crate::tui::app::Action;
-use crate::tui::dialogs::{InfoDialog, NewSessionDialog};
+use crate::tui::dialogs::{InfoDialog, NewSessionData, NewSessionDialog};
 use crate::tui::styles::Theme;
+
+#[test]
+fn preview_cache_refreshes_only_for_changed_or_stale_content() {
+    let mut cache = PreviewCache {
+        session_id: Some("session-a".to_string()),
+        content: "cached".to_string(),
+        last_refresh: std::time::Instant::now(),
+        dimensions: (80, 24),
+        terminal_running: false,
+    };
+
+    assert!(!cache.needs_refresh("session-a", (80, 24)));
+    assert!(cache.needs_refresh("session-b", (80, 24)));
+    assert!(cache.needs_refresh("session-a", (100, 30)));
+
+    cache.last_refresh = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    assert!(cache.needs_refresh("session-a", (80, 24)));
+}
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
@@ -102,6 +120,76 @@ fn create_test_env_with_sessions(count: usize) -> TestEnv {
     let tools = AvailableTools::with_tools(&["claude"]);
     let view = HomeView::new(storage, tools).unwrap();
     TestEnv { _temp: temp, view }
+}
+
+#[test]
+#[serial]
+fn worktree_branch_visibility_follows_effective_profile_config() {
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+    let storage = Storage::new("test").unwrap();
+    let mut instance = Instance::new("work-session", "/tmp/work");
+    instance.worktree_info = Some(crate::session::WorktreeInfo {
+        branch: "feature-visible".to_string(),
+        main_repo_path: "/tmp/main".to_string(),
+        managed_by_forager: true,
+        created_at: Utc::now(),
+        cleanup_on_delete: true,
+    });
+    storage.save(&[instance]).unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(storage, tools).unwrap();
+    view.instance_configs.clear();
+    view.list_width = 60;
+
+    let render_list_text = |view: &mut HomeView| {
+        render_home_text(view, 120, 20)
+            .lines()
+            .map(|line| line.chars().take(60).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    view.effective_config.worktree.show_branch_in_tui = true;
+    assert!(render_list_text(&mut view).contains("feature-visible"));
+
+    view.effective_config.worktree.show_branch_in_tui = false;
+    assert!(!render_list_text(&mut view).contains("feature-visible"));
+}
+
+#[test]
+#[serial]
+fn repo_session_defaults_do_not_override_explicit_dialog_choices() {
+    let env = create_test_env_empty();
+    let mut data = NewSessionData {
+        title: "test".to_string(),
+        path: "/tmp/test".to_string(),
+        group: String::new(),
+        tool: "codex".to_string(),
+        worktree_branch: None,
+        create_new_branch: true,
+        yolo_mode: false,
+        tool_explicitly_selected: false,
+        yolo_explicitly_selected: false,
+    };
+    let mut config = crate::session::Config::default();
+    config.session.default_tool = Some("claude".to_string());
+    config.session.yolo_mode_default = true;
+
+    env.view
+        .apply_effective_session_defaults(&mut data, &config);
+    assert_eq!(data.tool, "claude");
+    assert!(data.yolo_mode);
+
+    data.tool_explicitly_selected = true;
+    data.yolo_explicitly_selected = true;
+    data.tool = "codex".to_string();
+    data.yolo_mode = false;
+    env.view
+        .apply_effective_session_defaults(&mut data, &config);
+    assert_eq!(data.tool, "codex");
+    assert!(!data.yolo_mode);
 }
 
 fn create_test_env_with_groups() -> TestEnv {
@@ -1045,6 +1133,26 @@ fn test_cursor_bounds_at_bottom() {
     env.view.cursor = 4;
     env.view.handle_key(key(KeyCode::Down));
     assert_eq!(env.view.cursor, 4);
+}
+
+#[test]
+#[serial]
+fn home_list_scrolls_to_keep_repeated_down_selection_visible() {
+    let mut env = create_test_env_with_sessions(20);
+    for _ in 0..15 {
+        env.view.handle_key(key(KeyCode::Down));
+    }
+    assert_eq!(env.view.cursor, 15);
+
+    let rendered = render_home_text(&mut env.view, 100, 10);
+    assert!(
+        rendered.contains("session15"),
+        "selected row must stay inside the viewport after repeated Down presses:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("│○ session0"),
+        "the list should scroll instead of leaving the first page fixed:\n{rendered}"
+    );
 }
 
 #[test]
