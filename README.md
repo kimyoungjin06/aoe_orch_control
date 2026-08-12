@@ -6,7 +6,7 @@
     <a href="https://github.com/kimyoungjin06/forager-cli/actions/workflows/ci.yml"><img src="https://github.com/kimyoungjin06/forager-cli/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
     <a href="https://github.com/kimyoungjin06/forager-cli/releases"><img src="https://img.shields.io/github/v/release/kimyoungjin06/forager-cli" alt="GitHub release"></a>
-    <a href="https://blog.rust-lang.org/2023/11/16/Rust-1.74.0.html"><img src="https://img.shields.io/badge/MSRV-1.74-blue?logo=rust" alt="MSRV"></a>
+    <a href="https://blog.rust-lang.org/2025/06/26/Rust-1.88.0/"><img src="https://img.shields.io/badge/MSRV-1.88-blue?logo=rust" alt="MSRV"></a>
     <a href="https://github.com/kimyoungjin06/forager-cli/stargazers"><img src="https://img.shields.io/github/stars/kimyoungjin06/forager-cli?style=social" alt="GitHub stars"></a>
     <a href="https://kimyoungjin06.github.io/forager-cli/credits.html"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fkimyoungjin06%2Fforager-cli%2Fcredit%2Fcredits.json&query=%24.contributors.length&label=contributors&color=blue&logo=github" alt="Contributors"></a>
   </p>
@@ -95,7 +95,7 @@ curl -fsSL \
 
 # Build from source
 git clone https://github.com/kimyoungjin06/forager-cli
-cd forager && cargo build --release
+cd forager-cli && cargo build --release
 ```
 
 The install script and release artifacts now use `forager` as the primary

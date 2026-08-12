@@ -26,7 +26,7 @@ fn main() {
 }
 
 fn generate_cli_docs() {
-    let markdown = clap_markdown::help_markdown::<forager::cli::Cli>();
+    let markdown = clap_markdown::help_markdown::<forager::cli::Cli>().replace('—', "-");
 
     let docs_dir = Path::new("docs/cli");
     fs::create_dir_all(docs_dir).expect("Failed to create docs/cli directory");
