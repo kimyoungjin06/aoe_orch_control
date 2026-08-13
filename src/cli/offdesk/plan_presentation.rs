@@ -7,11 +7,11 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use super::{
-    observed_hash_for, print_remote_operator_projection, remote_operator_card,
-    remote_operator_projection, RemoteOperatorCard, RemoteOperatorPlansArgs,
-    RemoteOperatorShowArgs,
+use super::remote_operator_presentation::{
+    observed_hash_for, present_remote_operator_projection, remote_operator_card,
+    remote_operator_projection, RemoteOperatorCard,
 };
+use super::{RemoteOperatorPlansArgs, RemoteOperatorShowArgs};
 use crate::offdesk::{
     operator_safe_text, OffdeskPlanLaunchPrepPacket, OffdeskPlanRegistration,
     OffdeskPlanRegistryDetail, OffdeskPlanRegistryItem, OffdeskPlanReviewDecision,
@@ -330,7 +330,7 @@ pub(super) fn present_remote_operator_plans(
     let observed_hash = observed_hash_for(&payload)?;
     let card = remote_operator_plans_card(&payload, observed_hash);
     let projection = remote_operator_projection(profile, &args.transport, "plans", card, payload);
-    print_remote_operator_projection(&projection, args.json)
+    present_remote_operator_projection(&projection, args.json)
 }
 
 pub(super) fn present_remote_operator_plan_detail(
@@ -342,7 +342,7 @@ pub(super) fn present_remote_operator_plan_detail(
     let observed_hash = observed_hash_for(&payload)?;
     let card = remote_operator_show_card(&payload, observed_hash);
     let projection = remote_operator_projection(profile, &args.transport, "show", card, payload);
-    print_remote_operator_projection(&projection, args.json)
+    present_remote_operator_projection(&projection, args.json)
 }
 
 fn build_remote_operator_plans_payload(

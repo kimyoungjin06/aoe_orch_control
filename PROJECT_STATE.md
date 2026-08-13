@@ -222,8 +222,10 @@ direction is defined in `docs/project-direction.md`.
   in `src/cli/offdesk/plan_registry.rs`, together with append-only allocation
   and completed-record persistence. Plan text/JSON output and plan-specific
   Remote Operator payload/card assembly now live in the bounded
-  `src/cli/offdesk/plan_presentation.rs` adapter, while queries, read models,
-  storage, and shared projection envelopes retain their existing boundaries.
+  `src/cli/offdesk/plan_presentation.rs` adapter. Shared read-only projection
+  envelopes, terminal rendering, and status/pending payload/card assembly now
+  live in `src/cli/offdesk/remote_operator_presentation.rs`; status and
+  approval queries remain in the main CLI handlers.
 - The 2026-06-26 refactor baseline is captured in
   `docs/refactor-baseline-20260626.md`. The mutation-freeze has been lifted by
   product decision to widen the Telegram operator surface, but new remote
@@ -555,7 +557,7 @@ direction is defined in `docs/project-direction.md`.
 
 ## Next Work Candidates
 
-0. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~13.9k
+0. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~13.5k
    lines). Value parsing and the first typed decision, adaptive-wiki, and
    closeout receipt workflows are separated. Implementation-packet coverage
    policy and record construction are separated, as are plan-review validation
@@ -569,9 +571,11 @@ direction is defined in `docs/project-direction.md`.
    coordination now shares a bounded plan command adapter. The regular CLI and
    Remote Operator also share a bounded read-only plan query adapter. Plan
    output presentation and plan-specific Remote Operator projection assembly
-   now share a bounded adapter. Next move the remaining Remote Operator
-   status/pending payload, card, and shared projection-envelope presentation
-   into a bounded adapter while retaining status and approval query boundaries.
+   now share a bounded adapter. The shared Remote Operator projection envelope,
+   terminal rendering, and status/pending payload/card assembly are also
+   separated while status and approval queries remain in the main handlers.
+   Next move hosted-harness profile lookup, first-read prompt-packet assembly,
+   and Markdown rendering into a bounded adapter.
 1. Add the deferred actionable TUI attention panel using the existing shared
    operator-state and next-safe-action contracts.
 2. Apply the deferred council verdicts with the new `wiki edit --kind

@@ -10297,6 +10297,59 @@ fn offdesk_remote_operator_plans_and_show_are_read_only() -> Result<()> {
 
 #[test]
 #[serial]
+fn offdesk_remote_operator_status_is_read_only() -> Result<()> {
+    let temp = tempdir()?;
+
+    let status_output = forager_command(temp.path())
+        .args(["offdesk", "remote-operator", "status", "--json"])
+        .output()?;
+    assert!(
+        status_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&status_output.stderr)
+    );
+    let status: serde_json::Value = serde_json::from_slice(&status_output.stdout)?;
+    assert_eq!(status["schema"], "remote_operator_readonly_projection.v1");
+    assert_eq!(status["command"], "status");
+    assert_eq!(status["transport"], "telegram");
+    assert_eq!(status["read_only"], true);
+    assert_eq!(status["mutation_authorized"], false);
+    assert_eq!(status["approval_authorized"], false);
+    assert_eq!(status["payload"]["profile"], "default");
+    assert_eq!(status["card"]["title"], "Forager Remote Status");
+    assert!(status["card"]["observed_hash"]
+        .as_str()
+        .expect("observed hash")
+        .starts_with("sha256:"));
+    assert!(status["card"]["remote_actions"]
+        .as_array()
+        .expect("remote actions")
+        .iter()
+        .any(|item| item == "inspect_status"));
+    assert!(status["forbidden_remote_intents"]
+        .as_array()
+        .expect("forbidden intents")
+        .iter()
+        .any(|item| item == "dispatch"));
+
+    let text_output = forager_command(temp.path())
+        .args(["offdesk", "remote-operator", "status"])
+        .output()?;
+    assert!(
+        text_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&text_output.stderr)
+    );
+    let text = String::from_utf8_lossy(&text_output.stdout);
+    assert!(text.contains("Forager Remote Status"));
+    assert!(text.contains("mode:      read-only"));
+    assert!(text.contains("sessions:"));
+    assert!(text.contains("remote launch, dispatch, shell execution, and mutation are disabled"));
+    Ok(())
+}
+
+#[test]
+#[serial]
 fn offdesk_remote_operator_pending_is_read_only_and_does_not_expire() -> Result<()> {
     let temp = tempdir()?;
     let profile_dir = profile_dir(temp.path());
@@ -10359,6 +10412,21 @@ fn offdesk_remote_operator_pending_is_read_only_and_does_not_expire() -> Result<
         .expect("forbidden intents")
         .iter()
         .any(|item| item == "approve_launch"));
+
+    let text_output = forager_command(temp.path())
+        .args(["offdesk", "remote-operator", "pending"])
+        .output()?;
+    assert!(
+        text_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&text_output.stderr)
+    );
+    let text = String::from_utf8_lossy(&text_output.stdout);
+    assert!(text.contains("Forager Remote Pending"));
+    assert!(text.contains("mode:      read-only"));
+    assert!(text.contains("approval_stale: dispatch.runtime pending"));
+    assert!(text.contains("expired pending approvals: 1"));
+    assert!(text.contains("remote launch, dispatch, shell execution, and mutation are disabled"));
 
     let stored: serde_json::Value = serde_json::from_str(&fs::read_to_string(
         profile_dir.join("pending_action_approvals.json"),
