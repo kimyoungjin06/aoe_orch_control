@@ -32,10 +32,10 @@ direction is defined in `docs/project-direction.md`.
 
 ## Active Documentation Work
 
-- The v0.14.0 release candidate has curated notes under
-  `docs/releases/v0.14.0.md`. Release tagging now requires the reviewed Cargo
-  version and notes to be present on `main`; release artifacts receive a
-  source-bound provenance receipt.
+- Forager v0.14.0 was published on 2026-08-13 from `326d5c3`. Its 19 public
+  assets include nine archives, nine adjacent checksum files, and a
+  source-bound provenance receipt. Independent post-publication verification
+  matched every archive checksum, size, and provenance entry.
 - Public README, mdBook introduction, brand system, and Astro landing page lead
   with the north star and local meta-harness positioning.
 - The committed TUI preview must stay profile-neutral. It should not show a
@@ -520,29 +520,25 @@ direction is defined in `docs/project-direction.md`.
 
 ## Next Work Candidates
 
-0. Complete the v0.14.0 release candidate: merge the reviewed version, notes,
-   provenance, install-receipt, and status-document changes; run the full
-   release preflight; then create the validated tag and verify every release
-   asset against `release-provenance.json`.
-1. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~15.7k
+0. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~15.7k
    lines). Value parsing and the first typed decision, adaptive-wiki, and
    closeout receipt workflows are separated. Move implementation-packet
    evidence coverage and the remaining record construction through typed
    boundaries while keeping artifact I/O in CLI adapters.
-2. Add the deferred actionable TUI attention panel using the existing shared
+1. Add the deferred actionable TUI attention panel using the existing shared
    operator-state and next-safe-action contracts.
-3. Apply the deferred council verdicts with the new `wiki edit --kind
+2. Apply the deferred council verdicts with the new `wiki edit --kind
    --agent-mode/--clear-agent-modes` primitive, then curate the live candidate
    portfolio through the project-ranked queue.
    Spot-check prereview-supported items for quote-claim mismatch before any
    promotion. The measured pointer-quote, quote-truncation, and per-quote
    fan-out defects are already fixed in the harvest pipeline.
-4. Extend learning signals to the remaining lifecycle events (pre-compression
+3. Extend learning signals to the remaining lifecycle events (pre-compression
    extraction, wiki projection usage) and add a curator-style staleness report
    (Hermes patterns #9 follow-up and #10).
-5. Optionally split `scripts/telegram_operator/receipts.py` (~1,960 lines) by
+4. Optionally split `scripts/telegram_operator/receipts.py` (~1,960 lines) by
    stage family if it keeps growing; it is cohesive today.
-6. Optionally add parameterized `/run` templates (constrained argument
+5. Optionally add parameterized `/run` templates (constrained argument
    substitution) if fixed commands prove too rigid; keep injection surface in
    mind.
 
