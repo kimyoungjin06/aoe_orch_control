@@ -1,15 +1,121 @@
-//! Read-only CLI storage adapter for the Offdesk plan registry.
+//! CLI storage adapter for the Offdesk plan registry.
+//!
+//! Reads fail closed, and every record write uses append-only path allocation
+//! plus create-new persistence.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
+use chrono::{DateTime, Utc};
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
-use super::read_only_profile_dir;
+use super::{read_only_profile_dir, write_new_file};
 use crate::offdesk::{
     build_offdesk_plan_registry_detail, build_offdesk_plan_registry_item,
     OffdeskPlanLaunchPrepPacket, OffdeskPlanRegistration, OffdeskPlanRegistryDetail,
     OffdeskPlanRegistryItem, OffdeskPlanReviewRecord,
 };
+
+pub(super) fn allocate_offdesk_plan_registry_dir(
+    profile_dir: &Path,
+    registered_at: DateTime<Utc>,
+    artifact_kind: &str,
+) -> Result<PathBuf> {
+    let base_dir = profile_dir.join("offdesk_plans");
+    fs::create_dir_all(&base_dir)
+        .with_context(|| format!("create Offdesk plan registry {}", base_dir.display()))?;
+    let timestamp = registered_at.format("%Y%m%dT%H%M%SZ");
+    for attempt in 0..1000 {
+        let name = if attempt == 0 {
+            format!("{timestamp}_{artifact_kind}")
+        } else {
+            format!("{timestamp}_{artifact_kind}_{attempt:03}")
+        };
+        let path = base_dir.join(name);
+        match fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("create Offdesk plan registry {}", path.display()))
+            }
+        }
+    }
+
+    bail!(
+        "could not allocate Offdesk plan registry path in {}",
+        base_dir.display()
+    )
+}
+
+pub(super) fn allocate_offdesk_plan_review_record_path(
+    registry_dir: &Path,
+    reviewed_at: DateTime<Utc>,
+) -> Result<PathBuf> {
+    allocate_offdesk_plan_record_path(registry_dir, reviewed_at, "plan_review", "review")
+}
+
+pub(super) fn allocate_offdesk_plan_launch_prep_path(
+    registry_dir: &Path,
+    prepared_at: DateTime<Utc>,
+) -> Result<PathBuf> {
+    allocate_offdesk_plan_record_path(registry_dir, prepared_at, "launch_prep", "launch-prep")
+}
+
+fn allocate_offdesk_plan_record_path(
+    registry_dir: &Path,
+    recorded_at: DateTime<Utc>,
+    filename_prefix: &str,
+    error_kind: &str,
+) -> Result<PathBuf> {
+    fs::create_dir_all(registry_dir)
+        .with_context(|| format!("create Offdesk plan registry {}", registry_dir.display()))?;
+    let timestamp = recorded_at.format("%Y%m%dT%H%M%SZ");
+    for attempt in 0..1000 {
+        let filename = if attempt == 0 {
+            format!("{filename_prefix}_{timestamp}.json")
+        } else {
+            format!("{filename_prefix}_{timestamp}_{attempt:03}.json")
+        };
+        let path = registry_dir.join(filename);
+        if !path.exists() {
+            return Ok(path);
+        }
+    }
+
+    bail!(
+        "could not allocate Offdesk plan {error_kind} path in {}",
+        registry_dir.display()
+    )
+}
+
+pub(super) fn write_offdesk_plan_registration(
+    registration: &OffdeskPlanRegistration,
+) -> Result<()> {
+    let Some(registration_path) = registration.artifacts.registration_json.as_deref() else {
+        return Ok(());
+    };
+    let bytes = serde_json::to_vec_pretty(registration)?;
+    write_new_file(Path::new(registration_path), &bytes)
+        .with_context(|| format!("write Offdesk plan registration {}", registration_path))?;
+    Ok(())
+}
+
+pub(super) fn write_offdesk_plan_review_record(record: &OffdeskPlanReviewRecord) -> Result<()> {
+    let bytes = serde_json::to_vec_pretty(record)?;
+    write_new_file(Path::new(&record.artifacts.review_record_json), &bytes)
+        .with_context(|| format!("write {}", record.artifacts.review_record_json))?;
+    Ok(())
+}
+
+pub(super) fn write_offdesk_plan_launch_prep_packet(
+    packet: &OffdeskPlanLaunchPrepPacket,
+) -> Result<()> {
+    let bytes = serde_json::to_vec_pretty(packet)?;
+    write_new_file(Path::new(&packet.artifacts.launch_prep_json), &bytes)
+        .with_context(|| format!("write {}", packet.artifacts.launch_prep_json))?;
+    Ok(())
+}
 
 pub(super) fn load_offdesk_plan_registry_items(
     profile: &str,
@@ -250,6 +356,86 @@ mod tests {
             &[],
             &[],
         )
+    }
+
+    #[test]
+    fn append_only_allocators_suffix_collisions() {
+        let temp = tempdir().expect("temp dir");
+        let recorded_at: DateTime<Utc> = "2026-08-13T01:02:03Z".parse().expect("valid timestamp");
+
+        let first_registry =
+            allocate_offdesk_plan_registry_dir(temp.path(), recorded_at, "offdesk_multiturn_plan")
+                .expect("first registry dir");
+        let second_registry =
+            allocate_offdesk_plan_registry_dir(temp.path(), recorded_at, "offdesk_multiturn_plan")
+                .expect("second registry dir");
+        assert_eq!(
+            first_registry.file_name().and_then(|value| value.to_str()),
+            Some("20260813T010203Z_offdesk_multiturn_plan")
+        );
+        assert_eq!(
+            second_registry.file_name().and_then(|value| value.to_str()),
+            Some("20260813T010203Z_offdesk_multiturn_plan_001")
+        );
+
+        let first_review = allocate_offdesk_plan_review_record_path(&first_registry, recorded_at)
+            .expect("first review path");
+        fs::write(&first_review, b"{}").expect("reserve first review path");
+        let second_review = allocate_offdesk_plan_review_record_path(&first_registry, recorded_at)
+            .expect("second review path");
+        assert_eq!(
+            first_review.file_name().and_then(|value| value.to_str()),
+            Some("plan_review_20260813T010203Z.json")
+        );
+        assert_eq!(
+            second_review.file_name().and_then(|value| value.to_str()),
+            Some("plan_review_20260813T010203Z_001.json")
+        );
+
+        let first_prep = allocate_offdesk_plan_launch_prep_path(&first_registry, recorded_at)
+            .expect("first launch-prep path");
+        fs::write(&first_prep, b"{}").expect("reserve first launch-prep path");
+        let second_prep = allocate_offdesk_plan_launch_prep_path(&first_registry, recorded_at)
+            .expect("second launch-prep path");
+        assert_eq!(
+            first_prep.file_name().and_then(|value| value.to_str()),
+            Some("launch_prep_20260813T010203Z.json")
+        );
+        assert_eq!(
+            second_prep.file_name().and_then(|value| value.to_str()),
+            Some("launch_prep_20260813T010203Z_001.json")
+        );
+    }
+
+    #[test]
+    fn registration_persistence_skips_dry_run_and_refuses_overwrite() {
+        let dry_run = registration(None);
+        write_offdesk_plan_registration(&dry_run).expect("dry-run persistence is a no-op");
+
+        let temp = tempdir().expect("temp dir");
+        let plan_dir = temp.path().join("plan_123");
+        fs::create_dir_all(&plan_dir).expect("create plan dir");
+        let stored = registration(Some(plan_dir.display().to_string()));
+        let registration_path = plan_dir.join("registration.json");
+
+        write_offdesk_plan_registration(&stored).expect("write registration");
+        let original = fs::read(&registration_path).expect("read registration");
+        assert_eq!(
+            serde_json::from_slice::<OffdeskPlanRegistration>(&original)
+                .expect("parse stored registration")
+                .source_sha256,
+            "abc123"
+        );
+
+        let error = write_offdesk_plan_registration(&stored)
+            .expect_err("append-only registration must not overwrite");
+        assert!(error
+            .to_string()
+            .contains("write Offdesk plan registration"));
+        assert_eq!(
+            fs::read(registration_path).expect("read preserved registration"),
+            original
+        );
     }
 
     #[test]
