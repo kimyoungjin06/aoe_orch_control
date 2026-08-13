@@ -417,7 +417,7 @@ fn write_text_update(path: &Path, update_id: i64, message_id: i64, text: &str) -
 }
 
 #[test]
-fn telegram_default_env_file_follows_xdg_config_home() -> Result<()> {
+fn telegram_default_env_file_follows_platform_config_location() -> Result<()> {
     let temp = tempdir()?;
     let xdg = temp.path().join("xdg");
     let output = Command::new("python3")
@@ -436,9 +436,14 @@ fn telegram_default_env_file_follows_xdg_config_home() -> Result<()> {
         "stderr:\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    let expected = if cfg!(target_os = "linux") {
+        xdg.join("forager/telegram.env")
+    } else {
+        temp.path().join(".forager/telegram.env")
+    };
     assert_eq!(
         String::from_utf8(output.stdout)?.trim(),
-        xdg.join("forager/telegram.env").to_string_lossy()
+        expected.to_string_lossy()
     );
     Ok(())
 }
