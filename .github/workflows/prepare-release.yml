@@ -13,12 +13,13 @@ jobs:
     name: Validate Candidate & Tag
     runs-on: ubuntu-latest
     permissions:
+      actions: write
       contents: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: main
-          token: ${{ secrets.RELEASE_TOKEN }}
+          fetch-depth: 0
 
       - name: Validate version format
         run: |
@@ -28,11 +29,21 @@ jobs:
             exit 1
           fi
 
-      - name: Check tag does not already exist
+      - name: Validate tag state
+        id: tag
         run: |
-          if git rev-parse "v${{ github.event.inputs.version }}" >/dev/null 2>&1; then
-            echo "::error::Tag v${{ github.event.inputs.version }} already exists"
-            exit 1
+          TAG="v${{ github.event.inputs.version }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            TAG_COMMIT=$(git rev-list -n 1 "$TAG")
+            HEAD_COMMIT=$(git rev-parse HEAD)
+            if [ "$TAG_COMMIT" != "$HEAD_COMMIT" ]; then
+              echo "::error::$TAG already points to $TAG_COMMIT, expected $HEAD_COMMIT"
+              exit 1
+            fi
+            echo "create=false" >> "$GITHUB_OUTPUT"
+            echo "$TAG already points to the validated candidate; release dispatch will resume."
+          else
+            echo "create=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Validate merged candidate version
@@ -59,6 +70,7 @@ jobs:
           echo "Validated merged release candidate v${VERSION}"
 
       - name: Create tag and push
+        if: steps.tag.outputs.create == 'true'
         run: |
           VERSION="${{ github.event.inputs.version }}"
           git config user.name "github-actions[bot]"
@@ -66,4 +78,11 @@ jobs:
           git tag -a "v${VERSION}" -m "Forager v${VERSION}"
           git push origin "v${VERSION}"
           echo "Pushed validated tag v${VERSION} at $(git rev-parse HEAD)"
-          echo "Release workflow will now trigger automatically."
+
+      - name: Dispatch release workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          gh workflow run release.yml --ref main -f tag="v${VERSION}"
+          echo "Dispatched release workflow for v${VERSION}"
