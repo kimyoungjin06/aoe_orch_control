@@ -29,7 +29,17 @@ is also built as a legacy compatibility alias.
 
 Release installations verify the published SHA-256 checksum before extracting
 or replacing the local binary. A missing or malformed checksum stops the
-installation.
+installation. Releases beginning with v0.14.0 also publish
+`release-provenance.json`, which binds every archive checksum to the exact Git
+tag and source commit.
+
+After installation, the script writes a private `forager_install_receipt.v1`
+record containing the version, source commit when provenance is available,
+archive checksum, installed binary checksum, and install path. The default
+receipt is `$XDG_STATE_HOME/forager/install-receipt.txt` on Linux, falling back
+to `~/.local/state/forager/install-receipt.txt`; on macOS it is
+`~/.forager/install-receipt.txt`. Set `FORAGER_INSTALL_RECEIPT` to use
+another path.
 
 ### Telegram Operator Bundle
 
@@ -50,7 +60,10 @@ use a different private file.
 
 ```bash
 forager --version
+cat "${XDG_STATE_HOME:-$HOME/.local/state}/forager/install-receipt.txt"
 ```
+
+On macOS, inspect `~/.forager/install-receipt.txt` instead.
 
 ## Uninstall
 

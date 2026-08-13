@@ -31,15 +31,27 @@ jobs:
           fi
           TAG_VERSION="${TAG#v}"
           CARGO_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          LOCK_VERSION=$(awk '
+            $0 == "name = \"forager\"" { found = 1; next }
+            found && /^version = / { gsub(/version = |\"/, ""); print; exit }
+          ' Cargo.lock)
           echo "Tag version: $TAG_VERSION"
           echo "Cargo.toml version: $CARGO_VERSION"
           if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
             echo "::error::Version mismatch! Cargo.toml has $CARGO_VERSION but tag is $TAG"
-            echo "Use the 'Prepare Release' workflow to bump the version automatically."
-            echo "Or manually update Cargo.toml and Cargo.lock to version $TAG_VERSION before tagging."
+            echo "Prepare and merge a reviewed version candidate before tagging."
+            echo "Then run the 'Tag Validated Release' workflow."
             exit 1
           fi
-          echo "✓ Versions match"
+          if [ "$LOCK_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Cargo.lock has $LOCK_VERSION, expected $TAG_VERSION"
+            exit 1
+          fi
+          test -s "docs/releases/${TAG}.md" || {
+            echo "::error::Missing curated release notes: docs/releases/${TAG}.md"
+            exit 1
+          }
+          echo "Versions and curated release notes match"
 
   preflight:
     name: Release Quality Gate
@@ -70,6 +82,8 @@ jobs:
         run: python3 -m compileall -q scripts
       - name: Test release installer integrity checks
         run: bash tests/install_script.sh
+      - name: Test release provenance receipts
+        run: bash tests/release_provenance.sh
       - name: Install locked website dependencies
         working-directory: website
         run: npm ci
@@ -170,11 +184,12 @@ jobs:
         run: |
           VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
           BUNDLE="forager-operator-${VERSION}"
-          mkdir -p "dist/${BUNDLE}/docs"
+          mkdir -p "dist/${BUNDLE}/docs/releases"
           cp -R scripts "dist/${BUNDLE}/"
           cp README.md LICENSE "dist/${BUNDLE}/"
           cp docs/remote-operator.md docs/adaptive-wiki.md docs/offdesk-operation-status.md \
             docs/guides/configuration.md "dist/${BUNDLE}/docs/"
+          cp "docs/releases/v${VERSION}.md" "dist/${BUNDLE}/docs/releases/"
           python3 -m compileall -q "dist/${BUNDLE}/scripts"
           "dist/${BUNDLE}/scripts/offdesk_remote_operator_telegram.py" --help >/dev/null
           "dist/${BUNDLE}/scripts/install_offdesk_telegram_operator_service.py" --help >/dev/null
@@ -223,6 +238,19 @@ jobs:
             echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
           fi
 
+      - name: Build release provenance receipt
+        run: |
+          TAG="${{ steps.version.outputs.version }}"
+          VERSION="${TAG#v}"
+          python3 scripts/build_release_provenance.py \
+            --version "$VERSION" \
+            --tag "$TAG" \
+            --source-sha "$(git rev-parse HEAD)" \
+            --repository "${{ github.repository }}" \
+            --artifacts-dir artifacts \
+            --release-notes "docs/releases/${TAG}.md" \
+            --out artifacts/release-provenance.json
+
       - name: Create Release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
@@ -230,7 +258,8 @@ jobs:
           name: Forager ${{ steps.version.outputs.version }}
           draft: false
           prerelease: false
+          body_path: docs/releases/${{ steps.version.outputs.version }}.md
           files: |
             artifacts/*.tar.gz
             artifacts/*.tar.gz.sha256
-          generate_release_notes: true
+            artifacts/release-provenance.json

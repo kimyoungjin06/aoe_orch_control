@@ -10,9 +10,9 @@ from the public product README and from the mdBook user guides.
 Forager is a local autonomy meta-harness around tmux-supervised,
 harness-backed agent work. The current development focus is the generic
 Offdesk operating loop, mobile Remote Operator surfaces, runtime recovery,
-documentation/artifact hygiene, and keeping domain-specific validation history
-out of product-facing docs. The product direction is defined in
-`docs/project-direction.md`.
+release and artifact provenance, module decomposition, and keeping
+domain-specific validation history out of product-facing docs. The product
+direction is defined in `docs/project-direction.md`.
 
 ## First Reads For Development
 
@@ -32,6 +32,10 @@ out of product-facing docs. The product direction is defined in
 
 ## Active Documentation Work
 
+- The v0.14.0 release candidate has curated notes under
+  `docs/releases/v0.14.0.md`. Release tagging now requires the reviewed Cargo
+  version and notes to be present on `main`; release artifacts receive a
+  source-bound provenance receipt.
 - Public README, mdBook introduction, brand system, and Astro landing page lead
   with the north star and local meta-harness positioning.
 - The committed TUI preview must stay profile-neutral. It should not show a
@@ -516,28 +520,29 @@ out of product-facing docs. The product direction is defined in
 
 ## Next Work Candidates
 
-0. Apply the deferred council verdicts with the new `wiki edit --kind
-   --agent-mode/--clear-agent-modes` primitive: reclassify
-   telegram-guarded-execution and offdesk-tick entries (forager-ops),
-   direction-review entry (twinpaper-review, procedure->policy_rule), and fix
-   agent-mode projection on migrations (drop maintenance), tick (universal),
-   and figure-anchors (+analysis).
-
-1. Curate the live 124-candidate portfolio through the project-ranked queue.
+0. Complete the v0.14.0 release candidate: merge the reviewed version, notes,
+   provenance, install-receipt, and status-document changes; run the full
+   release preflight; then create the validated tag and verify every release
+   asset against `release-provenance.json`.
+1. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~15.7k
+   lines). Value parsing and the first typed decision, adaptive-wiki, and
+   closeout receipt workflows are separated. Move implementation-packet
+   evidence coverage and the remaining record construction through typed
+   boundaries while keeping artifact I/O in CLI adapters.
+2. Add the deferred actionable TUI attention panel using the existing shared
+   operator-state and next-safe-action contracts.
+3. Apply the deferred council verdicts with the new `wiki edit --kind
+   --agent-mode/--clear-agent-modes` primitive, then curate the live candidate
+   portfolio through the project-ranked queue.
    Spot-check prereview-supported items for quote-claim mismatch before any
    promotion. The measured pointer-quote, quote-truncation, and per-quote
    fan-out defects are already fixed in the harvest pipeline.
-2. Extend learning signals to the remaining lifecycle events (pre-compression
+4. Extend learning signals to the remaining lifecycle events (pre-compression
    extraction, wiki projection usage) and add a curator-style staleness report
    (Hermes patterns #9 follow-up and #10).
-3. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~15.7k
-   lines). Value parsing and the first typed decision, adaptive-wiki, and
-   closeout receipt workflows are separated. Move closeout decision-resolution
-   and retirement record construction through the same typed boundary next;
-   keep artifact I/O and RETURN_PACKAGE rendering in CLI adapters.
-4. Optionally split `scripts/telegram_operator/receipts.py` (~1,960 lines) by
+5. Optionally split `scripts/telegram_operator/receipts.py` (~1,960 lines) by
    stage family if it keeps growing; it is cohesive today.
-5. Optionally add parameterized `/run` templates (constrained argument
+6. Optionally add parameterized `/run` templates (constrained argument
    substitution) if fixed commands prove too rigid; keep injection surface in
    mind.
 
