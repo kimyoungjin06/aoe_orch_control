@@ -45,6 +45,7 @@
 
 - [CLI Reference](cli/reference.md)
 - [Configuration Reference](guides/configuration.md)
+- [v0.14.0 Release Notes](releases/v0.14.0.md)
 - [Brand System](brand-system.md)
 - [Offdesk Safety Rail Baseline](offdesk-safety-rail-baseline.md)
 - [Offdesk Operation Status](offdesk-operation-status.md)

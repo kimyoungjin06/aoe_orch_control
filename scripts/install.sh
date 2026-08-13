@@ -80,6 +80,79 @@ extract_archive() {
     fi
 }
 
+validate_version() {
+    printf '%s\n' "$1" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'
+}
+
+read_release_source_sha() {
+    local manifest source_sha
+    manifest="$1"
+    source_sha=$(sed -n 's/^[[:space:]]*"source_sha":[[:space:]]*"\([0-9a-fA-F]*\)".*/\1/p' \
+        "$manifest" | head -1)
+    if ! printf '%s\n' "$source_sha" | grep -qE '^[[:xdigit:]]{40}$'; then
+        return 1
+    fi
+    printf '%s\n' "$(printf '%s' "$source_sha" | tr '[:upper:]' '[:lower:]')"
+}
+
+release_manifest_matches_archive() {
+    local manifest archive_name archive_sha
+    manifest="$1"
+    archive_name="$2"
+    archive_sha="$3"
+    grep -Fq "\"name\": \"$archive_name\"" "$manifest" &&
+        grep -Fq "\"sha256\": \"$archive_sha\"" "$manifest"
+}
+
+default_install_receipt() {
+    local platform state_root
+    platform="$1"
+    case "$platform" in
+        linux-*)
+            state_root="${XDG_STATE_HOME:-$HOME/.local/state}"
+            printf '%s\n' "$state_root/forager/install-receipt.txt"
+            ;;
+        darwin-*)
+            printf '%s\n' "$HOME/.forager/install-receipt.txt"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+write_install_receipt() {
+    local receipt_file version platform binary_path binary_sha archive_sha archive_url source_sha
+    local receipt_dir receipt_tmp installed_at
+    receipt_file="$1"
+    version="$2"
+    platform="$3"
+    binary_path="$4"
+    binary_sha="$5"
+    archive_sha="$6"
+    archive_url="$7"
+    source_sha="$8"
+    receipt_dir=$(dirname "$receipt_file")
+    receipt_tmp="${receipt_file}.tmp.$$"
+    installed_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+
+    mkdir -p "$receipt_dir" || return 1
+    umask 077
+    {
+        printf 'schema=forager_install_receipt.v1\n'
+        printf 'version=%s\n' "$version"
+        printf 'source_sha=%s\n' "$source_sha"
+        printf 'platform=%s\n' "$platform"
+        printf 'installed_at=%s\n' "$installed_at"
+        printf 'binary_path=%s\n' "$binary_path"
+        printf 'binary_sha256=%s\n' "$binary_sha"
+        printf 'archive_sha256=%s\n' "$archive_sha"
+        printf 'archive_url=%s\n' "$archive_url"
+    } > "$receipt_tmp" || return 1
+    mv "$receipt_tmp" "$receipt_file" || return 1
+    chmod 600 "$receipt_file" || return 1
+}
+
 main() {
     info "Detecting platform..."
     platform=$(detect_platform)
@@ -96,11 +169,16 @@ main() {
     if [ -z "$version" ]; then
         error "No GitHub release version found. Set FORAGER_VERSION=vX.Y.Z or build from source."
     fi
+    if ! validate_version "$version"; then
+        error "Invalid release version: $version"
+    fi
     success "Version: $version"
 
     download_url="https://github.com/${REPO}/releases/download/${version}/forager-${platform}.tar.gz"
     legacy_download_url="https://github.com/${REPO}/releases/download/${version}/aoe-${platform}.tar.gz"
     checksum_url="${download_url}.sha256"
+    provenance_url="https://github.com/${REPO}/releases/download/${version}/release-provenance.json"
+    resolved_download_url="$download_url"
     archive_member="forager-${platform}"
     info "Downloading from: $download_url"
 
@@ -111,6 +189,7 @@ main() {
         info "Primary Forager artifact not found; trying legacy artifact: $legacy_download_url"
         archive_member="aoe-${platform}"
         checksum_url="${legacy_download_url}.sha256"
+        resolved_download_url="$legacy_download_url"
         curl -fsSL "$legacy_download_url" -o "$tmp_dir/forager.tar.gz" || error "Download failed"
     fi
     success "Downloaded successfully"
@@ -119,7 +198,24 @@ main() {
     curl -fsSL "$checksum_url" -o "$tmp_dir/forager.tar.gz.sha256" \
         || error "Release checksum download failed"
     verify_archive "$tmp_dir/forager.tar.gz" "$tmp_dir/forager.tar.gz.sha256"
+    archive_sha=$(sha256_file "$tmp_dir/forager.tar.gz")
     success "Checksum verified"
+
+    source_sha="unavailable"
+    if curl -fsSL "$provenance_url" -o "$tmp_dir/release-provenance.json"; then
+        if release_manifest_matches_archive \
+            "$tmp_dir/release-provenance.json" \
+            "${archive_member}.tar.gz" \
+            "$archive_sha" &&
+            parsed_source_sha=$(read_release_source_sha "$tmp_dir/release-provenance.json"); then
+            source_sha="$parsed_source_sha"
+            success "Release source: $source_sha"
+        else
+            info "Release provenance does not match the archive; install receipt will omit the source commit"
+        fi
+    else
+        info "Release provenance is unavailable; install receipt will omit the source commit"
+    fi
 
     info "Extracting..."
     extract_archive "$tmp_dir/forager.tar.gz" "$archive_member" "$tmp_dir"
@@ -133,6 +229,23 @@ main() {
         sudo mv "$tmp_dir/$archive_member" "$INSTALL_DIR/$BINARY_NAME"
         sudo ln -sf "$BINARY_NAME" "$INSTALL_DIR/$LEGACY_BINARY_NAME"
         sudo chmod +x "$INSTALL_DIR/$BINARY_NAME"
+    fi
+
+    installed_binary="$INSTALL_DIR/$BINARY_NAME"
+    installed_sha=$(sha256_file "$installed_binary")
+    receipt_file="${FORAGER_INSTALL_RECEIPT:-$(default_install_receipt "$platform")}"
+    if write_install_receipt \
+        "$receipt_file" \
+        "$version" \
+        "$platform" \
+        "$installed_binary" \
+        "$installed_sha" \
+        "$archive_sha" \
+        "$resolved_download_url" \
+        "$source_sha"; then
+        success "Install receipt: $receipt_file"
+    else
+        info "Warning: could not write install receipt to $receipt_file"
     fi
 
     success "Installed $BINARY_NAME $version to $INSTALL_DIR/$BINARY_NAME"

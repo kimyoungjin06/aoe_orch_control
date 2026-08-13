@@ -59,8 +59,8 @@ project init
   -> Ondesk return package
 ```
 
-The Telegram Remote Operator currently covers the planning and narrowly scoped
-runtime-start side of this flow:
+The Telegram Remote Operator currently covers the planning, narrowly scoped
+runtime, and receipt-bound closeout side of this flow:
 
 - read-only `/status`, `/pending`, `/plans`, and `/show`;
 - freeform planning request capture;
@@ -78,13 +78,15 @@ runtime-start side of this flow:
 - bound enqueue run;
 - task-scoped runtime start;
 - task-scoped runtime monitor/readout;
-- completed-task closeout packet creation.
+- completed-task closeout packet creation;
+- closeout review handoff creation;
+- handoff-bound `approved`, `revise`, or `blocked` closeout verdicts.
 
-It intentionally does not cover broad runtime launch, closeout review, or
-accepted-truth review. Runtime dispatch still belongs to the local
-enqueue/launch/tick path, and Telegram can only start the one reviewed task that
-was already bound and queued, then poll/read and closeout-packet that same
-completed task.
+It intentionally does not provide broad runtime launch or general process
+control. Telegram can start only the reviewed task that was already bound and
+queued, then monitor and close out that same task. A closeout verdict is valid
+only through the prepared handoff, and accepted truth exists only when the CLI
+closeout receipt reports `accepted`.
 
 Remote Operator phase status:
 
@@ -195,11 +197,11 @@ Remote Operator phase status:
 - Domain-specific validation history is retained under `archive/domain-history/`
   instead of being presented as product documentation.
 
-## Remaining Work
+## Current Completion Boundaries
 
-### 1. Closeout Review And Accepted-Truth Bridge
+### 1. Closeout Review And Accepted-Truth Bridge - Implemented
 
-Goal: connect generated closeout packets to closeout review without
+Verified contract: generated closeout packets connect to closeout review without
 collapsing plan approval, gate request creation, approval resolution, brief
 generation, enqueue, runtime start, runtime monitoring, closeout packet
 generation, and accepted-truth review.
@@ -234,10 +236,10 @@ Acceptance checks:
 - stale plan, stale review, changed launch packet, or mismatched approval
   blocks progression.
 
-### 2. Accepted-Truth Review Bridge
+### 2. Accepted-Truth Review Bridge - Implemented
 
-Goal: expose closeout readiness and accepted-truth decisions through compact
-operator surfaces.
+Verified contract: closeout readiness and accepted-truth decisions are exposed
+through compact operator surfaces.
 
 Acceptance checks:
 
@@ -246,7 +248,7 @@ Acceptance checks:
 - completed execution remains separate from accepted truth;
 - review-required states do not disappear from status.
 
-### 3. Documentation And Dependency Hygiene
+### 3. Documentation And Dependency Hygiene - Ongoing
 
 Goal: keep product docs current and release-clean.
 
@@ -257,7 +259,7 @@ Acceptance checks:
 - CLI reference is regenerated when command surfaces change;
 - website dependencies are refreshed and `npm audit` is reviewed.
 
-### 4. Module Decomposition
+### 4. Module Decomposition - Remaining
 
 Goal: reduce regression risk before adding more remote actions.
 

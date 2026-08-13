@@ -174,9 +174,10 @@ Mode preparation, explicit plan-review approval, launch-preparation packet
 creation, gate-request creation for pending local approval, exact gate approval
 resolution, execution-brief generation, reviewed workload binding, bound enqueue
 run, task-scoped runtime start, task-scoped runtime monitor/readout, health
-checks, closeout packet creation, and an external watchdog. It does not cover
-broad runtime launch, continuous execution control, closeout review, or
-accepted-truth review from Telegram.
+checks, closeout packet creation, handoff-bound closeout verdicts, and an
+external watchdog. It does not provide unbound runtime launch or general
+process control. Accepted truth can appear only as the result of the existing
+CLI closeout receipt contract, never as a generic Telegram approval.
 
 | Surface | Current status | Authority boundary | Durable/local artifact |
 | --- | --- | --- | --- |
@@ -209,8 +210,9 @@ plan approval into runtime authority. After `실행 브리프 생성`, Telegram 
 write a local enqueue handoff template, bind a reviewed `prepared_task.json`,
 enqueue the bound task, and start only that queued task through task-scoped
 tick. Telegram can then poll/read only that same task and create the closeout
-packet for a completed task. Closeout review and accepted-truth decisions remain
-local-only.
+packet for a completed task. A later explicit verdict may run only the
+handoff-bound `closeout-review` command. Accepted truth is recorded only when
+that command produces an accepted closeout receipt.
 
 ## Remote Command Envelope
 
@@ -1254,7 +1256,8 @@ night run can continue.
 - Poll only the already-started task by `project_key` and `task_id`.
 - Use `--limit 0` so the monitor path cannot dispatch queued work.
 - Show compact status, blocker, and next-safe-action summaries.
-- Keep closeout review and accepted-truth review local-only.
+- Keep closeout and accepted-truth authority out of the monitor action. Those
+  transitions require the later closeout handoff and verdict phases.
 
 ### Phase 7: Closeout Packet Bridge - Implemented
 
