@@ -16,8 +16,11 @@ use closeout_render::{
 use closeout_report::build_closeout_report;
 use parsing::*;
 use plan_registry::{
-    find_offdesk_plan_registry_item, load_offdesk_plan_registry_detail,
-    load_offdesk_plan_registry_items, load_offdesk_plan_reviews, offdesk_plan_registry_dir,
+    allocate_offdesk_plan_launch_prep_path, allocate_offdesk_plan_registry_dir,
+    allocate_offdesk_plan_review_record_path, find_offdesk_plan_registry_item,
+    load_offdesk_plan_registry_detail, load_offdesk_plan_registry_items, load_offdesk_plan_reviews,
+    offdesk_plan_registry_dir, write_offdesk_plan_launch_prep_packet,
+    write_offdesk_plan_registration, write_offdesk_plan_review_record,
 };
 use wiki_proposal_receipts::wiki_proposal_receipt;
 
@@ -8211,11 +8214,7 @@ fn build_offdesk_plan_registration(
             artifacts,
         });
 
-    if let Some(registration_path) = registration.artifacts.registration_json.as_deref() {
-        let bytes = serde_json::to_vec_pretty(&registration)?;
-        write_new_file(Path::new(registration_path), &bytes)
-            .with_context(|| format!("write Offdesk plan registration {}", registration_path))?;
-    }
+    write_offdesk_plan_registration(&registration)?;
 
     Ok(registration)
 }
@@ -8269,13 +8268,6 @@ fn build_offdesk_plan_review_record(
     })
 }
 
-fn write_offdesk_plan_review_record(record: &OffdeskPlanReviewRecord) -> Result<()> {
-    let bytes = serde_json::to_vec_pretty(record)?;
-    write_new_file(Path::new(&record.artifacts.review_record_json), &bytes)
-        .with_context(|| format!("write {}", record.artifacts.review_record_json))?;
-    Ok(())
-}
-
 fn build_offdesk_plan_launch_prep_packet(
     profile: &str,
     item: &OffdeskPlanRegistryItem,
@@ -8319,13 +8311,6 @@ fn build_offdesk_plan_launch_prep_packet(
     })
 }
 
-fn write_offdesk_plan_launch_prep_packet(packet: &OffdeskPlanLaunchPrepPacket) -> Result<()> {
-    let bytes = serde_json::to_vec_pretty(packet)?;
-    write_new_file(Path::new(&packet.artifacts.launch_prep_json), &bytes)
-        .with_context(|| format!("write {}", packet.artifacts.launch_prep_json))?;
-    Ok(())
-}
-
 fn offdesk_plan_matches_filter(item: &OffdeskPlanRegistryItem, args: &PlansArgs) -> bool {
     if let Some(project_key) = args.project_key.as_deref() {
         if item.registration.project_key.as_deref() != Some(project_key) {
@@ -8348,88 +8333,6 @@ fn offdesk_plan_matches_filter(item: &OffdeskPlanRegistryItem, args: &PlansArgs)
         }
     }
     true
-}
-
-fn allocate_offdesk_plan_review_record_path(
-    registry_dir: &Path,
-    reviewed_at: DateTime<Utc>,
-) -> Result<PathBuf> {
-    fs::create_dir_all(registry_dir)
-        .with_context(|| format!("create Offdesk plan registry {}", registry_dir.display()))?;
-    let timestamp = reviewed_at.format("%Y%m%dT%H%M%SZ");
-    for attempt in 0..1000 {
-        let filename = if attempt == 0 {
-            format!("plan_review_{timestamp}.json")
-        } else {
-            format!("plan_review_{timestamp}_{attempt:03}.json")
-        };
-        let path = registry_dir.join(filename);
-        if !path.exists() {
-            return Ok(path);
-        }
-    }
-
-    bail!(
-        "could not allocate Offdesk plan review path in {}",
-        registry_dir.display()
-    )
-}
-
-fn allocate_offdesk_plan_launch_prep_path(
-    registry_dir: &Path,
-    prepared_at: DateTime<Utc>,
-) -> Result<PathBuf> {
-    fs::create_dir_all(registry_dir)
-        .with_context(|| format!("create Offdesk plan registry {}", registry_dir.display()))?;
-    let timestamp = prepared_at.format("%Y%m%dT%H%M%SZ");
-    for attempt in 0..1000 {
-        let filename = if attempt == 0 {
-            format!("launch_prep_{timestamp}.json")
-        } else {
-            format!("launch_prep_{timestamp}_{attempt:03}.json")
-        };
-        let path = registry_dir.join(filename);
-        if !path.exists() {
-            return Ok(path);
-        }
-    }
-
-    bail!(
-        "could not allocate Offdesk plan launch-prep path in {}",
-        registry_dir.display()
-    )
-}
-
-fn allocate_offdesk_plan_registry_dir(
-    profile_dir: &Path,
-    registered_at: DateTime<Utc>,
-    artifact_kind: &str,
-) -> Result<PathBuf> {
-    let base_dir = profile_dir.join("offdesk_plans");
-    fs::create_dir_all(&base_dir)
-        .with_context(|| format!("create Offdesk plan registry {}", base_dir.display()))?;
-    let timestamp = registered_at.format("%Y%m%dT%H%M%SZ");
-    for attempt in 0..1000 {
-        let name = if attempt == 0 {
-            format!("{timestamp}_{artifact_kind}")
-        } else {
-            format!("{timestamp}_{artifact_kind}_{attempt:03}")
-        };
-        let path = base_dir.join(name);
-        match fs::create_dir(&path) {
-            Ok(()) => return Ok(path),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("create Offdesk plan registry {}", path.display()))
-            }
-        }
-    }
-
-    bail!(
-        "could not allocate Offdesk plan registry path in {}",
-        base_dir.display()
-    )
 }
 
 fn remote_operator_projection<T>(
