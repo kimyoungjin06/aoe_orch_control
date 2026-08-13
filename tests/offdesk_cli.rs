@@ -9674,6 +9674,33 @@ fn offdesk_plans_list_and_plan_show_registered_artifact() -> Result<()> {
         .iter()
         .any(|item| item == "launch"));
 
+    let text_list_output = forager_command(temp.path())
+        .args(["offdesk", "plans", "--project-key", "project", "--latest"])
+        .output()?;
+    assert!(
+        text_list_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&text_list_output.stderr)
+    );
+    let text_list = String::from_utf8_lossy(&text_list_output.stdout);
+    assert!(text_list.contains("Registered Offdesk plans"));
+    assert!(text_list.contains(plan_id));
+    assert!(text_list.contains("plan_review=unreviewed"));
+    assert!(text_list.contains("enqueue=false"));
+
+    let text_show_output = forager_command(temp.path())
+        .args(["offdesk", "plan-show", plan_id])
+        .output()?;
+    assert!(
+        text_show_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&text_show_output.stderr)
+    );
+    let text_show = String::from_utf8_lossy(&text_show_output.stdout);
+    assert!(text_show.contains(&format!("Registered Offdesk plan: {plan_id}")));
+    assert!(text_show.contains("does_not_authorize:"));
+    assert!(text_show.contains("launch"));
+
     let missing_output = forager_command(temp.path())
         .args(["offdesk", "plan-show", "plan_missing", "--json"])
         .output()?;
@@ -10228,6 +10255,43 @@ fn offdesk_remote_operator_plans_and_show_are_read_only() -> Result<()> {
         .expect("disabled actions")
         .iter()
         .any(|item| item == "dispatch"));
+
+    let text_plans_output = forager_command(temp.path())
+        .args([
+            "offdesk",
+            "remote-operator",
+            "plans",
+            "--project-key",
+            "project",
+            "--latest",
+        ])
+        .output()?;
+    assert!(
+        text_plans_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&text_plans_output.stderr)
+    );
+    let text_plans = String::from_utf8_lossy(&text_plans_output.stdout);
+    assert!(text_plans.contains("Forager Remote Plans"));
+    assert!(text_plans.contains("mode:      read-only"));
+    assert!(
+        text_plans.contains("remote launch, dispatch, shell execution, and mutation are disabled")
+    );
+
+    let text_show_output = forager_command(temp.path())
+        .args(["offdesk", "remote-operator", "show", &plan_id])
+        .output()?;
+    assert!(
+        text_show_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&text_show_output.stderr)
+    );
+    let text_show = String::from_utf8_lossy(&text_show_output.stdout);
+    assert!(text_show.contains("Forager Remote Plan Detail"));
+    assert!(text_show.contains(&format!("plan: {plan_id}")));
+    assert!(
+        text_show.contains("remote launch, dispatch, shell execution, and mutation are disabled")
+    );
     Ok(())
 }
 

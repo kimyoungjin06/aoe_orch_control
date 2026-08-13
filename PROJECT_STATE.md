@@ -220,9 +220,10 @@ direction is defined in `docs/project-direction.md`.
   in `src/offdesk/workflow/plan_registry.rs`; directory traversal, fail-closed
   JSON loading, history ordering, and plan-reference path resolution now live
   in `src/cli/offdesk/plan_registry.rs`, together with append-only allocation
-  and completed-record persistence. The next staged extraction is plan output
-  presentation and Remote Operator plan projection assembly from the main
-  Offdesk CLI, while retaining query, read-model, and storage boundaries.
+  and completed-record persistence. Plan text/JSON output and plan-specific
+  Remote Operator payload/card assembly now live in the bounded
+  `src/cli/offdesk/plan_presentation.rs` adapter, while queries, read models,
+  storage, and shared projection envelopes retain their existing boundaries.
 - The 2026-06-26 refactor baseline is captured in
   `docs/refactor-baseline-20260626.md`. The mutation-freeze has been lifted by
   product decision to widen the Telegram operator surface, but new remote
@@ -554,7 +555,7 @@ direction is defined in `docs/project-direction.md`.
 
 ## Next Work Candidates
 
-0. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~14.4k
+0. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~13.9k
    lines). Value parsing and the first typed decision, adaptive-wiki, and
    closeout receipt workflows are separated. Implementation-packet coverage
    policy and record construction are separated, as are plan-review validation
@@ -566,9 +567,11 @@ direction is defined in `docs/project-direction.md`.
    persistence in the CLI storage adapter. Plan source ingestion, hashing, and
    exact-byte copying are also separated. Registration, review, and launch-prep
    coordination now shares a bounded plan command adapter. The regular CLI and
-   Remote Operator also share a bounded read-only plan query adapter. Next move
-   plan output presentation and Remote Operator plan projection assembly into a
-   bounded adapter while retaining query, read-model, and storage boundaries.
+   Remote Operator also share a bounded read-only plan query adapter. Plan
+   output presentation and plan-specific Remote Operator projection assembly
+   now share a bounded adapter. Next move the remaining Remote Operator
+   status/pending payload, card, and shared projection-envelope presentation
+   into a bounded adapter while retaining status and approval query boundaries.
 1. Add the deferred actionable TUI attention panel using the existing shared
    operator-state and next-safe-action contracts.
 2. Apply the deferred council verdicts with the new `wiki edit --kind

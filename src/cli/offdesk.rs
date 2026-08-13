@@ -5,6 +5,7 @@ mod closeout_render;
 mod closeout_report;
 mod parsing;
 mod plan_commands;
+mod plan_presentation;
 mod plan_queries;
 mod plan_registry;
 mod wiki_proposal_receipts;
@@ -19,6 +20,12 @@ use closeout_report::build_closeout_report;
 use parsing::*;
 use plan_commands::{
     prepare_offdesk_plan_launch, record_offdesk_plan_review, register_offdesk_plan,
+};
+use plan_presentation::{
+    present_offdesk_plan_launch_prep_packet, present_offdesk_plan_registration,
+    present_offdesk_plan_registry_detail, present_offdesk_plan_registry_items,
+    present_offdesk_plan_review_record, present_remote_operator_plan_detail,
+    present_remote_operator_plans,
 };
 use plan_queries::{query_offdesk_plan_detail, query_offdesk_plans, OffdeskPlanListQuery};
 use wiki_proposal_receipts::wiki_proposal_receipt;
@@ -82,9 +89,7 @@ use crate::offdesk::{
     JudgmentRoute, LatestImplementationPacket, LearningScanReport, LocalCommandLaunchSpec,
     MutationRestoreOperation, MutationRestorePlan, MutationSnapshot, MutationSnapshotStore,
     MutationSnapshotVerification, OffdeskModeAssessment, OffdeskModeLifecycle,
-    OffdeskNextSafeAction, OffdeskPendingApprovalView, OffdeskPlanLaunchPrepPacket,
-    OffdeskPlanRegistration, OffdeskPlanRegistryDetail, OffdeskPlanRegistryItem,
-    OffdeskPlanReviewDecision, OffdeskPlanReviewRecord, OffdeskPlanReviewState, OffdeskTask,
+    OffdeskNextSafeAction, OffdeskPendingApprovalView, OffdeskPlanReviewDecision, OffdeskTask,
     OffdeskTaskInput, OffdeskTaskLifecycleReport, OffdeskTaskStatus, OffdeskTaskStore,
     OffdeskTaskView, OffdeskTickOptions, OperatorPauseState, OperatorPauseStore,
     PendingActionApproval, ProviderCapacityState, ProviderCapacityStore,
@@ -1124,83 +1129,6 @@ struct RemoteOperatorApprovalSummary {
     #[serde(flatten)]
     core: RemoteOperatorApprovalSummaryCore,
     observed_hash: String,
-}
-
-#[derive(Serialize)]
-struct RemoteOperatorPlansPayload {
-    filters: RemoteOperatorPlanFilters,
-    plan_count: usize,
-    plans: Vec<RemoteOperatorPlanSummary>,
-}
-
-#[derive(Clone, Serialize)]
-struct RemoteOperatorPlanFilters {
-    project_key: Option<String>,
-    task_id: Option<String>,
-    profile_key: Option<String>,
-    artifact_kind: Option<String>,
-    latest: bool,
-}
-
-#[derive(Clone, Serialize)]
-struct RemoteOperatorPlanSummaryCore {
-    plan_id: String,
-    artifact_kind: String,
-    plan_schema: String,
-    profile_key: Option<String>,
-    project_key: Option<String>,
-    request_id: Option<String>,
-    task_id: Option<String>,
-    registered_at: DateTime<Utc>,
-    source_sha256: String,
-    review_status: String,
-    review_count: usize,
-    latest_review_id: Option<String>,
-    launch_prep_count: usize,
-    latest_launch_prep_id: Option<String>,
-    ready_for_operator_review: bool,
-    launch_preparation_candidate: bool,
-    ready_for_enqueue: bool,
-    next_safe_action: String,
-    remote_actions: Vec<String>,
-}
-
-#[derive(Clone, Serialize)]
-struct RemoteOperatorPlanSummary {
-    #[serde(flatten)]
-    core: RemoteOperatorPlanSummaryCore,
-    observed_hash: String,
-}
-
-#[derive(Serialize)]
-struct RemoteOperatorPlanDetailPayload {
-    plan: RemoteOperatorPlanSummary,
-    reviews: Vec<RemoteOperatorPlanReviewSummary>,
-    launch_preps: Vec<RemoteOperatorLaunchPrepSummary>,
-    does_not_authorize: Vec<String>,
-}
-
-#[derive(Clone, Serialize)]
-struct RemoteOperatorPlanReviewSummary {
-    review_id: String,
-    reviewed_at: DateTime<Utc>,
-    decision: OffdeskPlanReviewDecision,
-    reviewer: String,
-    ready_for_launch_preparation_candidate: bool,
-    ready_for_enqueue: bool,
-    blockers: Vec<String>,
-    followups: Vec<String>,
-}
-
-#[derive(Clone, Serialize)]
-struct RemoteOperatorLaunchPrepSummary {
-    prep_id: String,
-    prepared_at: DateTime<Utc>,
-    review_id: String,
-    launch_preparation_candidate: bool,
-    ready_for_launch: bool,
-    ready_for_enqueue: bool,
-    next_safe_action: String,
 }
 
 #[derive(Args)]
@@ -7967,60 +7895,27 @@ async fn harness_prompt(args: HarnessPromptArgs) -> Result<()> {
 
 async fn plan(profile: &str, args: PlanArgs) -> Result<()> {
     let registration = register_offdesk_plan(profile, &args)?;
-    print_offdesk_plan_registration(&registration, args.json)
+    present_offdesk_plan_registration(&registration, args.json)
 }
 
 async fn plans(profile: &str, args: PlansArgs) -> Result<()> {
     let items = query_offdesk_plans(profile, &OffdeskPlanListQuery::from_plans_args(&args))?;
-
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&items)?);
-        return Ok(());
-    }
-
-    if items.is_empty() {
-        println!("No registered Offdesk plans found.");
-        return Ok(());
-    }
-
-    print_offdesk_plan_registry_items(&items);
-    Ok(())
+    present_offdesk_plan_registry_items(&items, args.json)
 }
 
 async fn plan_show(profile: &str, args: PlanShowArgs) -> Result<()> {
     let detail = query_offdesk_plan_detail(profile, &args.plan_ref)?;
-
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&detail)?);
-        return Ok(());
-    }
-
-    print_offdesk_plan_registry_detail(&detail);
-    Ok(())
+    present_offdesk_plan_registry_detail(&detail, args.json)
 }
 
 async fn plan_review(profile: &str, args: PlanReviewArgs) -> Result<()> {
     let record = record_offdesk_plan_review(profile, &args)?;
-
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&record)?);
-        return Ok(());
-    }
-
-    print_offdesk_plan_review_record(&record);
-    Ok(())
+    present_offdesk_plan_review_record(&record, args.json)
 }
 
 async fn plan_launch_prep(profile: &str, args: PlanLaunchPrepArgs) -> Result<()> {
     let packet = prepare_offdesk_plan_launch(profile, &args)?;
-
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&packet)?);
-        return Ok(());
-    }
-
-    print_offdesk_plan_launch_prep_packet(&packet);
-    Ok(())
+    present_offdesk_plan_launch_prep_packet(&packet, args.json)
 }
 
 async fn remote_operator(profile: &str, command: RemoteOperatorCommands) -> Result<()> {
@@ -8065,69 +7960,16 @@ async fn remote_operator_pending(profile: &str, args: RemoteOperatorPendingArgs)
 }
 
 async fn remote_operator_plans(profile: &str, args: RemoteOperatorPlansArgs) -> Result<()> {
-    let filters = RemoteOperatorPlanFilters {
-        project_key: args
-            .project_key
-            .clone()
-            .map(|value| operator_safe_text(&value)),
-        task_id: args.task_id.clone().map(|value| operator_safe_text(&value)),
-        profile_key: args
-            .profile_key
-            .clone()
-            .map(|value| operator_safe_text(&value)),
-        artifact_kind: args
-            .artifact_kind
-            .clone()
-            .map(|value| operator_safe_text(&value)),
-        latest: args.latest,
-    };
     let items = query_offdesk_plans(
         profile,
         &OffdeskPlanListQuery::from_remote_operator_args(&args),
     )?;
-    let plans = items
-        .iter()
-        .map(remote_operator_plan_summary_from_item)
-        .collect::<Result<Vec<_>>>()?;
-    let payload = RemoteOperatorPlansPayload {
-        filters,
-        plan_count: plans.len(),
-        plans,
-    };
-    let observed_hash = observed_hash_for(&payload)?;
-    let card = remote_operator_plans_card(&payload, observed_hash);
-    let projection = remote_operator_projection(profile, &args.transport, "plans", card, payload);
-    print_remote_operator_projection(&projection, args.json)
+    present_remote_operator_plans(profile, &args, &items)
 }
 
 async fn remote_operator_show(profile: &str, args: RemoteOperatorShowArgs) -> Result<()> {
     let detail = query_offdesk_plan_detail(profile, &args.plan_ref)?;
-    let plan = remote_operator_plan_summary_from_detail(&detail)?;
-    let reviews = detail
-        .reviews
-        .iter()
-        .map(remote_operator_plan_review_summary)
-        .collect();
-    let launch_preps = detail
-        .launch_preps
-        .iter()
-        .map(remote_operator_launch_prep_summary)
-        .collect();
-    let payload = RemoteOperatorPlanDetailPayload {
-        plan,
-        reviews,
-        launch_preps,
-        does_not_authorize: detail
-            .registration
-            .does_not_authorize
-            .iter()
-            .map(|value| operator_safe_text(value))
-            .collect(),
-    };
-    let observed_hash = observed_hash_for(&payload)?;
-    let card = remote_operator_show_card(&payload, observed_hash);
-    let projection = remote_operator_projection(profile, &args.transport, "show", card, payload);
-    print_remote_operator_projection(&projection, args.json)
+    present_remote_operator_plan_detail(profile, &args, &detail)
 }
 
 fn remote_operator_projection<T>(
@@ -8264,120 +8106,6 @@ fn remote_operator_next_safe_action_from_offdesk(
     }
 }
 
-fn remote_operator_plan_summary_from_item(
-    item: &OffdeskPlanRegistryItem,
-) -> Result<RemoteOperatorPlanSummary> {
-    let core = remote_operator_plan_summary_core(
-        &item.plan_id,
-        &item.registration,
-        &item.review_state,
-        item.review_count,
-        item.latest_review.as_ref(),
-        item.launch_prep_count,
-        item.latest_launch_prep.as_ref(),
-    );
-    let observed_hash = observed_hash_for(&core)?;
-    Ok(RemoteOperatorPlanSummary {
-        core,
-        observed_hash,
-    })
-}
-
-fn remote_operator_plan_summary_from_detail(
-    detail: &OffdeskPlanRegistryDetail,
-) -> Result<RemoteOperatorPlanSummary> {
-    let core = remote_operator_plan_summary_core(
-        &detail.plan_id,
-        &detail.registration,
-        &detail.review_state,
-        detail.review_count,
-        detail.latest_review.as_ref(),
-        detail.launch_prep_count,
-        detail.latest_launch_prep.as_ref(),
-    );
-    let observed_hash = observed_hash_for(&core)?;
-    Ok(RemoteOperatorPlanSummary {
-        core,
-        observed_hash,
-    })
-}
-
-fn remote_operator_plan_summary_core(
-    plan_id: &str,
-    registration: &OffdeskPlanRegistration,
-    review_state: &OffdeskPlanReviewState,
-    review_count: usize,
-    latest_review: Option<&OffdeskPlanReviewRecord>,
-    launch_prep_count: usize,
-    latest_launch_prep: Option<&OffdeskPlanLaunchPrepPacket>,
-) -> RemoteOperatorPlanSummaryCore {
-    RemoteOperatorPlanSummaryCore {
-        plan_id: operator_safe_text(plan_id),
-        artifact_kind: operator_safe_text(&registration.artifact_kind),
-        plan_schema: operator_safe_text(&registration.plan_schema),
-        profile_key: registration.profile_key.as_deref().map(operator_safe_text),
-        project_key: registration.project_key.as_deref().map(operator_safe_text),
-        request_id: registration.request_id.as_deref().map(operator_safe_text),
-        task_id: registration.task_id.as_deref().map(operator_safe_text),
-        registered_at: registration.registered_at,
-        source_sha256: registration.source_sha256.clone(),
-        review_status: operator_safe_text(&review_state.status),
-        review_count,
-        latest_review_id: latest_review
-            .map(|review| operator_safe_text(&review.review_id))
-            .or_else(|| {
-                review_state
-                    .latest_review_id
-                    .as_deref()
-                    .map(operator_safe_text)
-            }),
-        launch_prep_count,
-        latest_launch_prep_id: latest_launch_prep.map(|packet| operator_safe_text(&packet.prep_id)),
-        ready_for_operator_review: registration.ready_for_operator_review,
-        launch_preparation_candidate: review_state.ready_for_launch_preparation_candidate,
-        ready_for_enqueue: registration.ready_for_enqueue,
-        next_safe_action: operator_safe_text(&review_state.next_safe_action),
-        remote_actions: vec!["inspect_plan".to_string()],
-    }
-}
-
-fn remote_operator_plan_review_summary(
-    review: &OffdeskPlanReviewRecord,
-) -> RemoteOperatorPlanReviewSummary {
-    RemoteOperatorPlanReviewSummary {
-        review_id: operator_safe_text(&review.review_id),
-        reviewed_at: review.reviewed_at,
-        decision: review.decision,
-        reviewer: operator_safe_text(&review.reviewer),
-        ready_for_launch_preparation_candidate: review.ready_for_launch_preparation_candidate,
-        ready_for_enqueue: review.ready_for_enqueue,
-        blockers: review
-            .blockers
-            .iter()
-            .map(|value| operator_safe_text(value))
-            .collect(),
-        followups: review
-            .followups
-            .iter()
-            .map(|value| operator_safe_text(value))
-            .collect(),
-    }
-}
-
-fn remote_operator_launch_prep_summary(
-    packet: &OffdeskPlanLaunchPrepPacket,
-) -> RemoteOperatorLaunchPrepSummary {
-    RemoteOperatorLaunchPrepSummary {
-        prep_id: operator_safe_text(&packet.prep_id),
-        prepared_at: packet.prepared_at,
-        review_id: operator_safe_text(&packet.review_id),
-        launch_preparation_candidate: packet.launch_preparation_candidate,
-        ready_for_launch: packet.ready_for_launch,
-        ready_for_enqueue: packet.ready_for_enqueue,
-        next_safe_action: operator_safe_text(&packet.next_safe_action),
-    }
-}
-
 fn remote_operator_status_card(
     payload: &RemoteOperatorStatusPayload,
     observed_hash: String,
@@ -8439,57 +8167,6 @@ fn remote_operator_pending_card(
         detail_lines,
         observed_hash,
         vec!["inspect_pending".to_string()],
-    )
-}
-
-fn remote_operator_plans_card(
-    payload: &RemoteOperatorPlansPayload,
-    observed_hash: String,
-) -> RemoteOperatorCard {
-    let mut detail_lines = Vec::new();
-    for plan in payload.plans.iter().take(3) {
-        detail_lines.push(format!(
-            "{}: {} review={}",
-            plan.core.plan_id, plan.core.artifact_kind, plan.core.review_status
-        ));
-    }
-    remote_operator_card(
-        "Forager Remote Plans",
-        vec![
-            format!("plans: {}", payload.plan_count),
-            format!(
-                "filter project: {}",
-                payload.filters.project_key.as_deref().unwrap_or("any")
-            ),
-            "remote plan review requires a registered artifact".to_string(),
-        ],
-        detail_lines,
-        observed_hash,
-        vec!["inspect_plans".to_string()],
-    )
-}
-
-fn remote_operator_show_card(
-    payload: &RemoteOperatorPlanDetailPayload,
-    observed_hash: String,
-) -> RemoteOperatorCard {
-    remote_operator_card(
-        "Forager Remote Plan Detail",
-        vec![
-            format!("plan: {}", payload.plan.core.plan_id),
-            format!(
-                "review: {} / launch-preps: {}",
-                payload.plan.core.review_status,
-                payload.launch_preps.len()
-            ),
-            format!("next: {}", payload.plan.core.next_safe_action),
-        ],
-        vec![
-            format!("reviews: {}", payload.reviews.len()),
-            "remote launch and mutation remain disabled".to_string(),
-        ],
-        observed_hash,
-        vec!["inspect_plan".to_string()],
     )
 }
 
@@ -8574,192 +8251,6 @@ fn json_usize_field(value: &Value, field: &str) -> usize {
         .and_then(Value::as_u64)
         .map(|value| value as usize)
         .unwrap_or_default()
-}
-
-fn print_offdesk_plan_registration(
-    registration: &OffdeskPlanRegistration,
-    json: bool,
-) -> Result<()> {
-    if json {
-        println!("{}", serde_json::to_string_pretty(registration)?);
-        return Ok(());
-    }
-
-    let verb = if registration.dry_run {
-        "Validated"
-    } else {
-        "Registered"
-    };
-    println!(
-        "{verb} Offdesk plan artifact: {} ({})",
-        registration.artifact_kind, registration.plan_schema
-    );
-    println!("  source: {}", registration.source_path);
-    println!(
-        "  ready_for_operator_review: {}",
-        registration.ready_for_operator_review
-    );
-    println!(
-        "  ready_for_launch_preparation: {}",
-        registration.ready_for_launch_preparation
-    );
-    println!("  ready_for_enqueue: {}", registration.ready_for_enqueue);
-    if let Some(path) = registration.artifacts.registration_json.as_deref() {
-        println!("  registration: {path}");
-    }
-    println!(
-        "  note: registration does not authorize enqueue, launch, approval, file movement, cleanup, or accepted truth"
-    );
-    Ok(())
-}
-
-fn print_offdesk_plan_registry_items(items: &[OffdeskPlanRegistryItem]) {
-    println!("Registered Offdesk plans");
-    for item in items {
-        let registration = &item.registration;
-        println!(
-            "- {} [{}] plan_review={} launch_candidate={} enqueue={}",
-            item.plan_id,
-            registration.artifact_kind,
-            item.review_state.status,
-            item.review_state.ready_for_launch_preparation_candidate,
-            registration.ready_for_enqueue
-        );
-        println!("  next:    {}", item.review_state.next_safe_action);
-        if let Some(packet) = item.latest_launch_prep.as_ref() {
-            println!("  prep:    {}", packet.prep_id);
-        }
-        if let Some(project_key) = registration.project_key.as_deref() {
-            println!("  project: {project_key}");
-        }
-        if let Some(task_id) = registration.task_id.as_deref() {
-            println!("  task:    {task_id}");
-        }
-        println!("  source:  {}", registration.source_path);
-    }
-}
-
-fn print_offdesk_plan_registry_detail(detail: &OffdeskPlanRegistryDetail) {
-    let registration = &detail.registration;
-    println!("Registered Offdesk plan: {}", detail.plan_id);
-    println!("  kind:       {}", registration.artifact_kind);
-    println!("  schema:     {}", registration.plan_schema);
-    println!("  registered: {}", registration.registered_at);
-    println!("  source:     {}", registration.source_path);
-    println!("  sha256:     {}", registration.source_sha256);
-    if let Some(profile_key) = registration.profile_key.as_deref() {
-        println!("  profile:    {profile_key}");
-    }
-    if let Some(project_key) = registration.project_key.as_deref() {
-        println!("  project:    {project_key}");
-    }
-    if let Some(request_id) = registration.request_id.as_deref() {
-        println!("  request:    {request_id}");
-    }
-    if let Some(task_id) = registration.task_id.as_deref() {
-        println!("  task:       {task_id}");
-    }
-    println!(
-        "  ready_for_operator_review: {}",
-        registration.ready_for_operator_review
-    );
-    println!(
-        "  ready_for_launch_preparation: {}",
-        registration.ready_for_launch_preparation
-    );
-    println!("  ready_for_enqueue: {}", registration.ready_for_enqueue);
-    if let Some(path) = registration.selected_plan_path.as_deref() {
-        println!("  selected_plan: {path}");
-    }
-    println!("  review_state: {}", detail.review_state.status);
-    println!(
-        "  launch_candidate: {}",
-        detail.review_state.ready_for_launch_preparation_candidate
-    );
-    println!("  next:       {}", detail.review_state.next_safe_action);
-    if let Some(review) = detail.latest_review.as_ref() {
-        println!("  latest_review: {}", review.review_id);
-        println!("  reviewer:   {}", review.reviewer);
-        println!("  reason:     {}", review.reason);
-    }
-    if let Some(packet) = detail.latest_launch_prep.as_ref() {
-        println!("  latest_launch_prep: {}", packet.prep_id);
-        println!(
-            "  launch_prep_file:   {}",
-            packet.artifacts.launch_prep_json
-        );
-    }
-    println!("  registration: {}", detail.registration_path);
-    println!(
-        "  does_not_authorize: {}",
-        registration.does_not_authorize.join(", ")
-    );
-}
-
-fn print_offdesk_plan_review_record(record: &OffdeskPlanReviewRecord) {
-    println!("Offdesk plan review");
-    println!("  reviewed_at:  {}", record.reviewed_at);
-    println!("  review_id:    {}", record.review_id);
-    println!("  plan_id:      {}", record.plan_id);
-    println!("  decision:     {}", record.decision.as_str());
-    println!("  reviewer:     {}", record.reviewer);
-    if let Some(provider) = record.review_provider.as_deref() {
-        println!("  provider:     {provider}");
-    }
-    println!("  reason:       {}", record.reason);
-    println!(
-        "  launch_candidate: {}",
-        record.ready_for_launch_preparation_candidate
-    );
-    println!("  ready_for_enqueue: {}", record.ready_for_enqueue);
-    println!("  project file mutations: none");
-    println!("Artifacts:");
-    println!("  registration: {}", record.artifacts.registration_json);
-    println!("  review:       {}", record.artifacts.review_record_json);
-    if !record.blockers.is_empty() {
-        println!("Blockers:");
-        for blocker in &record.blockers {
-            println!("  - {blocker}");
-        }
-    }
-    if !record.followups.is_empty() {
-        println!("Follow-ups:");
-        for followup in &record.followups {
-            println!("  - {followup}");
-        }
-    }
-    println!(
-        "  note: review does not authorize enqueue, launch, approval, file movement, cleanup, or accepted truth"
-    );
-}
-
-fn print_offdesk_plan_launch_prep_packet(packet: &OffdeskPlanLaunchPrepPacket) {
-    println!("Offdesk plan launch-prep packet");
-    println!("  prepared_at:  {}", packet.prepared_at);
-    println!("  prep_id:      {}", packet.prep_id);
-    println!("  plan_id:      {}", packet.plan_id);
-    println!("  review_id:    {}", packet.review_id);
-    println!("  prepared_by:  {}", packet.prepared_by);
-    println!(
-        "  launch_candidate: {}",
-        packet.launch_preparation_candidate
-    );
-    println!("  ready_for_launch: {}", packet.ready_for_launch);
-    println!("  ready_for_enqueue: {}", packet.ready_for_enqueue);
-    println!("  next:         {}", packet.next_safe_action);
-    println!("Artifacts:");
-    println!("  registration: {}", packet.artifacts.registration_json);
-    println!("  review:       {}", packet.artifacts.review_record_json);
-    println!("  launch_prep:  {}", packet.artifacts.launch_prep_json);
-    if !packet.required_first_reads.is_empty() {
-        println!("Required first reads:");
-        for path in &packet.required_first_reads {
-            println!("  - {path}");
-        }
-    }
-    println!(
-        "  note: launch-prep packet does not authorize enqueue, launch, approval, file movement, cleanup, or accepted truth"
-    );
 }
 
 fn hosted_harness_profile(id: &str) -> Option<&'static HostedHarnessProfileView> {
