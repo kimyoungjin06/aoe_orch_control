@@ -83,6 +83,19 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+fn count_files_with_prefix(directory: &Path, prefix: &str) -> Result<usize> {
+    if !directory.exists() {
+        return Ok(0);
+    }
+    let mut count = 0;
+    for entry in fs::read_dir(directory)? {
+        if entry?.file_name().to_string_lossy().starts_with(prefix) {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
 fn profile_dir(home: &std::path::Path) -> std::path::PathBuf {
     profile_dir_for(home, "default")
 }
@@ -9802,6 +9815,7 @@ fn offdesk_plan_review_records_decision_without_runtime_authority() -> Result<()
     assert_eq!(shown["reviews"][0]["review_id"], review["review_id"]);
     assert_eq!(shown["registration"]["ready_for_enqueue"], false);
 
+    let review_count_before = count_files_with_prefix(Path::new(registry_dir), "plan_review_")?;
     let blocked_output = forager_command(temp.path())
         .args([
             "offdesk",
@@ -9821,6 +9835,10 @@ fn offdesk_plan_review_records_decision_without_runtime_authority() -> Result<()
     assert!(!blocked_output.status.success());
     assert!(String::from_utf8_lossy(&blocked_output.stderr)
         .contains("approved Offdesk plan review cannot include blockers"));
+    assert_eq!(
+        count_files_with_prefix(Path::new(registry_dir), "plan_review_")?,
+        review_count_before
+    );
     Ok(())
 }
 
@@ -9889,12 +9907,20 @@ fn offdesk_plan_launch_prep_requires_approved_review_and_stays_read_only() -> Re
         .to_string_lossy()
         .to_string();
 
+    assert_eq!(
+        count_files_with_prefix(Path::new(registry_dir), "launch_prep_")?,
+        0
+    );
     let blocked_output = forager_command(temp.path())
         .args(["offdesk", "plan-launch-prep", &plan_id, "--json"])
         .output()?;
     assert!(!blocked_output.status.success());
     assert!(String::from_utf8_lossy(&blocked_output.stderr)
         .contains("launch-prep requires an approved review"));
+    assert_eq!(
+        count_files_with_prefix(Path::new(registry_dir), "launch_prep_")?,
+        0
+    );
 
     let review_output = forager_command(temp.path())
         .args([
@@ -9941,6 +9967,10 @@ fn offdesk_plan_launch_prep_requires_approved_review_and_stays_read_only() -> Re
     assert!(!latest_blocked_output.status.success());
     assert!(String::from_utf8_lossy(&latest_blocked_output.stderr)
         .contains("launch-prep requires an approved review"));
+    assert_eq!(
+        count_files_with_prefix(Path::new(registry_dir), "launch_prep_")?,
+        0
+    );
 
     let prep_output = forager_command(temp.path())
         .args([
@@ -9987,6 +10017,10 @@ fn offdesk_plan_launch_prep_requires_approved_review_and_stays_read_only() -> Re
         .as_str()
         .expect("prep path");
     assert!(Path::new(prep_path).exists());
+    assert_eq!(
+        count_files_with_prefix(Path::new(registry_dir), "launch_prep_")?,
+        1
+    );
 
     let list_output = forager_command(temp.path())
         .args([
