@@ -5,6 +5,7 @@ mod closeout_records;
 mod decision;
 mod implementation_packet_coverage;
 mod plan_launch_prep;
+mod plan_registration;
 mod plan_review;
 mod wiki_proposal_receipt;
 
@@ -40,11 +41,16 @@ pub use plan_launch_prep::{
     select_offdesk_plan_review, validate_offdesk_plan_launch_prep, OffdeskPlanLaunchPrepArtifacts,
     OffdeskPlanLaunchPrepBuildInput, OffdeskPlanLaunchPrepPacket, OFFDESK_PLAN_LAUNCH_PREP_SCHEMA,
 };
+pub use plan_registration::{
+    build_offdesk_plan_registration, offdesk_plan_registration_denials,
+    validate_offdesk_plan_input, OffdeskPlanInputSummary, OffdeskPlanRegistration,
+    OffdeskPlanRegistrationArtifacts, OffdeskPlanRegistrationBuildInput,
+    OFFDESK_PLAN_REGISTRATION_SCHEMA, OFFDESK_PLAN_REQUIRED_DENIALS,
+};
 pub use plan_review::{
-    build_offdesk_plan_review_record, offdesk_plan_registration_denials,
-    offdesk_plan_review_denials, validate_offdesk_plan_review_input, OffdeskPlanReviewArtifacts,
-    OffdeskPlanReviewBuildInput, OffdeskPlanReviewDecision, OffdeskPlanReviewRecord,
-    OFFDESK_PLAN_REQUIRED_DENIALS, OFFDESK_PLAN_REVIEW_SCHEMA,
+    build_offdesk_plan_review_record, offdesk_plan_review_denials,
+    validate_offdesk_plan_review_input, OffdeskPlanReviewArtifacts, OffdeskPlanReviewBuildInput,
+    OffdeskPlanReviewDecision, OffdeskPlanReviewRecord, OFFDESK_PLAN_REVIEW_SCHEMA,
 };
 pub use wiki_proposal_receipt::{
     build_adaptive_wiki_proposal_receipt, AdaptiveWikiProposalReceipt,

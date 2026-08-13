@@ -10,17 +10,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::offdesk::operator_safe_text;
 
+use super::plan_registration::offdesk_plan_registration_denials;
+
 pub const OFFDESK_PLAN_REVIEW_SCHEMA: &str = "offdesk_plan_review.v1";
-pub const OFFDESK_PLAN_REQUIRED_DENIALS: [&str; 8] = [
-    "enqueue",
-    "launch",
-    "approval",
-    "file movement",
-    "archive",
-    "delete",
-    "wiki promotion",
-    "accepted truth",
-];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ValueEnum)]
 #[serde(rename_all = "snake_case")]
@@ -149,13 +141,6 @@ pub fn build_offdesk_plan_review_record(
         },
         does_not_authorize: offdesk_plan_review_denials(),
     })
-}
-
-pub fn offdesk_plan_registration_denials() -> Vec<String> {
-    OFFDESK_PLAN_REQUIRED_DENIALS
-        .iter()
-        .map(|denial| (*denial).to_string())
-        .collect()
 }
 
 pub fn offdesk_plan_review_denials() -> Vec<String> {
