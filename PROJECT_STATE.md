@@ -180,18 +180,21 @@ direction is defined in `docs/project-direction.md`.
   artifact discovery, task freshness checks, append-only path allocation,
   review/receipt persistence, and idempotent RETURN_PACKAGE section rendering.
   Its accepted-truth scan fails closed on corrupt review JSON rather than
-  silently allowing evidence-incomplete retirement. The closeout report adapter owns report
-  assembly, output-directory allocation, and the five initial artifact writes.
+  silently allowing evidence-incomplete retirement. The closeout report
+  adapter owns report assembly, output-directory allocation, and the five
+  initial artifact writes.
   It allocates the default output directory only after source reads succeed and
   preflights every target before writing, so an explicit-output collision cannot
   leave a partial closeout package. The pure closeout renderer owns the plan,
   RETURN_PACKAGE, and commercial-review Markdown contracts plus their bounded
   list limits and ordering helpers. Implementation-packet goal status, detail
-  acceptance, and work-slice receipt trust now live as typed policy in
+  acceptance, work-slice receipt trust, final coverage record construction,
+  evidence limits, and aggregate counters now live in
   `src/offdesk/workflow/implementation_packet_coverage.rs`; the CLI retains
-  packet and receipt discovery, evidence-record assembly, rendering, and human
-  output. The next staged extraction is the remaining implementation-packet
-  coverage record construction.
+  packet and receipt discovery, evidence/detail observation assembly,
+  rendering, and human output. The next staged extraction is Offdesk plan
+  review validation and record construction while registry lookup, path
+  allocation, and persistence remain in the CLI adapter.
 - The 2026-06-26 refactor baseline is captured in
   `docs/refactor-baseline-20260626.md`. The mutation-freeze has been lifted by
   product decision to widen the Telegram operator surface, but new remote

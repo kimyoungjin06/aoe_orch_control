@@ -7,6 +7,7 @@ use crate::offdesk::{
     ImplementationPacketSummary, WorkSliceExecutionReceipt, WorkSliceExecutionStatus,
     WorkSliceReceiptProducerRole, WorkSliceVerificationStatus,
 };
+use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImplementationPacketCoverageStatus {
@@ -38,6 +39,166 @@ pub struct ImplementationPacketExecutionEvidence {
 pub struct ImplementationPacketGoalCoverage {
     pub status: ImplementationPacketCoverageStatus,
     pub reason: &'static str,
+}
+
+#[derive(Default, Serialize)]
+pub struct CloseoutImplementationPacketCoverage {
+    pub packet_count: usize,
+    pub completed: usize,
+    pub deferred: usize,
+    pub missing: usize,
+    pub drifted: usize,
+    pub detail_items: usize,
+    pub detail_items_completed: usize,
+    pub detail_items_deferred: usize,
+    pub detail_items_missing: usize,
+    pub detail_items_drifted: usize,
+    pub items: Vec<CloseoutImplementationPacketCoverageItem>,
+}
+
+#[derive(Serialize)]
+pub struct CloseoutImplementationPacketCoverageItem {
+    pub packet_id: String,
+    pub project_key: String,
+    pub goal: String,
+    pub success_state: String,
+    pub outcome: String,
+    pub safe_to_delegate: bool,
+    pub goal_status: &'static str,
+    pub reason: String,
+    pub evidence_refs: Vec<String>,
+    pub required_revisions: Vec<String>,
+    pub drift_signals: Vec<String>,
+    pub missing_decisions: Vec<String>,
+    pub work_slice_count: usize,
+    pub validation_item_count: usize,
+    pub expected_artifact_count: usize,
+    pub detail_source: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail_error: Option<String>,
+    pub work_slices: Vec<CloseoutPacketCoverageDetail>,
+    pub validation_items: Vec<CloseoutPacketCoverageDetail>,
+    pub expected_artifacts: Vec<CloseoutPacketCoverageDetail>,
+}
+
+#[derive(Default, Serialize)]
+pub struct CloseoutPacketCoverageDetail {
+    pub category: &'static str,
+    pub label: String,
+    pub status: &'static str,
+    pub reason: String,
+    pub evidence_refs: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub receipt_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub receipt_role: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trust_tier: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reported_status: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claim_status: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification_status: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification_summary: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub verification_refs: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_observation_status: Option<&'static str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub source_refs: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub validation_refs: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub artifact_refs: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub open_questions: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub drift_signals: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_safe_action: Option<String>,
+}
+
+pub struct CloseoutImplementationPacketCoverageInput {
+    pub summary: ImplementationPacketSummary,
+    pub goal_coverage: ImplementationPacketGoalCoverage,
+    pub evidence_refs: Vec<String>,
+    pub detail_source: &'static str,
+    pub detail_error: Option<String>,
+    pub work_slices: Vec<CloseoutPacketCoverageDetail>,
+    pub validation_items: Vec<CloseoutPacketCoverageDetail>,
+    pub expected_artifacts: Vec<CloseoutPacketCoverageDetail>,
+}
+
+pub fn build_closeout_implementation_packet_coverage(
+    inputs: Vec<CloseoutImplementationPacketCoverageInput>,
+) -> CloseoutImplementationPacketCoverage {
+    let mut coverage = CloseoutImplementationPacketCoverage::default();
+    for input in inputs {
+        count_packet_status(&mut coverage, input.goal_coverage.status);
+        count_packet_details(&mut coverage, &input.work_slices);
+        count_packet_details(&mut coverage, &input.validation_items);
+        count_packet_details(&mut coverage, &input.expected_artifacts);
+
+        let summary = input.summary;
+        coverage
+            .items
+            .push(CloseoutImplementationPacketCoverageItem {
+                packet_id: summary.packet_id,
+                project_key: summary.project_key,
+                goal: summary.goal,
+                success_state: summary.success_state,
+                outcome: summary.outcome,
+                safe_to_delegate: summary.safe_to_delegate,
+                goal_status: input.goal_coverage.status.as_str(),
+                reason: input.goal_coverage.reason.to_string(),
+                evidence_refs: input.evidence_refs.into_iter().take(20).collect(),
+                required_revisions: summary.required_revisions,
+                drift_signals: summary.drift_signals,
+                missing_decisions: summary.missing_decisions,
+                work_slice_count: summary.work_slice_count,
+                validation_item_count: summary.validation_item_count,
+                expected_artifact_count: summary.expected_artifact_count,
+                detail_source: input.detail_source,
+                detail_error: input.detail_error,
+                work_slices: input.work_slices,
+                validation_items: input.validation_items,
+                expected_artifacts: input.expected_artifacts,
+            });
+    }
+    coverage.packet_count = coverage.items.len();
+    coverage
+}
+
+fn count_packet_status(
+    coverage: &mut CloseoutImplementationPacketCoverage,
+    status: ImplementationPacketCoverageStatus,
+) {
+    match status {
+        ImplementationPacketCoverageStatus::Completed => coverage.completed += 1,
+        ImplementationPacketCoverageStatus::Deferred => coverage.deferred += 1,
+        ImplementationPacketCoverageStatus::Missing => coverage.missing += 1,
+        ImplementationPacketCoverageStatus::Drifted => coverage.drifted += 1,
+    }
+}
+
+fn count_packet_details(
+    coverage: &mut CloseoutImplementationPacketCoverage,
+    details: &[CloseoutPacketCoverageDetail],
+) {
+    for detail in details {
+        coverage.detail_items += 1;
+        match detail.status {
+            "completed" => coverage.detail_items_completed += 1,
+            "deferred" => coverage.detail_items_deferred += 1,
+            "missing" => coverage.detail_items_missing += 1,
+            "drifted" => coverage.detail_items_drifted += 1,
+            _ => {}
+        }
+    }
 }
 
 pub fn assess_implementation_packet_goal(
@@ -321,6 +482,67 @@ mod tests {
             deferred.status,
             ImplementationPacketCoverageStatus::Deferred
         );
+    }
+
+    #[test]
+    fn coverage_builder_owns_record_shape_and_status_counters() {
+        let mut drifted_summary = packet_summary();
+        drifted_summary.packet_id = "packet-2".to_string();
+        let evidence_refs = (0..25)
+            .map(|index| format!("evidence-{index}"))
+            .collect::<Vec<_>>();
+        let detail = |status| CloseoutPacketCoverageDetail {
+            category: "validation",
+            label: format!("{status} item"),
+            status,
+            reason: "test detail".to_string(),
+            ..Default::default()
+        };
+
+        let coverage = build_closeout_implementation_packet_coverage(vec![
+            CloseoutImplementationPacketCoverageInput {
+                summary: packet_summary(),
+                goal_coverage: ImplementationPacketGoalCoverage {
+                    status: ImplementationPacketCoverageStatus::Completed,
+                    reason: "completed packet",
+                },
+                evidence_refs,
+                detail_source: "implementation_packet",
+                detail_error: None,
+                work_slices: vec![detail("completed")],
+                validation_items: vec![detail("deferred"), detail("missing")],
+                expected_artifacts: vec![detail("drifted")],
+            },
+            CloseoutImplementationPacketCoverageInput {
+                summary: drifted_summary,
+                goal_coverage: ImplementationPacketGoalCoverage {
+                    status: ImplementationPacketCoverageStatus::Drifted,
+                    reason: "drifted packet",
+                },
+                evidence_refs: Vec::new(),
+                detail_source: "summary_only",
+                detail_error: Some("packet unavailable".to_string()),
+                work_slices: Vec::new(),
+                validation_items: Vec::new(),
+                expected_artifacts: Vec::new(),
+            },
+        ]);
+
+        assert_eq!(coverage.packet_count, 2);
+        assert_eq!(coverage.completed, 1);
+        assert_eq!(coverage.drifted, 1);
+        assert_eq!(coverage.detail_items, 4);
+        assert_eq!(coverage.detail_items_completed, 1);
+        assert_eq!(coverage.detail_items_deferred, 1);
+        assert_eq!(coverage.detail_items_missing, 1);
+        assert_eq!(coverage.detail_items_drifted, 1);
+        assert_eq!(coverage.items[0].goal_status, "completed");
+        assert_eq!(coverage.items[0].evidence_refs.len(), 20);
+
+        let value = serde_json::to_value(&coverage).expect("coverage should serialize");
+        assert_eq!(value["items"][0]["goal_status"], "completed");
+        assert!(value["items"][0].get("detail_error").is_none());
+        assert_eq!(value["items"][1]["detail_error"], "packet unavailable");
     }
 
     #[test]

@@ -34,13 +34,14 @@ use super::project_audit::{
 };
 use crate::offdesk::{
     assess_implementation_packet_detail, assess_implementation_packet_goal, assess_offdesk_mode,
-    assess_work_slice_receipt, build_graph_export_files, build_usage_records_with_policy,
-    default_capability_registry, implementation_packet_from_path,
-    implementation_packet_record_from_path, latest_implementation_packet_for_project,
-    launch_background_command, launch_background_run, normalize_decision_choice,
-    operator_safe_report, operator_safe_text, pending_approval_operator_views,
-    poll_background_runs, receipt_decision_record as transition_receipt_decision_record,
-    recommend_provider_fallback, reconcile_tasks_with_background_outcomes,
+    assess_work_slice_receipt, build_closeout_implementation_packet_coverage,
+    build_graph_export_files, build_usage_records_with_policy, default_capability_registry,
+    implementation_packet_from_path, implementation_packet_record_from_path,
+    latest_implementation_packet_for_project, launch_background_command, launch_background_run,
+    normalize_decision_choice, operator_safe_report, operator_safe_text,
+    pending_approval_operator_views, poll_background_runs,
+    receipt_decision_record as transition_receipt_decision_record, recommend_provider_fallback,
+    reconcile_tasks_with_background_outcomes,
     resolve_decision_record as transition_resolve_decision_record, run_offdesk_tick,
     scan_and_emit_learning_signals, work_slice_execution_receipts_from_path, ActionApprovalRequest,
     AdaptiveWikiActivationMode, AdaptiveWikiAgentMode, AdaptiveWikiAgentModeFilter,
@@ -63,23 +64,24 @@ use crate::offdesk::{
     BackgroundLaunchOutcome, BackgroundLaunchRequest, BackgroundProbe,
     BackgroundRecoveryAcknowledgement, BackgroundRecoveryDecision, BackgroundRunStore,
     BackgroundRunnerKind, BackgroundRunnerPhase, CapabilityArtifactRef, CapabilityDescriptor,
-    CloseoutDecisionResolution as WorkflowCloseoutDecisionResolution, CloseoutReviewRecord,
-    CloseoutVerdict, DecisionLedger, DecisionMateriality, DecisionOption, DecisionRaisedBy,
-    DecisionReceiptInput, DecisionRecord, DecisionRecordView, DecisionRequest,
-    DecisionResolutionInput, DecisionRoute, DecisionRouteTarget, DecisionStatus, DecisionTraceRef,
-    DecisionValidationIssue, ExecutionBrief, ImplementationPacket,
-    ImplementationPacketCoverageStatus, ImplementationPacketExecutionEvidence,
-    ImplementationPacketSummary, JudgmentEvaluator, JudgmentRoute, LatestImplementationPacket,
-    LearningScanReport, LocalCommandLaunchSpec, MutationRestoreOperation, MutationRestorePlan,
-    MutationSnapshot, MutationSnapshotStore, MutationSnapshotVerification, OffdeskModeAssessment,
-    OffdeskModeLifecycle, OffdeskNextSafeAction, OffdeskPendingApprovalView, OffdeskTask,
-    OffdeskTaskInput, OffdeskTaskLifecycleReport, OffdeskTaskStatus, OffdeskTaskStore,
-    OffdeskTaskView, OffdeskTickOptions, OperatorPauseState, OperatorPauseStore,
-    PendingActionApproval, ProviderCapacityState, ProviderCapacityStore,
-    ProviderFallbackRecommendation, ResumeStatus, RiskLevel, SchedulerGate, SchedulerGateRequest,
-    SchedulerGateStatus, TaskResumeState, TaskResumeStore, WorkSliceExecutionReceipt,
-    WorkSliceExecutionStatus, DECISION_RECORD_SCHEMA, JUDGMENT_ROUTE_SCHEMA,
-    WORK_SLICE_EXECUTION_RECEIPTS_FILE,
+    CloseoutDecisionResolution as WorkflowCloseoutDecisionResolution,
+    CloseoutImplementationPacketCoverage, CloseoutImplementationPacketCoverageInput,
+    CloseoutPacketCoverageDetail, CloseoutReviewRecord, CloseoutVerdict, DecisionLedger,
+    DecisionMateriality, DecisionOption, DecisionRaisedBy, DecisionReceiptInput, DecisionRecord,
+    DecisionRecordView, DecisionRequest, DecisionResolutionInput, DecisionRoute,
+    DecisionRouteTarget, DecisionStatus, DecisionTraceRef, DecisionValidationIssue, ExecutionBrief,
+    ImplementationPacket, ImplementationPacketCoverageStatus,
+    ImplementationPacketExecutionEvidence, ImplementationPacketSummary, JudgmentEvaluator,
+    JudgmentRoute, LatestImplementationPacket, LearningScanReport, LocalCommandLaunchSpec,
+    MutationRestoreOperation, MutationRestorePlan, MutationSnapshot, MutationSnapshotStore,
+    MutationSnapshotVerification, OffdeskModeAssessment, OffdeskModeLifecycle,
+    OffdeskNextSafeAction, OffdeskPendingApprovalView, OffdeskTask, OffdeskTaskInput,
+    OffdeskTaskLifecycleReport, OffdeskTaskStatus, OffdeskTaskStore, OffdeskTaskView,
+    OffdeskTickOptions, OperatorPauseState, OperatorPauseStore, PendingActionApproval,
+    ProviderCapacityState, ProviderCapacityStore, ProviderFallbackRecommendation, ResumeStatus,
+    RiskLevel, SchedulerGate, SchedulerGateRequest, SchedulerGateStatus, TaskResumeState,
+    TaskResumeStore, WorkSliceExecutionReceipt, WorkSliceExecutionStatus, DECISION_RECORD_SCHEMA,
+    JUDGMENT_ROUTE_SCHEMA, WORK_SLICE_EXECUTION_RECEIPTS_FILE,
 };
 use crate::session::{get_profile_dir, resolved_app_dir_path, DEFAULT_PROFILE};
 
@@ -3433,87 +3435,6 @@ struct CloseoutSummary {
     packet_detail_items_drifted: usize,
     missing_artifacts: usize,
     return_package_required: bool,
-}
-
-#[derive(Default, Serialize)]
-struct CloseoutImplementationPacketCoverage {
-    packet_count: usize,
-    completed: usize,
-    deferred: usize,
-    missing: usize,
-    drifted: usize,
-    detail_items: usize,
-    detail_items_completed: usize,
-    detail_items_deferred: usize,
-    detail_items_missing: usize,
-    detail_items_drifted: usize,
-    items: Vec<CloseoutImplementationPacketCoverageItem>,
-}
-
-#[derive(Serialize)]
-struct CloseoutImplementationPacketCoverageItem {
-    packet_id: String,
-    project_key: String,
-    goal: String,
-    success_state: String,
-    outcome: String,
-    safe_to_delegate: bool,
-    goal_status: &'static str,
-    reason: String,
-    evidence_refs: Vec<String>,
-    required_revisions: Vec<String>,
-    drift_signals: Vec<String>,
-    missing_decisions: Vec<String>,
-    work_slice_count: usize,
-    validation_item_count: usize,
-    expected_artifact_count: usize,
-    detail_source: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    detail_error: Option<String>,
-    work_slices: Vec<CloseoutPacketCoverageDetail>,
-    validation_items: Vec<CloseoutPacketCoverageDetail>,
-    expected_artifacts: Vec<CloseoutPacketCoverageDetail>,
-}
-
-#[derive(Serialize)]
-struct CloseoutPacketCoverageDetail {
-    category: &'static str,
-    label: String,
-    status: &'static str,
-    reason: String,
-    evidence_refs: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    receipt_source: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    receipt_role: Option<&'static str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    trust_tier: Option<&'static str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reported_status: Option<&'static str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    claim_status: Option<&'static str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    verification_status: Option<&'static str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    verification_summary: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    verification_refs: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    source_observation_status: Option<&'static str>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    source_refs: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    summary: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    validation_refs: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    artifact_refs: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    open_questions: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    drift_signals: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    next_safe_action: Option<String>,
 }
 
 struct CloseoutPacketAggregate {
@@ -11668,7 +11589,7 @@ fn closeout_implementation_packet_coverage(
         }
     }
 
-    let mut coverage = CloseoutImplementationPacketCoverage::default();
+    let mut coverage_inputs = Vec::new();
     for aggregate in packets.into_values() {
         let goal_coverage = assess_implementation_packet_goal(
             &aggregate.summary,
@@ -11679,43 +11600,18 @@ fn closeout_implementation_packet_coverage(
             },
         );
         let details = closeout_packet_detail_coverage(&aggregate, goal_coverage.status);
-        match goal_coverage.status {
-            ImplementationPacketCoverageStatus::Completed => coverage.completed += 1,
-            ImplementationPacketCoverageStatus::Deferred => coverage.deferred += 1,
-            ImplementationPacketCoverageStatus::Missing => coverage.missing += 1,
-            ImplementationPacketCoverageStatus::Drifted => coverage.drifted += 1,
-        }
-        closeout_count_packet_details(&mut coverage, &details.work_slices);
-        closeout_count_packet_details(&mut coverage, &details.validation_items);
-        closeout_count_packet_details(&mut coverage, &details.expected_artifacts);
-        let summary = aggregate.summary;
-        coverage
-            .items
-            .push(CloseoutImplementationPacketCoverageItem {
-                packet_id: summary.packet_id,
-                project_key: summary.project_key,
-                goal: summary.goal,
-                success_state: summary.success_state,
-                outcome: summary.outcome,
-                safe_to_delegate: summary.safe_to_delegate,
-                goal_status: goal_coverage.status.as_str(),
-                reason: goal_coverage.reason.to_string(),
-                evidence_refs: aggregate.evidence_refs.into_iter().take(20).collect(),
-                required_revisions: summary.required_revisions,
-                drift_signals: summary.drift_signals,
-                missing_decisions: summary.missing_decisions,
-                work_slice_count: summary.work_slice_count,
-                validation_item_count: summary.validation_item_count,
-                expected_artifact_count: summary.expected_artifact_count,
-                detail_source: details.detail_source,
-                detail_error: details.detail_error,
-                work_slices: details.work_slices,
-                validation_items: details.validation_items,
-                expected_artifacts: details.expected_artifacts,
-            });
+        coverage_inputs.push(CloseoutImplementationPacketCoverageInput {
+            summary: aggregate.summary,
+            goal_coverage,
+            evidence_refs: aggregate.evidence_refs.into_iter().collect(),
+            detail_source: details.detail_source,
+            detail_error: details.detail_error,
+            work_slices: details.work_slices,
+            validation_items: details.validation_items,
+            expected_artifacts: details.expected_artifacts,
+        });
     }
-    coverage.packet_count = coverage.items.len();
-    coverage
+    build_closeout_implementation_packet_coverage(coverage_inputs)
 }
 
 fn closeout_packet_entry<'a>(
@@ -12276,22 +12172,6 @@ fn closeout_packet_matching_refs(
         .map(|(_, evidence)| evidence.clone())
         .take(5)
         .collect()
-}
-
-fn closeout_count_packet_details(
-    coverage: &mut CloseoutImplementationPacketCoverage,
-    details: &[CloseoutPacketCoverageDetail],
-) {
-    for detail in details {
-        coverage.detail_items += 1;
-        match detail.status {
-            "completed" => coverage.detail_items_completed += 1,
-            "deferred" => coverage.detail_items_deferred += 1,
-            "missing" => coverage.detail_items_missing += 1,
-            "drifted" => coverage.detail_items_drifted += 1,
-            _ => {}
-        }
-    }
 }
 
 fn closeout_match_text(value: &str) -> String {
