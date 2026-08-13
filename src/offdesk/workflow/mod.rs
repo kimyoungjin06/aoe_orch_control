@@ -4,6 +4,7 @@ mod closeout_receipt;
 mod closeout_records;
 mod decision;
 mod implementation_packet_coverage;
+mod plan_review;
 mod wiki_proposal_receipt;
 
 pub use closeout_receipt::{
@@ -32,6 +33,13 @@ pub use implementation_packet_coverage::{
     ImplementationPacketCoverageStatus, ImplementationPacketDetailCoverage,
     ImplementationPacketExecutionEvidence, ImplementationPacketGoalCoverage,
     WorkSliceReceiptCoverage, WorkSliceReceiptTrustTier,
+};
+pub use plan_review::{
+    build_offdesk_plan_review_record, offdesk_plan_launch_prep_denials,
+    offdesk_plan_registration_denials, offdesk_plan_review_denials,
+    validate_offdesk_plan_review_input, OffdeskPlanReviewArtifacts, OffdeskPlanReviewBuildInput,
+    OffdeskPlanReviewDecision, OffdeskPlanReviewRecord, OFFDESK_PLAN_REQUIRED_DENIALS,
+    OFFDESK_PLAN_REVIEW_SCHEMA,
 };
 pub use wiki_proposal_receipt::{
     build_adaptive_wiki_proposal_receipt, AdaptiveWikiProposalReceipt,

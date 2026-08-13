@@ -38,10 +38,10 @@ use crate::offdesk::{
     build_graph_export_files, build_usage_records_with_policy, default_capability_registry,
     implementation_packet_from_path, implementation_packet_record_from_path,
     latest_implementation_packet_for_project, launch_background_command, launch_background_run,
-    normalize_decision_choice, operator_safe_report, operator_safe_text,
-    pending_approval_operator_views, poll_background_runs,
-    receipt_decision_record as transition_receipt_decision_record, recommend_provider_fallback,
-    reconcile_tasks_with_background_outcomes,
+    normalize_decision_choice, offdesk_plan_launch_prep_denials, offdesk_plan_registration_denials,
+    operator_safe_report, operator_safe_text, pending_approval_operator_views,
+    poll_background_runs, receipt_decision_record as transition_receipt_decision_record,
+    recommend_provider_fallback, reconcile_tasks_with_background_outcomes,
     resolve_decision_record as transition_resolve_decision_record, run_offdesk_tick,
     scan_and_emit_learning_signals, work_slice_execution_receipts_from_path, ActionApprovalRequest,
     AdaptiveWikiActivationMode, AdaptiveWikiAgentMode, AdaptiveWikiAgentModeFilter,
@@ -75,13 +75,14 @@ use crate::offdesk::{
     JudgmentRoute, LatestImplementationPacket, LearningScanReport, LocalCommandLaunchSpec,
     MutationRestoreOperation, MutationRestorePlan, MutationSnapshot, MutationSnapshotStore,
     MutationSnapshotVerification, OffdeskModeAssessment, OffdeskModeLifecycle,
-    OffdeskNextSafeAction, OffdeskPendingApprovalView, OffdeskTask, OffdeskTaskInput,
+    OffdeskNextSafeAction, OffdeskPendingApprovalView, OffdeskPlanReviewBuildInput,
+    OffdeskPlanReviewDecision, OffdeskPlanReviewRecord, OffdeskTask, OffdeskTaskInput,
     OffdeskTaskLifecycleReport, OffdeskTaskStatus, OffdeskTaskStore, OffdeskTaskView,
     OffdeskTickOptions, OperatorPauseState, OperatorPauseStore, PendingActionApproval,
     ProviderCapacityState, ProviderCapacityStore, ProviderFallbackRecommendation, ResumeStatus,
     RiskLevel, SchedulerGate, SchedulerGateRequest, SchedulerGateStatus, TaskResumeState,
     TaskResumeStore, WorkSliceExecutionReceipt, WorkSliceExecutionStatus, DECISION_RECORD_SCHEMA,
-    JUDGMENT_ROUTE_SCHEMA, WORK_SLICE_EXECUTION_RECEIPTS_FILE,
+    JUDGMENT_ROUTE_SCHEMA, OFFDESK_PLAN_REQUIRED_DENIALS, WORK_SLICE_EXECUTION_RECEIPTS_FILE,
 };
 use crate::session::{get_profile_dir, resolved_app_dir_path, DEFAULT_PROFILE};
 
@@ -992,24 +993,6 @@ pub struct RemoteOperatorShowArgs {
     json: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ValueEnum)]
-#[serde(rename_all = "snake_case")]
-enum OffdeskPlanReviewDecision {
-    Approved,
-    RevisionRequired,
-    Rejected,
-}
-
-impl OffdeskPlanReviewDecision {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Approved => "approved",
-            Self::RevisionRequired => "revision_required",
-            Self::Rejected => "rejected",
-        }
-    }
-}
-
 #[derive(Serialize)]
 struct HostedHarnessPromptPacket {
     harness_id: String,
@@ -1104,39 +1087,6 @@ struct OffdeskPlanReviewState {
     ready_for_launch_preparation_candidate: bool,
     next_safe_action: String,
     latest_review_id: Option<String>,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-struct OffdeskPlanReviewRecord {
-    schema: String,
-    reviewed_at: DateTime<Utc>,
-    review_id: String,
-    plan_id: String,
-    forager_profile: String,
-    registration_path: String,
-    source_sha256: String,
-    decision: OffdeskPlanReviewDecision,
-    reviewer: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    review_provider: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    review_file: Option<String>,
-    reason: String,
-    blockers: Vec<String>,
-    followups: Vec<String>,
-    ready_for_launch_preparation_candidate: bool,
-    ready_for_enqueue: bool,
-    read_only_project_state: bool,
-    applies_file_operations: bool,
-    artifacts: OffdeskPlanReviewArtifacts,
-    does_not_authorize: Vec<String>,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-struct OffdeskPlanReviewArtifacts {
-    registration_json: String,
-    copied_source_json: Option<String>,
-    review_record_json: String,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -8129,17 +8079,6 @@ async fn harness_prompt(args: HarnessPromptArgs) -> Result<()> {
 }
 
 const OFFDESK_PLAN_REGISTRATION_SCHEMA: &str = "offdesk_plan_registration.v1";
-const OFFDESK_PLAN_REQUIRED_DENIALS: [&str; 8] = [
-    "enqueue",
-    "launch",
-    "approval",
-    "file movement",
-    "archive",
-    "delete",
-    "wiki promotion",
-    "accepted truth",
-];
-
 async fn plan(profile: &str, args: PlanArgs) -> Result<()> {
     let registration = build_offdesk_plan_registration(profile, &args)?;
     print_offdesk_plan_registration(&registration, args.json)
@@ -8411,62 +8350,47 @@ fn build_offdesk_plan_review_record(
     item: &OffdeskPlanRegistryItem,
     args: &PlanReviewArgs,
 ) -> Result<OffdeskPlanReviewRecord> {
-    if args.reason.trim().is_empty() {
-        bail!("Offdesk plan review reason is required");
-    }
-    if args.decision == OffdeskPlanReviewDecision::Approved && !args.blockers.is_empty() {
-        bail!("approved Offdesk plan review cannot include blockers");
-    }
+    crate::offdesk::validate_offdesk_plan_review_input(
+        args.decision,
+        &args.reason,
+        &args.blockers,
+    )?;
 
     let reviewed_at = Utc::now();
     let registry_dir = offdesk_plan_registry_dir(item)?;
     let review_record_path = allocate_offdesk_plan_review_record_path(&registry_dir, reviewed_at)?;
-    let ready_for_launch_preparation_candidate = args.decision
-        == OffdeskPlanReviewDecision::Approved
-        && item.registration.ready_for_operator_review
-        && !item.registration.ready_for_launch_preparation
-        && !item.registration.ready_for_enqueue
-        && item.registration.validation_failures.is_empty();
     let profile_name = if profile.is_empty() {
         DEFAULT_PROFILE
     } else {
         profile
     };
+    let review_file = args
+        .review_file
+        .as_ref()
+        .map(|path| path.to_string_lossy().into_owned());
+    let review_record_json = review_record_path.display().to_string();
+    let review_id = format!("plan_review_{}", short_uuid());
 
-    Ok(OffdeskPlanReviewRecord {
-        schema: "offdesk_plan_review.v1".to_string(),
+    crate::offdesk::build_offdesk_plan_review_record(OffdeskPlanReviewBuildInput {
         reviewed_at,
-        review_id: format!("plan_review_{}", short_uuid()),
-        plan_id: item.plan_id.clone(),
-        forager_profile: crate::offdesk::operator_safe_text(profile_name),
-        registration_path: item.registration_path.clone(),
-        source_sha256: item.registration.source_sha256.clone(),
+        review_id: &review_id,
+        plan_id: &item.plan_id,
+        forager_profile: profile_name,
+        registration_path: &item.registration_path,
+        source_sha256: &item.registration.source_sha256,
         decision: args.decision,
-        reviewer: crate::offdesk::operator_safe_text(args.reviewer.trim()),
-        review_provider: args
-            .review_provider
-            .as_deref()
-            .map(|value| crate::offdesk::operator_safe_text(value.trim())),
-        review_file: args
-            .review_file
-            .as_ref()
-            .map(|path| crate::offdesk::operator_safe_text(path.to_string_lossy().as_ref())),
-        reason: truncate_closeout_text(
-            &crate::offdesk::operator_safe_text(args.reason.trim()),
-            2000,
-        ),
-        blockers: safe_text_list(&args.blockers),
-        followups: safe_text_list(&args.followups),
-        ready_for_launch_preparation_candidate,
-        ready_for_enqueue: false,
-        read_only_project_state: true,
-        applies_file_operations: false,
-        artifacts: OffdeskPlanReviewArtifacts {
-            registration_json: item.registration_path.clone(),
-            copied_source_json: item.registration.artifacts.copied_source_json.clone(),
-            review_record_json: review_record_path.display().to_string(),
-        },
-        does_not_authorize: offdesk_plan_review_denials(),
+        reviewer: &args.reviewer,
+        review_provider: args.review_provider.as_deref(),
+        review_file,
+        reason: &args.reason,
+        blockers: &args.blockers,
+        followups: &args.followups,
+        registration_ready_for_operator_review: item.registration.ready_for_operator_review,
+        registration_ready_for_launch_preparation: item.registration.ready_for_launch_preparation,
+        registration_ready_for_enqueue: item.registration.ready_for_enqueue,
+        registration_validation_failures: &item.registration.validation_failures,
+        copied_source_json: item.registration.artifacts.copied_source_json.as_deref(),
+        review_record_json: &review_record_json,
     })
 }
 
@@ -9088,25 +9012,6 @@ fn value_string_field(value: &Value, field: &str) -> Option<String> {
         .get(field)
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
-}
-
-fn offdesk_plan_registration_denials() -> Vec<String> {
-    OFFDESK_PLAN_REQUIRED_DENIALS
-        .into_iter()
-        .map(ToOwned::to_owned)
-        .collect()
-}
-
-fn offdesk_plan_review_denials() -> Vec<String> {
-    let mut denials = offdesk_plan_registration_denials();
-    denials.push("launch preparation without a separate command".to_string());
-    denials
-}
-
-fn offdesk_plan_launch_prep_denials() -> Vec<String> {
-    let mut denials = offdesk_plan_review_denials();
-    denials.push("dispatch".to_string());
-    denials
 }
 
 fn remote_operator_projection<T>(
@@ -10722,14 +10627,6 @@ fn deck_escape_markdown(text: &str) -> String {
     operator_safe_text(text)
         .replace(['\n', '\r'], " ")
         .replace('|', "\\|")
-}
-
-fn safe_text_list(values: &[String]) -> Vec<String> {
-    values
-        .iter()
-        .map(|value| crate::offdesk::operator_safe_text(value.trim()))
-        .filter(|value| !value.is_empty())
-        .collect()
 }
 
 fn closeout_task_matches(task: &OffdeskTask, args: &CloseoutArgs) -> bool {
