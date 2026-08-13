@@ -66,6 +66,8 @@ pub struct NewSessionData {
     pub worktree_branch: Option<String>,
     pub create_new_branch: bool,
     pub yolo_mode: bool,
+    pub tool_explicitly_selected: bool,
+    pub yolo_explicitly_selected: bool,
 }
 
 /// Spinner frames for loading animation
@@ -82,6 +84,8 @@ pub struct NewSessionDialog {
     pub(super) worktree_branch: Input,
     pub(super) create_new_branch: bool,
     pub(super) yolo_mode: bool,
+    pub(super) tool_explicitly_selected: bool,
+    pub(super) yolo_explicitly_selected: bool,
     pub(super) existing_groups: Vec<String>,
     pub(super) group_picker: ListPicker,
     pub(super) branch_picker: ListPicker,
@@ -143,6 +147,8 @@ impl NewSessionDialog {
             worktree_branch: Input::default(),
             create_new_branch: true,
             yolo_mode,
+            tool_explicitly_selected: false,
+            yolo_explicitly_selected: false,
             error_message: None,
             show_help: false,
             loading: false,
@@ -214,6 +220,8 @@ impl NewSessionDialog {
             worktree_branch: Input::default(),
             create_new_branch: true,
             yolo_mode: false,
+            tool_explicitly_selected: false,
+            yolo_explicitly_selected: false,
             error_message: None,
             show_help: false,
             loading: false,
@@ -241,6 +249,8 @@ impl NewSessionDialog {
             worktree_branch: Input::default(),
             create_new_branch: true,
             yolo_mode: false,
+            tool_explicitly_selected: false,
+            yolo_explicitly_selected: false,
             error_message: None,
             show_help: false,
             loading: false,
@@ -370,6 +380,8 @@ impl NewSessionDialog {
                     worktree_branch,
                     create_new_branch: self.create_new_branch,
                     yolo_mode: self.yolo_mode,
+                    tool_explicitly_selected: self.tool_explicitly_selected,
+                    yolo_explicitly_selected: self.yolo_explicitly_selected,
                 })
             }
             KeyCode::Tab | KeyCode::Down => {
@@ -386,10 +398,12 @@ impl NewSessionDialog {
             }
             KeyCode::Left | KeyCode::Right if self.focused_field == tool_field => {
                 self.tool_index = (self.tool_index + 1) % self.available_tools.len();
+                self.tool_explicitly_selected = true;
                 DialogResult::Continue
             }
             KeyCode::Char(' ') if self.focused_field == tool_field => {
                 self.tool_index = (self.tool_index + 1) % self.available_tools.len();
+                self.tool_explicitly_selected = true;
                 DialogResult::Continue
             }
             KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
@@ -402,6 +416,7 @@ impl NewSessionDialog {
                 if self.focused_field == yolo_mode_field =>
             {
                 self.yolo_mode = !self.yolo_mode;
+                self.yolo_explicitly_selected = true;
                 DialogResult::Continue
             }
             _ => {

@@ -1,7 +1,8 @@
 //! Setting field definitions and config mapping
 
 use crate::session::{
-    validate_check_interval, Config, ProfileConfig, TmuxMouseMode, TmuxStatusBarMode,
+    validate_check_interval, validate_path_exists, Config, ProfileConfig, TmuxMouseMode,
+    TmuxStatusBarMode,
 };
 use crate::sound::{validate_sound_exists, SoundMode};
 
@@ -10,10 +11,14 @@ use super::SettingsScope;
 /// Categories of settings
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsCategory {
+    General,
     Updates,
     Worktree,
+    Cleanup,
     Tmux,
     Session,
+    Claude,
+    Diff,
     Sound,
     Hooks,
 }
@@ -21,10 +26,14 @@ pub enum SettingsCategory {
 impl SettingsCategory {
     pub fn label(&self) -> &'static str {
         match self {
+            Self::General => "General",
             Self::Updates => "Updates",
             Self::Worktree => "Worktree",
+            Self::Cleanup => "Cleanup",
             Self::Tmux => "Tmux",
             Self::Session => "Session",
+            Self::Claude => "Claude",
+            Self::Diff => "Diff",
             Self::Sound => "Sound",
             Self::Hooks => "Hooks",
         }
@@ -34,6 +43,8 @@ impl SettingsCategory {
 /// Type-safe field identifiers (prevents typos in string matching)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldKey {
+    // General
+    DefaultProfile,
     // Updates
     CheckEnabled,
     CheckIntervalHours,
@@ -42,10 +53,21 @@ pub enum FieldKey {
     PathTemplate,
     BareRepoPathTemplate,
     WorktreeAutoCleanup,
+    ShowBranchInTui,
     DeleteBranchOnCleanup,
+    // Legacy cleanup
+    SandboxAutoCleanup,
     // Session
     DefaultTool,
     YoloModeDefault,
+    AutoOrchestrator,
+    OrchestratorTitle,
+    OrchestratorCommand,
+    // Claude
+    ClaudeConfigDir,
+    // Diff
+    DiffDefaultBranch,
+    DiffContextLines,
     // Tmux
     StatusBar,
     Mouse,
@@ -66,8 +88,8 @@ pub enum FieldKey {
 /// Returns (value, has_override).
 fn resolve_value<T: Clone>(scope: SettingsScope, global: T, profile: Option<T>) -> (T, bool) {
     match scope {
-        SettingsScope::Global | SettingsScope::Repo => (global, false),
-        SettingsScope::Profile => {
+        SettingsScope::Global => (global, false),
+        SettingsScope::Profile | SettingsScope::Repo => {
             let has_override = profile.is_some();
             let value = profile.unwrap_or(global);
             (value, has_override)
@@ -84,8 +106,8 @@ fn resolve_optional<T: Clone>(
     has_explicit_override: bool,
 ) -> (Option<T>, bool) {
     match scope {
-        SettingsScope::Global | SettingsScope::Repo => (global, false),
-        SettingsScope::Profile => {
+        SettingsScope::Global => (global, false),
+        SettingsScope::Profile | SettingsScope::Repo => {
             let value = profile.or(global);
             (value, has_explicit_override)
         }
@@ -110,6 +132,29 @@ fn set_or_clear_override<T, S, F>(
     } else {
         let s = section.get_or_insert_with(S::default);
         set_field(s, Some(new_value));
+    }
+}
+
+fn set_optional_string_override<S, F>(
+    new_value: &Option<String>,
+    global_value: &Option<String>,
+    section: &mut Option<S>,
+    set_field: F,
+) where
+    S: Default,
+    F: FnOnce(&mut S, Option<String>),
+{
+    let override_value = if new_value == global_value {
+        None
+    } else {
+        Some(new_value.clone().unwrap_or_default())
+    };
+
+    if override_value.is_some() {
+        let value = section.get_or_insert_with(S::default);
+        set_field(value, override_value);
+    } else if let Some(value) = section {
+        set_field(value, None);
     }
 }
 
@@ -146,6 +191,12 @@ impl SettingField {
                 validate_check_interval(*n)?;
                 Ok(())
             }
+            (FieldKey::DiffContextLines, FieldValue::Number(n)) => usize::try_from(*n)
+                .map(|_| ())
+                .map_err(|_| "Diff context lines exceed this platform's limit".to_string()),
+            (FieldKey::ClaudeConfigDir, FieldValue::OptionalText(Some(path))) => {
+                validate_path_exists(path)
+            }
             // Sound field validation - check if sound file exists
             (
                 FieldKey::SoundOnStart
@@ -176,13 +227,41 @@ pub fn build_fields_for_category(
     profile: &ProfileConfig,
 ) -> Vec<SettingField> {
     match category {
+        SettingsCategory::General => build_general_fields(global),
         SettingsCategory::Updates => build_updates_fields(scope, global, profile),
         SettingsCategory::Worktree => build_worktree_fields(scope, global, profile),
+        SettingsCategory::Cleanup => build_cleanup_fields(scope, global, profile),
         SettingsCategory::Tmux => build_tmux_fields(scope, global, profile),
         SettingsCategory::Session => build_session_fields(scope, global, profile),
+        SettingsCategory::Claude => build_claude_fields(scope, global, profile),
+        SettingsCategory::Diff => build_diff_fields(scope, global, profile),
         SettingsCategory::Sound => build_sound_fields(scope, global, profile),
         SettingsCategory::Hooks => build_hooks_fields(scope, global, profile),
     }
+}
+
+fn build_general_fields(global: &Config) -> Vec<SettingField> {
+    let mut options = crate::session::list_profiles().unwrap_or_default();
+    if !options
+        .iter()
+        .any(|profile| profile == &global.default_profile)
+    {
+        options.push(global.default_profile.clone());
+        options.sort();
+    }
+    let selected = options
+        .iter()
+        .position(|profile| profile == &global.default_profile)
+        .unwrap_or(0);
+
+    vec![SettingField {
+        key: FieldKey::DefaultProfile,
+        label: "Default Profile",
+        description: "Profile used when forager starts without -p",
+        value: FieldValue::Select { selected, options },
+        category: SettingsCategory::General,
+        has_override: false,
+    }]
 }
 
 fn build_updates_fields(
@@ -263,6 +342,11 @@ fn build_worktree_fields(
         global.worktree.delete_branch_on_cleanup,
         wt.and_then(|w| w.delete_branch_on_cleanup),
     );
+    let (show_branch_in_tui, o5) = resolve_value(
+        scope,
+        global.worktree.show_branch_in_tui,
+        wt.and_then(|w| w.show_branch_in_tui),
+    );
 
     vec![
         SettingField {
@@ -290,6 +374,14 @@ fn build_worktree_fields(
             has_override: o3,
         },
         SettingField {
+            key: FieldKey::ShowBranchInTui,
+            label: "Show Branch in TUI",
+            description: "Display worktree branch names in the session list",
+            value: FieldValue::Bool(show_branch_in_tui),
+            category: SettingsCategory::Worktree,
+            has_override: o5,
+        },
+        SettingField {
             key: FieldKey::DeleteBranchOnCleanup,
             label: "Delete Branch on Cleanup",
             description: "Also delete the git branch when deleting a worktree",
@@ -298,6 +390,28 @@ fn build_worktree_fields(
             has_override: o4,
         },
     ]
+}
+
+fn build_cleanup_fields(
+    scope: SettingsScope,
+    global: &Config,
+    profile: &ProfileConfig,
+) -> Vec<SettingField> {
+    let sandbox = profile.sandbox.as_ref();
+    let (auto_cleanup, has_override) = resolve_value(
+        scope,
+        global.sandbox.auto_cleanup,
+        sandbox.and_then(|s| s.auto_cleanup),
+    );
+
+    vec![SettingField {
+        key: FieldKey::SandboxAutoCleanup,
+        label: "Legacy Sandbox Cleanup",
+        description: "Select stored legacy sandbox containers for deletion by default",
+        value: FieldValue::Bool(auto_cleanup),
+        category: SettingsCategory::Cleanup,
+        has_override,
+    }]
 }
 
 fn build_tmux_fields(
@@ -378,8 +492,29 @@ fn build_session_fields(
         global.session.yolo_mode_default,
         session.and_then(|s| s.yolo_mode_default),
     );
+    let (auto_orchestrator, auto_orchestrator_override) = resolve_value(
+        scope,
+        global.session.auto_orchestrator,
+        session.and_then(|s| s.auto_orchestrator),
+    );
+    let (orchestrator_title, orchestrator_title_override) = resolve_optional(
+        scope,
+        global.session.orchestrator_title.clone(),
+        session.and_then(|s| s.orchestrator_title.clone()),
+        session
+            .map(|s| s.orchestrator_title.is_some())
+            .unwrap_or(false),
+    );
+    let (orchestrator_command, orchestrator_command_override) = resolve_optional(
+        scope,
+        global.session.orchestrator_command.clone(),
+        session.and_then(|s| s.orchestrator_command.clone()),
+        session
+            .map(|s| s.orchestrator_command.is_some())
+            .unwrap_or(false),
+    );
 
-    vec![
+    let mut fields = vec![
         SettingField {
             key: FieldKey::DefaultTool,
             label: "Default Tool",
@@ -396,7 +531,96 @@ fn build_session_fields(
             category: SettingsCategory::Session,
             has_override: yolo_override,
         },
+        SettingField {
+            key: FieldKey::AutoOrchestrator,
+            label: "Auto Orchestrator",
+            description: "Create an orchestrator session with each project session",
+            value: FieldValue::Bool(auto_orchestrator),
+            category: SettingsCategory::Session,
+            has_override: auto_orchestrator_override,
+        },
+        SettingField {
+            key: FieldKey::OrchestratorTitle,
+            label: "Orchestrator Title",
+            description: "Optional title for automatically created orchestrator sessions",
+            value: FieldValue::OptionalText(orchestrator_title),
+            category: SettingsCategory::Session,
+            has_override: orchestrator_title_override,
+        },
+        SettingField {
+            key: FieldKey::OrchestratorCommand,
+            label: "Orchestrator Command",
+            description: "Optional command for automatically created orchestrator sessions",
+            value: FieldValue::OptionalText(orchestrator_command),
+            category: SettingsCategory::Session,
+            has_override: orchestrator_command_override,
+        },
+    ];
+    if scope == SettingsScope::Repo {
+        fields.retain(|field| field.key != FieldKey::OrchestratorCommand);
+    }
+    fields
+}
+
+fn build_diff_fields(
+    scope: SettingsScope,
+    global: &Config,
+    profile: &ProfileConfig,
+) -> Vec<SettingField> {
+    let diff = profile.diff.as_ref();
+    let (default_branch, default_branch_override) = resolve_optional(
+        scope,
+        global.diff.default_branch.clone(),
+        diff.and_then(|d| d.default_branch.clone()),
+        diff.map(|d| d.default_branch.is_some()).unwrap_or(false),
+    );
+    let (context_lines, context_lines_override) = resolve_value(
+        scope,
+        global.diff.context_lines,
+        diff.and_then(|d| d.context_lines),
+    );
+
+    vec![
+        SettingField {
+            key: FieldKey::DiffDefaultBranch,
+            label: "Default Branch",
+            description: "Base branch for diffs; empty uses repository auto-detection",
+            value: FieldValue::OptionalText(default_branch),
+            category: SettingsCategory::Diff,
+            has_override: default_branch_override,
+        },
+        SettingField {
+            key: FieldKey::DiffContextLines,
+            label: "Context Lines",
+            description: "Number of unchanged lines around each diff hunk",
+            value: FieldValue::Number(u64::try_from(context_lines).unwrap_or(u64::MAX)),
+            category: SettingsCategory::Diff,
+            has_override: context_lines_override,
+        },
     ]
+}
+
+fn build_claude_fields(
+    scope: SettingsScope,
+    global: &Config,
+    profile: &ProfileConfig,
+) -> Vec<SettingField> {
+    let claude = profile.claude.as_ref();
+    let (config_dir, has_override) = resolve_optional(
+        scope,
+        global.claude.config_dir.clone(),
+        claude.and_then(|c| c.config_dir.clone()),
+        claude.map(|c| c.config_dir.is_some()).unwrap_or(false),
+    );
+
+    vec![SettingField {
+        key: FieldKey::ClaudeConfigDir,
+        label: "Config Directory",
+        description: "CLAUDE_CONFIG_DIR for newly started Claude sessions",
+        value: FieldValue::OptionalText(config_dir),
+        category: SettingsCategory::Claude,
+        has_override,
+    }]
 }
 
 fn build_sound_fields(
@@ -569,6 +793,12 @@ pub fn apply_field_to_config(
 
 fn apply_field_to_global(field: &SettingField, config: &mut Config) {
     match (&field.key, &field.value) {
+        // General
+        (FieldKey::DefaultProfile, FieldValue::Select { selected, options }) => {
+            if let Some(profile) = options.get(*selected) {
+                config.default_profile = profile.clone();
+            }
+        }
         // Updates
         (FieldKey::CheckEnabled, FieldValue::Bool(v)) => config.updates.check_enabled = *v,
         (FieldKey::CheckIntervalHours, FieldValue::Number(v)) => {
@@ -581,10 +811,12 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
             config.worktree.bare_repo_path_template = v.clone()
         }
         (FieldKey::WorktreeAutoCleanup, FieldValue::Bool(v)) => config.worktree.auto_cleanup = *v,
+        (FieldKey::ShowBranchInTui, FieldValue::Bool(v)) => config.worktree.show_branch_in_tui = *v,
         (FieldKey::DeleteBranchOnCleanup, FieldValue::Bool(v)) => {
             config.worktree.delete_branch_on_cleanup = *v
         }
-        (FieldKey::YoloModeDefault, FieldValue::Bool(v)) => config.session.yolo_mode_default = *v,
+        // Legacy cleanup
+        (FieldKey::SandboxAutoCleanup, FieldValue::Bool(v)) => config.sandbox.auto_cleanup = *v,
         // Tmux
         (FieldKey::StatusBar, FieldValue::Select { selected, .. }) => {
             config.tmux.status_bar = match selected {
@@ -604,6 +836,27 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::DefaultTool, FieldValue::Select { selected, .. }) => {
             config.session.default_tool =
                 crate::agents::name_from_settings_index(*selected).map(|s| s.to_string());
+        }
+        (FieldKey::YoloModeDefault, FieldValue::Bool(v)) => config.session.yolo_mode_default = *v,
+        (FieldKey::AutoOrchestrator, FieldValue::Bool(v)) => config.session.auto_orchestrator = *v,
+        (FieldKey::OrchestratorTitle, FieldValue::OptionalText(v)) => {
+            config.session.orchestrator_title = v.clone()
+        }
+        (FieldKey::OrchestratorCommand, FieldValue::OptionalText(v)) => {
+            config.session.orchestrator_command = v.clone()
+        }
+        // Claude
+        (FieldKey::ClaudeConfigDir, FieldValue::OptionalText(v)) => {
+            config.claude.config_dir = v.clone()
+        }
+        // Diff
+        (FieldKey::DiffDefaultBranch, FieldValue::OptionalText(v)) => {
+            config.diff.default_branch = v.clone()
+        }
+        (FieldKey::DiffContextLines, FieldValue::Number(v)) => {
+            if let Ok(value) = usize::try_from(*v) {
+                config.diff.context_lines = value;
+            }
         }
         // Sound
         (FieldKey::SoundEnabled, FieldValue::Bool(v)) => config.sound.enabled = *v,
@@ -689,12 +942,29 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
                 |s, val| s.auto_cleanup = val,
             );
         }
+        (FieldKey::ShowBranchInTui, FieldValue::Bool(v)) => {
+            set_or_clear_override(
+                *v,
+                &global.worktree.show_branch_in_tui,
+                &mut config.worktree,
+                |s, val| s.show_branch_in_tui = val,
+            );
+        }
         (FieldKey::DeleteBranchOnCleanup, FieldValue::Bool(v)) => {
             set_or_clear_override(
                 *v,
                 &global.worktree.delete_branch_on_cleanup,
                 &mut config.worktree,
                 |s, val| s.delete_branch_on_cleanup = val,
+            );
+        }
+        // Legacy cleanup
+        (FieldKey::SandboxAutoCleanup, FieldValue::Bool(v)) => {
+            set_or_clear_override(
+                *v,
+                &global.sandbox.auto_cleanup,
+                &mut config.sandbox,
+                |s, val| s.auto_cleanup = val,
             );
         }
         // Tmux
@@ -721,17 +991,12 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
         // Session
         (FieldKey::DefaultTool, FieldValue::Select { selected, .. }) => {
             let tool = crate::agents::name_from_settings_index(*selected).map(|s| s.to_string());
-            if tool == global.session.default_tool {
-                if let Some(ref mut session) = config.session {
-                    session.default_tool = None;
-                }
-            } else {
-                use crate::session::SessionConfigOverride;
-                let session = config
-                    .session
-                    .get_or_insert_with(SessionConfigOverride::default);
-                session.default_tool = tool;
-            }
+            set_optional_string_override(
+                &tool,
+                &global.session.default_tool,
+                &mut config.session,
+                |session, value| session.default_tool = value,
+            );
         }
         (FieldKey::YoloModeDefault, FieldValue::Bool(v)) => {
             set_or_clear_override(
@@ -740,6 +1005,58 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
                 &mut config.session,
                 |s, val| s.yolo_mode_default = val,
             );
+        }
+        (FieldKey::AutoOrchestrator, FieldValue::Bool(v)) => {
+            set_or_clear_override(
+                *v,
+                &global.session.auto_orchestrator,
+                &mut config.session,
+                |s, val| s.auto_orchestrator = val,
+            );
+        }
+        (FieldKey::OrchestratorTitle, FieldValue::OptionalText(v)) => {
+            set_optional_string_override(
+                v,
+                &global.session.orchestrator_title,
+                &mut config.session,
+                |session, value| session.orchestrator_title = value,
+            );
+        }
+        (FieldKey::OrchestratorCommand, FieldValue::OptionalText(v)) => {
+            set_optional_string_override(
+                v,
+                &global.session.orchestrator_command,
+                &mut config.session,
+                |session, value| session.orchestrator_command = value,
+            );
+        }
+        // Claude
+        (FieldKey::ClaudeConfigDir, FieldValue::OptionalText(v)) => {
+            set_optional_string_override(
+                v,
+                &global.claude.config_dir,
+                &mut config.claude,
+                |claude, value| claude.config_dir = value,
+            );
+        }
+        // Diff
+        (FieldKey::DiffDefaultBranch, FieldValue::OptionalText(v)) => {
+            set_optional_string_override(
+                v,
+                &global.diff.default_branch,
+                &mut config.diff,
+                |diff, value| diff.default_branch = value,
+            );
+        }
+        (FieldKey::DiffContextLines, FieldValue::Number(v)) => {
+            if let Ok(value) = usize::try_from(*v) {
+                set_or_clear_override(
+                    value,
+                    &global.diff.context_lines,
+                    &mut config.diff,
+                    |s, val| s.context_lines = val,
+                );
+            }
         }
         // Sound
         (FieldKey::SoundEnabled, FieldValue::Bool(v)) => {
@@ -757,64 +1074,44 @@ fn apply_field_to_profile(field: &SettingField, global: &Config, config: &mut Pr
             });
         }
         (FieldKey::SoundOnStart, FieldValue::OptionalText(v)) => {
-            if *v == global.sound.on_start {
-                if let Some(ref mut s) = config.sound {
-                    s.on_start = None;
-                }
-            } else {
-                let s = config
-                    .sound
-                    .get_or_insert_with(crate::sound::SoundConfigOverride::default);
-                s.on_start = v.clone();
-            }
+            set_optional_string_override(
+                v,
+                &global.sound.on_start,
+                &mut config.sound,
+                |sound, value| sound.on_start = value,
+            );
         }
         (FieldKey::SoundOnRunning, FieldValue::OptionalText(v)) => {
-            if *v == global.sound.on_running {
-                if let Some(ref mut s) = config.sound {
-                    s.on_running = None;
-                }
-            } else {
-                let s = config
-                    .sound
-                    .get_or_insert_with(crate::sound::SoundConfigOverride::default);
-                s.on_running = v.clone();
-            }
+            set_optional_string_override(
+                v,
+                &global.sound.on_running,
+                &mut config.sound,
+                |sound, value| sound.on_running = value,
+            );
         }
         (FieldKey::SoundOnWaiting, FieldValue::OptionalText(v)) => {
-            if *v == global.sound.on_waiting {
-                if let Some(ref mut s) = config.sound {
-                    s.on_waiting = None;
-                }
-            } else {
-                let s = config
-                    .sound
-                    .get_or_insert_with(crate::sound::SoundConfigOverride::default);
-                s.on_waiting = v.clone();
-            }
+            set_optional_string_override(
+                v,
+                &global.sound.on_waiting,
+                &mut config.sound,
+                |sound, value| sound.on_waiting = value,
+            );
         }
         (FieldKey::SoundOnIdle, FieldValue::OptionalText(v)) => {
-            if *v == global.sound.on_idle {
-                if let Some(ref mut s) = config.sound {
-                    s.on_idle = None;
-                }
-            } else {
-                let s = config
-                    .sound
-                    .get_or_insert_with(crate::sound::SoundConfigOverride::default);
-                s.on_idle = v.clone();
-            }
+            set_optional_string_override(
+                v,
+                &global.sound.on_idle,
+                &mut config.sound,
+                |sound, value| sound.on_idle = value,
+            );
         }
         (FieldKey::SoundOnError, FieldValue::OptionalText(v)) => {
-            if *v == global.sound.on_error {
-                if let Some(ref mut s) = config.sound {
-                    s.on_error = None;
-                }
-            } else {
-                let s = config
-                    .sound
-                    .get_or_insert_with(crate::sound::SoundConfigOverride::default);
-                s.on_error = v.clone();
-            }
+            set_optional_string_override(
+                v,
+                &global.sound.on_error,
+                &mut config.sound,
+                |sound, value| sound.on_error = value,
+            );
         }
         // Hooks
         (FieldKey::HookOnCreate, FieldValue::List(v)) => {
@@ -968,5 +1265,228 @@ mod tests {
                 option
             );
         }
+    }
+
+    #[test]
+    fn active_runtime_fields_are_present_in_settings() {
+        let global = Config::default();
+        let profile = ProfileConfig::default();
+
+        let cases = [
+            (
+                SettingsCategory::Session,
+                vec![
+                    FieldKey::DefaultTool,
+                    FieldKey::YoloModeDefault,
+                    FieldKey::AutoOrchestrator,
+                    FieldKey::OrchestratorTitle,
+                    FieldKey::OrchestratorCommand,
+                ],
+            ),
+            (
+                SettingsCategory::Diff,
+                vec![FieldKey::DiffDefaultBranch, FieldKey::DiffContextLines],
+            ),
+            (SettingsCategory::Claude, vec![FieldKey::ClaudeConfigDir]),
+            (
+                SettingsCategory::Worktree,
+                vec![
+                    FieldKey::PathTemplate,
+                    FieldKey::BareRepoPathTemplate,
+                    FieldKey::WorktreeAutoCleanup,
+                    FieldKey::ShowBranchInTui,
+                    FieldKey::DeleteBranchOnCleanup,
+                ],
+            ),
+            (
+                SettingsCategory::Cleanup,
+                vec![FieldKey::SandboxAutoCleanup],
+            ),
+        ];
+
+        for (category, expected) in cases {
+            let actual: Vec<_> =
+                build_fields_for_category(category, SettingsScope::Global, &global, &profile)
+                    .into_iter()
+                    .map(|field| field.key)
+                    .collect();
+            assert_eq!(actual, expected, "missing settings fields in {category:?}");
+        }
+    }
+
+    #[test]
+    fn active_runtime_fields_apply_to_global_and_profile_configs() {
+        let mut global = Config::default();
+        let mut profile = ProfileConfig::default();
+
+        let fields = [
+            SettingField {
+                key: FieldKey::ShowBranchInTui,
+                label: "",
+                description: "",
+                value: FieldValue::Bool(false),
+                category: SettingsCategory::Worktree,
+                has_override: false,
+            },
+            SettingField {
+                key: FieldKey::AutoOrchestrator,
+                label: "",
+                description: "",
+                value: FieldValue::Bool(true),
+                category: SettingsCategory::Session,
+                has_override: false,
+            },
+            SettingField {
+                key: FieldKey::OrchestratorCommand,
+                label: "",
+                description: "",
+                value: FieldValue::OptionalText(Some("forager-orch start".to_string())),
+                category: SettingsCategory::Session,
+                has_override: false,
+            },
+            SettingField {
+                key: FieldKey::DiffContextLines,
+                label: "",
+                description: "",
+                value: FieldValue::Number(7),
+                category: SettingsCategory::Diff,
+                has_override: false,
+            },
+            SettingField {
+                key: FieldKey::ClaudeConfigDir,
+                label: "",
+                description: "",
+                value: FieldValue::OptionalText(Some("/tmp/claude-profile".to_string())),
+                category: SettingsCategory::Claude,
+                has_override: false,
+            },
+            SettingField {
+                key: FieldKey::SandboxAutoCleanup,
+                label: "",
+                description: "",
+                value: FieldValue::Bool(false),
+                category: SettingsCategory::Cleanup,
+                has_override: false,
+            },
+        ];
+
+        for field in &fields {
+            apply_field_to_config(field, SettingsScope::Profile, &mut global, &mut profile);
+        }
+
+        assert_eq!(
+            profile.worktree.as_ref().and_then(|w| w.show_branch_in_tui),
+            Some(false)
+        );
+        assert_eq!(
+            profile.session.as_ref().and_then(|s| s.auto_orchestrator),
+            Some(true)
+        );
+        assert_eq!(
+            profile
+                .session
+                .as_ref()
+                .and_then(|s| s.orchestrator_command.as_deref()),
+            Some("forager-orch start")
+        );
+        assert_eq!(profile.diff.as_ref().and_then(|d| d.context_lines), Some(7));
+        assert_eq!(
+            profile
+                .claude
+                .as_ref()
+                .and_then(|c| c.config_dir.as_deref()),
+            Some("/tmp/claude-profile")
+        );
+        assert_eq!(
+            profile.sandbox.as_ref().and_then(|s| s.auto_cleanup),
+            Some(false)
+        );
+
+        for field in &fields {
+            apply_field_to_config(field, SettingsScope::Global, &mut global, &mut profile);
+        }
+
+        assert!(!global.worktree.show_branch_in_tui);
+        assert!(global.session.auto_orchestrator);
+        assert_eq!(
+            global.session.orchestrator_command.as_deref(),
+            Some("forager-orch start")
+        );
+        assert_eq!(global.diff.context_lines, 7);
+        assert_eq!(
+            global.claude.config_dir.as_deref(),
+            Some("/tmp/claude-profile")
+        );
+        assert!(!global.sandbox.auto_cleanup);
+    }
+
+    #[test]
+    fn profile_can_explicitly_clear_inherited_optional_settings() {
+        let mut global = Config::default();
+        global.session.default_tool = Some("claude".to_string());
+        global.diff.default_branch = Some("main".to_string());
+        global.claude.config_dir = Some("/tmp/global-claude".to_string());
+        let mut profile = ProfileConfig::default();
+
+        let fields = [
+            SettingField {
+                key: FieldKey::DefaultTool,
+                label: "",
+                description: "",
+                value: FieldValue::Select {
+                    selected: 0,
+                    options: vec!["Auto".to_string()],
+                },
+                category: SettingsCategory::Session,
+                has_override: false,
+            },
+            SettingField {
+                key: FieldKey::DiffDefaultBranch,
+                label: "",
+                description: "",
+                value: FieldValue::OptionalText(None),
+                category: SettingsCategory::Diff,
+                has_override: false,
+            },
+            SettingField {
+                key: FieldKey::ClaudeConfigDir,
+                label: "",
+                description: "",
+                value: FieldValue::OptionalText(None),
+                category: SettingsCategory::Claude,
+                has_override: false,
+            },
+        ];
+
+        for field in &fields {
+            apply_field_to_config(field, SettingsScope::Profile, &mut global, &mut profile);
+        }
+
+        assert_eq!(
+            profile
+                .session
+                .as_ref()
+                .and_then(|session| session.default_tool.as_deref()),
+            Some("")
+        );
+        assert_eq!(
+            profile
+                .diff
+                .as_ref()
+                .and_then(|diff| diff.default_branch.as_deref()),
+            Some("")
+        );
+        assert_eq!(
+            profile
+                .claude
+                .as_ref()
+                .and_then(|claude| claude.config_dir.as_deref()),
+            Some("")
+        );
+
+        let effective = crate::session::merge_configs(global, &profile);
+        assert!(effective.session.default_tool.is_none());
+        assert!(effective.diff.default_branch.is_none());
+        assert!(effective.claude.config_dir.is_none());
     }
 }

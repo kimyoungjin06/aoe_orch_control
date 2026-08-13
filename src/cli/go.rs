@@ -16,7 +16,7 @@ use crate::session::{repo_config, GroupTree, Instance, Storage};
 #[derive(Args)]
 pub struct GoArgs {
     /// Agent tool to run (e.g. 'claude', 'codex', 'gemini', 'opencode').
-    /// Defaults to `session.default_tool` from the profile config, else 'claude'.
+    /// Defaults to effective `session.default_tool`, else 'claude'.
     tool: Option<String>,
 
     /// Extra arguments appended to the tool command (after `--`),
@@ -69,13 +69,15 @@ pub async fn run(profile: &str, args: GoArgs) -> Result<()> {
     if !path.is_dir() {
         bail!("Path is not a directory: {}", path.display());
     }
+    let config = crate::session::resolve_config_with_repo(profile, &path)?;
 
     // Explicit argument wins; otherwise honor the configured default tool
     // (settings TUI: session.default_tool) before falling back to claude.
     let tool_name = args.tool.clone().or_else(|| {
-        crate::session::profile_config::resolve_config(profile)
-            .ok()
-            .and_then(|config| config.session.default_tool.clone())
+        config
+            .session
+            .default_tool
+            .clone()
             .map(|tool| tool.trim().to_string())
             .filter(|tool| !tool.is_empty())
     });
@@ -168,10 +170,7 @@ pub async fn run(profile: &str, args: GoArgs) -> Result<()> {
         let mut instance = Instance::new(&title, normalized_path);
         instance.command = command.clone();
         instance.tool = tool.clone();
-        instance.yolo_mode = args.yolo
-            || crate::session::Config::load()
-                .map(|c| c.session.yolo_mode_default)
-                .unwrap_or(false);
+        instance.yolo_mode = args.yolo || config.session.yolo_mode_default;
         if let Some(group) = project
             .as_ref()
             .and_then(|entry| entry.session_group.clone())
@@ -185,7 +184,7 @@ pub async fn run(profile: &str, args: GoArgs) -> Result<()> {
 
     let running = crate::tmux::Session::new(&instances[idx].id, &instances[idx].title)?.exists();
     if !running {
-        instances[idx].start_with_size(crate::terminal::get_size())?;
+        instances[idx].start_with_size(crate::terminal::get_size(), &config)?;
         println!("Started: {}", instances[idx].command);
     }
 

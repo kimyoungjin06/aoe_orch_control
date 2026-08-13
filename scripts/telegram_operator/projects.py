@@ -8,10 +8,12 @@ fan-in (aggregating status across projects) both resolve through it.
 
 from __future__ import annotations
 
+import concurrent.futures
 import datetime
 import json
 import os
 import pathlib
+import re
 import subprocess
 import tomllib
 from typing import Any
@@ -51,6 +53,11 @@ def load_registry(path: pathlib.Path | None = None) -> dict[str, dict[str, Any]]
         normalized[str(key)] = {
             "key": str(key),
             "display_name": str(entry.get("display_name") or key),
+            "aliases": [
+                str(item).strip()
+                for item in (entry.get("aliases") or [])
+                if str(item).strip()
+            ],
             "workspace_patterns": patterns,
             "session_group": str(entry.get("session_group") or "").strip() or None,
             "wiki_profile": str(entry.get("wiki_profile") or "").strip() or None,
@@ -80,10 +87,59 @@ def registry_summary(registry: dict[str, dict[str, Any]]) -> list[dict[str, Any]
         {
             "key": entry["key"],
             "display_name": entry["display_name"],
+            "aliases": list(entry.get("aliases") or []),
             "wiki_profile": entry.get("wiki_profile"),
         }
         for entry in registry.values()
     ]
+
+
+def _project_aliases(entry: dict[str, Any]) -> set[str]:
+    aliases = {
+        str(entry.get("key") or "").strip().lower(),
+        str(entry.get("display_name") or "").strip().lower(),
+    }
+    aliases.update(str(alias).strip().lower() for alias in entry.get("aliases") or [])
+    aliases.update(
+        str(pattern).rstrip("/").rsplit("/", 1)[-1].strip().lower()
+        for pattern in entry.get("workspace_patterns") or []
+    )
+    return {alias for alias in aliases if alias}
+
+
+def _alias_is_mentioned(text: str, alias: str) -> bool:
+    if alias.isascii():
+        return bool(
+            re.search(
+                rf"(?<![a-z0-9_]){re.escape(alias)}(?![a-z0-9_])",
+                text,
+                flags=re.IGNORECASE,
+            )
+        )
+    return alias in text
+
+
+def project_mention_matches(
+    text: str, registry: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Return all projects tied for the most-specific mention."""
+
+    normalized = str(text or "").lower()
+    if not normalized:
+        return []
+    matched: list[tuple[int, dict[str, Any]]] = []
+    for entry in registry.values():
+        lengths = [
+            len(alias)
+            for alias in _project_aliases(entry)
+            if len(alias) >= 3 and _alias_is_mentioned(normalized, alias)
+        ]
+        if lengths:
+            matched.append((max(lengths), entry))
+    if not matched:
+        return []
+    best_length = max(length for length, _entry in matched)
+    return [entry for length, entry in matched if length == best_length]
 
 
 def resolve_project_mention(
@@ -97,21 +153,8 @@ def resolve_project_mention(
     accidental hits inside ordinary words.
     """
 
-    normalized = str(text or "").lower()
-    if not normalized:
-        return None
-    best: tuple[int, dict[str, Any]] | None = None
-    for entry in registry.values():
-        aliases = {
-            str(entry.get("key") or "").lower(),
-            str(entry.get("display_name") or "").lower(),
-        }
-        for pattern in entry.get("workspace_patterns") or []:
-            aliases.add(str(pattern).rsplit("/", 1)[-1].lower())
-        for alias in aliases:
-            if len(alias) >= 3 and alias in normalized and (best is None or len(alias) > best[0]):
-                best = (len(alias), entry)
-    return best[1] if best else None
+    matches = project_mention_matches(text, registry)
+    return matches[0] if len(matches) == 1 else None
 
 
 def resolve_chat_focus(
@@ -126,13 +169,158 @@ def resolve_chat_focus(
     that drop the project name keep their subject.
     """
 
-    mention = resolve_project_mention(text, registry)
-    if mention:
-        return mention, "mention"
+    mentions = project_mention_matches(text, registry)
+    if len(mentions) == 1:
+        return mentions[0], "mention"
+    if mentions:
+        return None, "ambiguous"
     sticky = registry.get(str(sticky_key or ""))
     if isinstance(sticky, dict):
         return sticky, "sticky"
     return None, None
+
+
+def resolve_project_selector(
+    selector: str, registry: dict[str, dict[str, Any]]
+) -> dict[str, Any] | None:
+    """Resolve an explicit project selector without substring guessing."""
+
+    matches = project_selector_matches(selector, registry)
+    return matches[0] if len(matches) == 1 else None
+
+
+def project_selector_matches(
+    selector: str, registry: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Return every project matching an exact selector so ties stay visible."""
+
+    wanted = str(selector or "").strip().lower()
+    if not wanted:
+        return []
+    matches = []
+    for entry in registry.values():
+        if wanted in _project_aliases(entry):
+            matches.append(entry)
+    return matches
+
+
+def build_wiki_plane_summary(
+    forager_bin: str,
+    entry: dict[str, Any],
+    *,
+    include_entries: bool,
+    timeout_sec: int = 15,
+) -> dict[str, Any]:
+    """Read one registered project's candidate queue and promoted knowledge."""
+
+    wiki_profile = str(entry.get("wiki_profile") or "").strip()
+    summary: dict[str, Any] = {
+        "project_key": entry.get("key"),
+        "display_name": entry.get("display_name"),
+        "wiki_profile": wiki_profile or None,
+    }
+    if not wiki_profile:
+        summary["status"] = "not_configured"
+        return summary
+    try:
+        candidates = _forager_json(
+            forager_bin,
+            ["--profile", wiki_profile, "offdesk", "wiki", "candidates", "--json"],
+            timeout_sec=timeout_sec,
+            expect="list",
+        )
+        recent_candidates = sorted(
+            (item for item in candidates if isinstance(item, dict)),
+            key=lambda item: str(item.get("last_seen_at") or item.get("updated_at") or ""),
+            reverse=True,
+        )[:3]
+        summary.update(
+            {
+                "status": "ok",
+                "candidate_count": len(candidates),
+                "recent_candidates": [
+                    {
+                        "id": item.get("id"),
+                        "kind": item.get("kind"),
+                        "claim": str(item.get("claim") or "")[:160],
+                    }
+                    for item in recent_candidates
+                ],
+            }
+        )
+        if include_entries:
+            entries = _forager_json(
+                forager_bin,
+                ["--profile", wiki_profile, "offdesk", "wiki", "entries", "--json"],
+                timeout_sec=timeout_sec,
+                expect="list",
+            )
+            promoted = [
+                item
+                for item in entries
+                if isinstance(item, dict) and item.get("status") == "promoted"
+            ]
+            summary["entry_count"] = len(entries)
+            summary["promoted_count"] = len(promoted)
+            recent_entries = sorted(
+                promoted,
+                key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""),
+                reverse=True,
+            )[:3]
+            summary["recent_claims"] = [
+                str(item.get("claim") or "")[:160] for item in recent_entries
+            ]
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        summary["status"] = "unavailable"
+    return summary
+
+
+def build_wiki_portfolio_summary(
+    forager_bin: str,
+    registry: dict[str, dict[str, Any]],
+    *,
+    timeout_sec: int = 4,
+) -> dict[str, Any]:
+    """Aggregate candidate pressure across registered wiki planes."""
+
+    entries: list[dict[str, Any]] = []
+    seen_profiles: set[str] = set()
+    for entry in registry.values():
+        wiki_profile = str(entry.get("wiki_profile") or "").strip()
+        if not wiki_profile or wiki_profile in seen_profiles:
+            continue
+        seen_profiles.add(wiki_profile)
+        entries.append(entry)
+    rows: list[dict[str, Any]] = []
+    if entries:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, len(entries))) as pool:
+            rows = list(
+                pool.map(
+                    lambda entry: build_wiki_plane_summary(
+                        forager_bin,
+                        entry,
+                        include_entries=False,
+                        timeout_sec=timeout_sec,
+                    ),
+                    entries,
+                )
+            )
+    rows.sort(
+        key=lambda row: (
+            -int(row.get("candidate_count") or 0),
+            str(row.get("display_name") or row.get("project_key") or "").lower(),
+        )
+    )
+    available = [row for row in rows if row.get("status") == "ok"]
+    return {
+        "schema": "telegram_wiki_portfolio.v1",
+        "candidate_count": sum(int(row.get("candidate_count") or 0) for row in available),
+        "projects_with_candidates": sum(
+            1 for row in available if int(row.get("candidate_count") or 0) > 0
+        ),
+        "unavailable_projects": sum(1 for row in rows if row.get("status") == "unavailable"),
+        "projects": rows,
+    }
 
 
 def build_project_focus(
@@ -181,24 +369,76 @@ def build_project_focus(
         focus["sessions_status"] = "unavailable"
     wiki_profile = str(entry.get("wiki_profile") or "")
     if wiki_profile:
-        try:
-            entries = _forager_json(
-                forager_bin,
-                ["--profile", wiki_profile, "offdesk", "wiki", "entries", "--json"],
-                timeout_sec=timeout_sec,
-                expect="list",
-            )
-            recent = sorted(
-                (item for item in entries if isinstance(item, dict)),
-                key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""),
-            )[-3:]
-            focus["wiki"] = {
-                "entry_count": len(entries),
-                "recent_claims": [str(item.get("claim") or "")[:160] for item in reversed(recent)],
-            }
-        except (OSError, ValueError, subprocess.TimeoutExpired):
-            focus["wiki"] = {"status": "unavailable"}
+        focus["wiki"] = build_wiki_plane_summary(
+            forager_bin,
+            entry,
+            include_entries=True,
+            timeout_sec=timeout_sec,
+        )
     return focus
+
+
+def build_project_portfolio_summary(
+    forager_bin: str,
+    profile: str,
+    registry: dict[str, dict[str, Any]],
+    roots: list[pathlib.Path],
+    *,
+    timeout_sec: int = 10,
+) -> dict[str, Any]:
+    """Return the registered project list with real path and session readiness."""
+
+    session_counts: dict[str, dict[str, int]] = {}
+    try:
+        status = _forager_json(
+            forager_bin,
+            ["--profile", profile, "status", "--json"]
+            if profile
+            else ["status", "--json"],
+            timeout_sec=timeout_sec,
+        )
+        for session in status.get("sessions") or []:
+            if not isinstance(session, dict):
+                continue
+            key = str(session.get("project") or "")
+            state = str(session.get("status") or "unknown")
+            counts = session_counts.setdefault(key, {})
+            counts[state] = counts.get(state, 0) + 1
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        status = {}
+    rows: list[dict[str, Any]] = []
+    for entry in registry.values():
+        key = str(entry.get("key") or "")
+        counts = session_counts.get(key, {})
+        rows.append(
+            {
+                "key": key,
+                "display_name": entry.get("display_name"),
+                "aliases": list(entry.get("aliases") or []),
+                "workspace_status": "available"
+                if find_project_dir(entry, roots) is not None
+                else "missing",
+                "session_counts": counts,
+                "active_sessions": sum(
+                    int(counts.get(state) or 0) for state in ("running", "waiting", "idle")
+                ),
+            }
+        )
+    rows.sort(
+        key=lambda row: (
+            -int(row.get("active_sessions") or 0),
+            0 if row.get("workspace_status") == "available" else 1,
+            str(row.get("display_name") or row.get("key") or "").lower(),
+        )
+    )
+    return {
+        "schema": "telegram_project_portfolio.v1",
+        "registered_count": len(rows),
+        "available_count": sum(1 for row in rows if row["workspace_status"] == "available"),
+        "active_count": sum(1 for row in rows if int(row["active_sessions"]) > 0),
+        "status_available": bool(status),
+        "projects": rows,
+    }
 
 
 def find_project_dir(
@@ -215,12 +455,35 @@ def find_project_dir(
             if candidate.is_dir():
                 return candidate
         try:
-            children = [child for child in root.iterdir() if child.is_dir()]
+            children = [
+                child
+                for child in root.iterdir()
+                if child.is_dir() and not child.name.startswith(".")
+            ]
         except OSError:
             continue
         for child in children:
             if any(pattern in str(child) for pattern in patterns):
                 return child
+        # Some managed projects live under a collection directory such as
+        # Workspace/0.1.NIMS/EpiMS. Search exactly one additional level so a
+        # short registry pattern can resolve that layout without an unbounded
+        # recursive walk across every worktree.
+        for child in children[:80]:
+            try:
+                grandchildren = [
+                    item
+                    for item in child.iterdir()
+                    if item.is_dir() and not item.name.startswith(".")
+                ]
+            except OSError:
+                continue
+            for grandchild in grandchildren[:120]:
+                if any(
+                    pattern.lower() in str(grandchild.relative_to(root)).lower()
+                    for pattern in patterns
+                ):
+                    return grandchild
     return None
 
 

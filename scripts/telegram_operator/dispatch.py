@@ -24,6 +24,7 @@ import json
 import pathlib
 import re
 import subprocess
+import time
 import uuid
 from typing import Any
 
@@ -498,6 +499,30 @@ def parse_prompt_options(tail: str) -> list[dict[str, str]]:
     return [{"key": key, "label": options[key]} for key in sorted(options)][:4]
 
 
+# How long to wait for the pane to react to a keystroke before calling it a
+# no-op. Agent TUIs repaint the moment a prompt is dismissed, so a pane still
+# byte-identical after this window never consumed the key.
+SESSION_INPUT_SETTLE_SEC = 2.5
+SESSION_INPUT_POLL_SEC = 0.25
+SESSION_TEXT_MAX_CHARS = 2000
+
+
+def pane_settled_after_input(tmux_name: str, before_hash: str) -> tuple[bool, str]:
+    """Poll the pane until it differs from ``before_hash`` or the wait expires.
+
+    Returns ``(changed, latest_hash)``.
+    """
+
+    deadline = time.monotonic() + SESSION_INPUT_SETTLE_SEC
+    current = before_hash
+    while time.monotonic() < deadline:
+        time.sleep(SESSION_INPUT_POLL_SEC)
+        current = pane_prompt_hash(capture_session_tail(tmux_name, lines=15))
+        if current != before_hash:
+            return True, current
+    return False, current
+
+
 def apply_session_input(
     forager_bin: str,
     profile: str,
@@ -514,6 +539,11 @@ def apply_session_input(
     resolves its tmux session by the id suffix in the session name, then
     sends Enter (accept the highlighted default) or Escape (dismiss). It
     never types text into the agent.
+
+    Success means the pane actually reacted. ``tmux send-keys`` exits 0 once
+    the key is queued, which says nothing about the agent consuming it, so a
+    pane that never repaints reports ``no_effect`` rather than a success the
+    operator would keep retrying.
     """
 
     result: dict[str, Any] = {"ok": False, "kind": "session_input", "action": action}
@@ -540,21 +570,23 @@ def apply_session_input(
     if tmux_name is None:
         result["error"] = "tmux_session_not_found"
         return result
-    if expected_hash:
+    before_tail = capture_session_tail(tmux_name, lines=15)
+    before_hash = pane_prompt_hash(before_tail)
+    if expected_hash and before_hash != expected_hash:
         # Informed consent: the keystroke applies to the prompt the operator
         # saw on the card. If the pane moved on, refuse and report the new
         # state instead of blind-approving whatever is there now.
-        tail = capture_session_tail(tmux_name, lines=15)
-        current_hash = pane_prompt_hash(tail)
-        if current_hash != expected_hash:
-            result["error"] = "prompt_changed"
-            result["new_hash"] = current_hash
-            result["prompt_line"] = sanitize_text(tail.splitlines()[-1] if tail else "", max_chars=100)
-            return result
+        result["error"] = "prompt_changed"
+        result["new_hash"] = before_hash
+        result["prompt_line"] = sanitize_text(
+            before_tail.splitlines()[-1] if before_tail else "", max_chars=100
+        )
+        return result
     if action == "approve" and option_key:
         key = option_key
     else:
         key = "Enter" if action == "approve" else "Escape"
+    result["key"] = key
     try:
         subprocess.run(
             ["tmux", "send-keys", "-t", tmux_name, key],
@@ -564,6 +596,149 @@ def apply_session_input(
     except (OSError, subprocess.SubprocessError) as error:
         result["error"] = f"tmux_failed:{error}"
         return result
+    changed, after_hash = pane_settled_after_input(tmux_name, before_hash)
+    result["pane_hash"] = after_hash
+    if not changed:
+        result["error"] = "no_effect"
+        return result
+    result["ok"] = True
+    return result
+
+
+def apply_session_text_input(
+    forager_bin: str,
+    profile: str,
+    session_id: str,
+    text: str,
+    *,
+    status_file: Any = None,
+    expected_hash: str = "",
+    require_exact_id: bool = False,
+) -> dict[str, Any]:
+    """Deliver one literal operator message to a live supervised agent pane.
+
+    The target must resolve to exactly one current session in running, idle, or
+    waiting state. An expected pane hash binds a reply to the prompt the
+    operator saw. The message and Enter are sent as one tmux command sequence,
+    without a shell, then the pane must repaint before delivery is reported.
+    """
+
+    message = str(text or "").replace("\x00", " ").strip()
+    result: dict[str, Any] = {
+        "ok": False,
+        "kind": "session_message",
+        "action": "send_text",
+        "session_id": str(session_id or ""),
+    }
+    if not str(session_id or "").strip():
+        result["error"] = "session_id_missing"
+        return result
+    if not message:
+        result["error"] = "empty_message"
+        return result
+    if len(message) > SESSION_TEXT_MAX_CHARS:
+        result["error"] = "message_too_long"
+        result["max_chars"] = SESSION_TEXT_MAX_CHARS
+        return result
+    if status_file is not None:
+        try:
+            status = json.loads(pathlib.Path(status_file).read_text())
+        except (OSError, json.JSONDecodeError) as error:
+            result["error"] = f"status_unavailable:{error}"
+            return result
+    else:
+        status = run_forager_json(
+            forager_bin, profile, ["status", "--json"], label="session status"
+        )
+    rows = [row for row in status.get("sessions") or [] if isinstance(row, dict)]
+    if require_exact_id:
+        matches = [row for row in rows if str(row.get("id") or "") == session_id]
+        if not matches and any(
+            str(row.get("id") or "").startswith(session_id) for row in rows
+        ):
+            result["error"] = "session_id_not_exact"
+            return result
+    else:
+        matches = [row for row in rows if str(row.get("id") or "").startswith(session_id)]
+    if len(matches) != 1:
+        result["error"] = "session_not_found" if not matches else "session_id_ambiguous"
+        return result
+    session = matches[0]
+    result["session_id"] = str(session.get("id") or "")
+    result["session_title"] = str(session.get("title") or "")
+    result["project"] = str(session.get("project") or "")
+    result["tool"] = str(session.get("tool") or "")
+    session_status = str(session.get("status") or "")
+    result["session_status"] = session_status
+    if session_status not in {"running", "idle", "waiting"}:
+        result["error"] = f"session_not_live:{session_status}"
+        return result
+    tmux_name = find_tmux_session_name(str(session.get("id") or ""))
+    if tmux_name is None:
+        result["error"] = "tmux_session_not_found"
+        return result
+    before_tail = capture_session_tail(tmux_name, lines=15)
+    before_hash = pane_prompt_hash(before_tail)
+    if expected_hash and before_hash != expected_hash:
+        result["error"] = "prompt_changed"
+        result["new_hash"] = before_hash
+        result["prompt_line"] = sanitize_text(
+            before_tail.splitlines()[-1] if before_tail else "", max_chars=100
+        )
+        return result
+    result["message_hash"] = hashlib.sha256(message.encode("utf-8")).hexdigest()[:16]
+    result["message_chars"] = len(message)
+    buffer_name = f"forager-telegram-{uuid.uuid4().hex}"
+    try:
+        subprocess.run(
+            [
+                "tmux",
+                "load-buffer",
+                "-b",
+                buffer_name,
+                "-",
+                ";",
+                "paste-buffer",
+                "-d",
+                "-p",
+                "-b",
+                buffer_name,
+                "-t",
+                tmux_name,
+                ";",
+                "send-keys",
+                "-t",
+                tmux_name,
+                "Enter",
+            ],
+            check=True,
+            timeout=10,
+            input=message,
+            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        try:
+            subprocess.run(
+                ["tmux", "delete-buffer", "-b", buffer_name],
+                check=False,
+                timeout=5,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+        result["error"] = f"tmux_failed:{error}"
+        return result
+    changed, after_hash = pane_settled_after_input(tmux_name, before_hash)
+    result["pane_hash"] = after_hash
+    result["pane_reacted"] = changed
+    result["delivery_status"] = "pane_reacted" if changed else "input_queued"
+    # tmux accepting the literal paste and Enter is the strongest generic
+    # delivery proof available across Codex and Claude TUIs. A repaint is useful
+    # evidence, but it is not an application-level acknowledgement and a quiet
+    # pane does not prove that the input was dropped.
     result["ok"] = True
     return result
 
@@ -848,6 +1023,10 @@ def apply_recovery_action(
             return result
         result["ok"] = True
         result["stage"] = "recovery_validated"
+        result["local_execution_required"] = True
+        result["next_local_command"] = sanitize_text(
+            str(receipt.get("allowed_command") or ""), max_chars=2000
+        )
         return result
     finally:
         try:

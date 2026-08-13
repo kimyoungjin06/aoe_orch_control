@@ -128,6 +128,38 @@ mod claude_code {
     }
 }
 
+mod codex {
+    use super::*;
+
+    fn detect(content: &str) -> Status {
+        let agent = agents::get_agent("codex").unwrap();
+        (agent.detect_status)(content)
+    }
+
+    #[test]
+    fn test_running_state() {
+        test_all_fixtures_in_dir("codex", "running", Status::Running, identity, detect);
+    }
+
+    #[test]
+    fn test_waiting_permission_state() {
+        test_all_fixtures_in_dir(
+            "codex",
+            "waiting_permission",
+            Status::Waiting,
+            identity,
+            detect,
+        );
+    }
+
+    /// Guards the regression that pushed 27 false approval cards in one night:
+    /// an agent whose own output mentions approval is not waiting on anyone.
+    #[test]
+    fn test_idle_state() {
+        test_all_fixtures_in_dir("codex", "idle", Status::Idle, identity, detect);
+    }
+}
+
 mod opencode {
     use super::*;
 

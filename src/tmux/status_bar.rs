@@ -141,10 +141,11 @@ pub fn apply_all_tmux_options(
     project: Option<&str>,
     branch: Option<&str>,
     sandbox: Option<&SandboxDisplay>,
+    config: &crate::session::config::TmuxConfig,
 ) {
     use crate::session::config::{should_apply_tmux_mouse, should_apply_tmux_status_bar};
 
-    if should_apply_tmux_status_bar() {
+    if should_apply_tmux_status_bar(config) {
         if let Err(e) = apply_status_bar(session_name, title, project, branch, sandbox) {
             tracing::debug!("Failed to apply tmux status bar: {}", e);
         }
@@ -154,7 +155,7 @@ pub fn apply_all_tmux_options(
         tracing::debug!("Failed to apply tmux session metadata: {}", e);
     }
 
-    if let Some(mouse_enabled) = should_apply_tmux_mouse() {
+    if let Some(mouse_enabled) = should_apply_tmux_mouse(config) {
         if let Err(e) = apply_mouse_option(session_name, mouse_enabled) {
             tracing::debug!("Failed to apply tmux mouse option: {}", e);
         }

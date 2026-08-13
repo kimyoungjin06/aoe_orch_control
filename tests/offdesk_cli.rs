@@ -4371,6 +4371,37 @@ fn offdesk_wiki_review_commands_mutate_entries_and_append_audit() -> Result<()> 
     assert!(!runbook_projection_text.contains("capability.syncback"));
     assert!(!runbook_projection_text.contains("references/report.md"));
 
+    let edit_output = forager_command(temp.path())
+        .args([
+            "offdesk",
+            "wiki",
+            "edit",
+            &entry_id,
+            "--kind",
+            "policy_rule",
+            "--agent-mode",
+            "planning",
+            "--agent-mode",
+            "review",
+            "--reason",
+            "apply curator classification",
+            "--json",
+        ])
+        .output()?;
+    assert!(edit_output.status.success());
+    let edited: serde_json::Value = serde_json::from_slice(&edit_output.stdout)?;
+    assert_eq!(edited["action"], "edit");
+    assert_eq!(edited["entry"]["kind"], "policy_rule");
+    assert_eq!(
+        edited["entry"]["agent_modes"],
+        json!(["planning", "review"])
+    );
+    assert_eq!(edited["audit"]["entry_snapshot"]["kind"], "policy_rule");
+    assert_eq!(
+        edited["audit"]["entry_snapshot"]["agent_modes"],
+        json!(["planning", "review"])
+    );
+
     let counterexample_output = forager_command(temp.path())
         .args([
             "offdesk",
@@ -4430,13 +4461,14 @@ fn offdesk_wiki_review_commands_mutate_entries_and_append_audit() -> Result<()> 
 
     let audit = fs::read_to_string(profile_dir.join("adaptive_wiki_audit.jsonl"))?;
     assert!(!audit.contains(secret));
-    assert_eq!(audit.lines().count(), 6);
+    assert_eq!(audit.lines().count(), 7);
     assert!(audit.contains("\"action\":\"promote\""));
     assert!(audit.contains("\"candidate_snapshot\""));
     assert!(audit.contains("\"entry_snapshot\""));
     assert!(audit.contains("\"action\":\"reject\""));
     assert!(audit.contains("\"action\":\"rescope\""));
     assert!(audit.contains("\"action\":\"update_runbook\""));
+    assert!(audit.contains("\"action\":\"edit\""));
     assert!(audit.contains("\"action\":\"add_counterexample\""));
     assert!(audit.contains("\"action\":\"deprecate\""));
     Ok(())

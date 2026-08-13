@@ -10,12 +10,17 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import shutil
 from typing import Any
 
 from .agent import agent_runtime_status as resolve_agent_runtime_status
 from .common import load_json, unique_nonempty, utc_now
-from .persistence import parse_utc_timestamp
+from .persistence import RemoteOperatorStateError, load_state, parse_utc_timestamp
+from .project_candidates import workspace_roots
+from .projects import find_project_dir, load_registry
 from .rendering import sanitize_text
+from .reply_outbox import outbox_health_issue, outbox_inspection
+from .update_journal import journal_health_issue
 
 HEALTH_SCHEMA = "remote_operator_telegram_health.v1"
 ACTION_READINESS_SCHEMA = "telegram_action_readiness.v1"
@@ -83,6 +88,8 @@ def health_action_readiness(
     *,
     transport_issues: list[str],
     agent_runtime_status: dict[str, Any],
+    project_scan_issue: str | None = None,
+    tmux_available: bool = True,
 ) -> list[dict[str, Any]]:
     transport_blocked = bool(transport_issues)
     agent_issue = agent_runtime_issue(agent_runtime_status)
@@ -97,12 +104,26 @@ def health_action_readiness(
     )
     project_scan_readiness = action_readiness(
         "project_scan",
-        "blocked" if transport_blocked else "healthy",
-        reason=transport_issues[0] if transport_issues else "workspace_scan_available",
-        allowed_actions=[] if transport_blocked else ["project_scan", "manual_path_check"],
-        blocked_actions=["project_selection"] if transport_blocked else [],
-        recovery_hint="텔레그램 수신 복구 후 다시 시도" if transport_blocked else None,
-        evidence=transport_issues,
+        "blocked" if transport_blocked or project_scan_issue else "healthy",
+        reason=(
+            transport_issues[0]
+            if transport_issues
+            else project_scan_issue or "workspace_scan_available"
+        ),
+        allowed_actions=[]
+        if transport_blocked or project_scan_issue
+        else ["project_scan", "manual_path_check"],
+        blocked_actions=["project_selection"]
+        if transport_blocked or project_scan_issue
+        else [],
+        recovery_hint=(
+            "텔레그램 수신 복구 후 다시 시도"
+            if transport_blocked
+            else "설치 서비스의 --workspace-root와 프로젝트 레지스트리를 확인"
+            if project_scan_issue
+            else None
+        ),
+        evidence=transport_issues + ([project_scan_issue] if project_scan_issue else []),
     )
     if transport_blocked:
         build_plan = action_readiness(
@@ -143,7 +164,50 @@ def health_action_readiness(
         blocked_actions=["arbitrary_launch", "shell", "accepted_truth"],
         recovery_hint="계획 승인, 게이트, 브리프, 워크로드 binding 후 대상 task만 시작",
     )
-    return [status_readiness, project_scan_readiness, build_plan, start_offdesk]
+    agent_status = str(agent_runtime_status.get("status") or "").strip().lower()
+    if transport_blocked:
+        session_message = action_readiness(
+            "session_message",
+            "blocked",
+            reason=transport_issues[0],
+            blocked_actions=["plain_text_delivery"],
+            recovery_hint="텔레그램 수신 복구 필요",
+            evidence=transport_issues,
+        )
+    elif agent_status != "available":
+        session_message = action_readiness(
+            "session_message",
+            "blocked",
+            reason=f"agent_runtime_{agent_status or 'unknown'}",
+            allowed_actions=["explicit_session_status"],
+            blocked_actions=["plain_text_delivery"],
+            recovery_hint="로컬 평문 해석 모델을 활성화하고 연결 상태를 확인",
+        )
+    elif not tmux_available:
+        session_message = action_readiness(
+            "session_message",
+            "blocked",
+            reason="tmux_unavailable",
+            blocked_actions=["plain_text_delivery", "waiting_card_reply"],
+            recovery_hint="tmux 설치와 PATH를 확인",
+            evidence=["tmux_unavailable"],
+        )
+    else:
+        session_message = action_readiness(
+            "session_message",
+            "healthy",
+            reason="agent_runtime_and_tmux_available",
+            allowed_actions=["plain_text_delivery", "waiting_card_reply"],
+            blocked_actions=["ambiguous_session_target"],
+            recovery_hint="대상이 여러 개면 프로젝트와 에이전트 이름을 함께 지정",
+        )
+    return [
+        status_readiness,
+        project_scan_readiness,
+        build_plan,
+        start_offdesk,
+        session_message,
+    ]
 
 
 def listener_health(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]:
@@ -155,6 +219,28 @@ def listener_health(args: argparse.Namespace, config: dict[str, Any]) -> dict[st
         transport_issues.append("telegram_bot_token_missing")
     if not config.get("chat_allowlist_configured"):
         transport_issues.append("telegram_chat_allowlist_missing")
+    try:
+        load_state(args.state_file)
+    except RemoteOperatorStateError:
+        transport_issues.append("listener_state_unreadable")
+    try:
+        journal_issue = journal_health_issue(args.update_journal_file)
+    except RemoteOperatorStateError:
+        journal_issue = "update_journal_unreadable"
+    if journal_issue:
+        transport_issues.append(journal_issue)
+    try:
+        reply_outbox = outbox_inspection(args.reply_outbox_file)
+        outbox_issue = outbox_health_issue(args.reply_outbox_file)
+    except RemoteOperatorStateError:
+        reply_outbox = {
+            "schema": "remote_operator_telegram_reply_outbox_inspection.v1",
+            "path": str(args.reply_outbox_file),
+            "status": "unreadable",
+        }
+        outbox_issue = "reply_outbox_unreadable"
+    if outbox_issue:
+        transport_issues.append(outbox_issue)
     loop_status: dict[str, Any] = {}
     if status_path.exists():
         try:
@@ -184,20 +270,37 @@ def listener_health(args: argparse.Namespace, config: dict[str, Any]) -> dict[st
         transport_issues.append("last_send_transport_error")
     if str(last_result.get("status") or "") == "loop_error":
         transport_issues.append("last_loop_internal_error")
+    if str(last_result.get("status") or "") == "state_error":
+        transport_issues.append("last_listener_state_error")
     agent_runtime_status = resolve_agent_runtime_status(args)
+    tmux_available = shutil.which("tmux") is not None
+    roots = workspace_roots(args)
+    registry = load_registry()
+    resolvable_projects = sum(
+        1 for entry in registry.values() if find_project_dir(entry, roots) is not None
+    )
+    project_scan_issue = None
+    if registry and resolvable_projects == 0:
+        project_scan_issue = "registered_projects_unresolvable"
+    elif registry and resolvable_projects < len(registry):
+        project_scan_issue = "registered_projects_partially_unresolvable"
     issues.extend(transport_issues)
     agent_issue = agent_runtime_issue(agent_runtime_status)
     if agent_issue:
         issues.append(agent_issue)
+    if project_scan_issue:
+        issues.append(project_scan_issue)
     if transport_issues:
         health_status = "unhealthy"
-    elif agent_issue:
+    elif agent_issue or project_scan_issue:
         health_status = "degraded"
     else:
         health_status = "healthy"
     readiness = health_action_readiness(
         transport_issues=transport_issues,
         agent_runtime_status=agent_runtime_status,
+        project_scan_issue=project_scan_issue,
+        tmux_available=tmux_available,
     )
     return {
         "schema": HEALTH_SCHEMA,
@@ -209,6 +312,9 @@ def listener_health(args: argparse.Namespace, config: dict[str, Any]) -> dict[st
         "env_file": str(args.env_file),
         "status_file": str(status_path),
         "state_file": str(args.state_file),
+        "update_journal_file": str(args.update_journal_file),
+        "reply_outbox_file": str(args.reply_outbox_file),
+        "reply_outbox": reply_outbox,
         "token_configured": token_configured,
         "chat_allowlist_configured": bool(config.get("chat_allowlist_configured")),
         "user_allowlist_configured": bool(config.get("user_allowlist_configured")),
@@ -216,6 +322,10 @@ def listener_health(args: argparse.Namespace, config: dict[str, Any]) -> dict[st
         "poll_count": loop_status.get("poll_count"),
         "updates_seen": loop_status.get("updates_seen"),
         "handled_result_count": loop_status.get("handled_result_count"),
+        "status_counts": loop_status.get("status_counts", {}),
+        "consecutive_error_count": loop_status.get("consecutive_error_count"),
+        "last_error_at": loop_status.get("last_error_at"),
+        "last_success_at": loop_status.get("last_success_at"),
         "last_poll_age_sec": last_poll_age_sec,
         "last_result_status": last_result.get("status"),
         "last_handled_status": (
@@ -224,6 +334,10 @@ def listener_health(args: argparse.Namespace, config: dict[str, Any]) -> dict[st
             else None
         ),
         "agent_runtime_status": agent_runtime_status,
+        "tmux_available": tmux_available,
+        "workspace_root_count": len(roots),
+        "registered_project_count": len(registry),
+        "resolvable_project_count": resolvable_projects,
         "action_readiness": readiness,
         "runtime_dispatch_enabled": bool(args.enable_runtime_dispatch),
         "read_only": True,

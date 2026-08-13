@@ -448,7 +448,7 @@ pub async fn run(profile: &str, args: StatusArgs) -> Result<()> {
 
     // Show update notice if available (skip for JSON/quiet output)
     if !args.json && !args.quiet {
-        crate::update::print_update_notice().await;
+        crate::update::print_update_notice(profile).await;
     }
 
     Ok(())

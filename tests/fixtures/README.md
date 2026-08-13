@@ -16,6 +16,13 @@ fixtures/
       001_bash_command.txt
     waiting_question/
       001_checkbox.txt
+  codex/
+    idle/
+      001_approval_words_in_output.txt
+    running/
+      001_working_status_line.txt
+    waiting_permission/
+      001_command_approval.txt
   opencode/
     idle/
       001_startup.txt
@@ -24,6 +31,12 @@ fixtures/
     waiting_permission/
       001_bash_command.txt
 ```
+
+An `idle` fixture is as load-bearing as a `waiting_*` one. Detection keys off
+words like "approve" and "allow", which agents also print in ordinary output
+(diffs of review code, grep hits on permission constants). A capture of that
+shape belongs in `idle/`, because a false `waiting` is what wakes the operator
+at 4am for nothing.
 
 ## Adding a New Screen Capture
 

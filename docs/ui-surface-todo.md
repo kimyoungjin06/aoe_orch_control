@@ -46,7 +46,7 @@ Completed in the first UI pass:
 - Added a live `review_surface.v1` export script and client-side hydration path
   so `/review/` can stay static while reading current local operator state.
 - Added Playwright coverage for the exported live review-surface contract.
-- Refreshed website dependencies to Astro 6 and Tailwind 4, closed current
+- Refreshed website dependencies to Astro 7 and Tailwind 4, closed current
   `npm audit` findings, and kept desktop/mobile Playwright coverage passing.
 - Added a long-term Web dashboard/control-plane backlog and a fixture-backed
   read-only `/dashboard/` route for `workstation_surface.v1`.

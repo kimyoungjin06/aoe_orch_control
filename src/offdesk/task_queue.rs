@@ -128,7 +128,7 @@ impl OffdeskTask {
     }
 
     pub fn is_due_at(&self, now: DateTime<Utc>) -> bool {
-        self.not_before.map_or(true, |not_before| not_before <= now)
+        self.not_before.is_none_or(|not_before| not_before <= now)
     }
 
     pub fn can_dispatch_at(&self, now: DateTime<Utc>) -> bool {

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import pathlib
+import sys
 from typing import Any
 
 from .common import (
@@ -11,6 +13,18 @@ from .common import (
     parse_env_file,
     sha256_short,
 )
+
+
+def default_telegram_env_file() -> pathlib.Path:
+    configured = os.environ.get("OFFDESK_TELEGRAM_ENV", "").strip()
+    if configured:
+        return pathlib.Path(configured).expanduser()
+    if sys.platform.startswith("linux"):
+        config_root = pathlib.Path(
+            os.environ.get("XDG_CONFIG_HOME", pathlib.Path.home() / ".config")
+        )
+        return config_root / "forager" / "telegram.env"
+    return pathlib.Path.home() / ".forager" / "telegram.env"
 
 
 def resolve_telegram_config(env_file: pathlib.Path, *, required: bool) -> dict[str, Any]:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import urllib.error
 import urllib.request
 from typing import Any
@@ -12,7 +13,11 @@ from .common import RemoteOperatorTelegramError, load_json
 
 
 def telegram_api(token: str, method: str, payload: dict[str, Any], timeout_sec: int) -> dict[str, Any]:
-    url = f"https://api.telegram.org/bot{token}/{method}"
+    api_base = os.environ.get(
+        "OFFDESK_REMOTE_OPERATOR_TELEGRAM_API_BASE_URL",
+        "https://api.telegram.org",
+    ).rstrip("/")
+    url = f"{api_base}/bot{token}/{method}"
     request = urllib.request.Request(
         url,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),

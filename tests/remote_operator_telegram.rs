@@ -5,10 +5,13 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 fn script_path(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -21,6 +24,8 @@ fn write_env_file(path: &Path) -> Result<()> {
         path,
         "TELEGRAM_BOT_TOKEN=999999:fake-token-for-test\nTELEGRAM_OWNER_CHAT_ID=123456789\n",
     )?;
+    #[cfg(unix)]
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
     Ok(())
 }
 
@@ -99,6 +104,31 @@ fn profile_dir(home: &Path) -> PathBuf {
     }
 }
 
+fn assert_effect(result: &Value, kind: &str, authority_domain: &str) {
+    assert_eq!(result["read_only"], false);
+    assert_eq!(result["mutation_authorized"], true);
+    assert_eq!(result["authority_domain"], authority_domain);
+    assert_eq!(
+        result["effect"]["schema"],
+        "remote_operator_telegram_effect.v1"
+    );
+    assert_eq!(result["effect"]["kind"], kind);
+    assert_eq!(result["effect"]["status"], "applied");
+    assert_eq!(result["effect"]["authorized"], true);
+    assert_eq!(result["effect"]["authority_domain"], authority_domain);
+}
+
+fn last_conversation_row(home: &Path) -> Result<Value> {
+    let path = home
+        .join(".cache")
+        .join("forager")
+        .join("remote_operator_telegram_conversation.jsonl");
+    let content = fs::read_to_string(path)?;
+    Ok(serde_json::from_str(
+        content.lines().last().expect("conversation ledger row"),
+    )?)
+}
+
 fn find_header_end(data: &[u8]) -> Option<usize> {
     data.windows(4).position(|window| window == b"\r\n\r\n")
 }
@@ -150,6 +180,37 @@ fn write_http_json(stream: &mut TcpStream, value: Value) -> Result<()> {
     )?;
     stream.write_all(&body)?;
     Ok(())
+}
+
+fn spawn_fake_telegram(
+    responses: Vec<Value>,
+) -> Result<(String, thread::JoinHandle<Result<Vec<String>>>)> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let port = listener.local_addr()?.port();
+    listener.set_nonblocking(true)?;
+    let handle = thread::spawn(move || -> Result<Vec<String>> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut requests = Vec::new();
+        for response in responses {
+            let (mut stream, _) = loop {
+                match listener.accept() {
+                    Ok(value) => break value,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if Instant::now() > deadline {
+                            anyhow::bail!("fake Telegram server timed out waiting for requests");
+                        }
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            };
+            let (request_line, _body) = read_http_request(&mut stream)?;
+            requests.push(request_line);
+            write_http_json(&mut stream, response)?;
+        }
+        Ok(requests)
+    });
+    Ok((format!("http://127.0.0.1:{port}"), handle))
 }
 
 fn spawn_fake_ollama_with_classification(
@@ -356,6 +417,38 @@ fn write_text_update(path: &Path, update_id: i64, message_id: i64, text: &str) -
 }
 
 #[test]
+fn telegram_default_env_file_follows_platform_config_location() -> Result<()> {
+    let temp = tempdir()?;
+    let xdg = temp.path().join("xdg");
+    let output = Command::new("python3")
+        .arg("-c")
+        .arg(
+            "from telegram_operator.config import default_telegram_env_file; \
+             print(default_telegram_env_file())",
+        )
+        .env("PYTHONPATH", script_path(""))
+        .env("HOME", temp.path())
+        .env("XDG_CONFIG_HOME", &xdg)
+        .env_remove("OFFDESK_TELEGRAM_ENV")
+        .output()?;
+    assert!(
+        output.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let expected = if cfg!(target_os = "linux") {
+        xdg.join("forager/telegram.env")
+    } else {
+        temp.path().join(".forager/telegram.env")
+    };
+    assert_eq!(
+        String::from_utf8(output.stdout)?.trim(),
+        expected.to_string_lossy()
+    );
+    Ok(())
+}
+
+#[test]
 #[serial]
 fn remote_operator_telegram_dry_run_status_renders_read_only_projection() -> Result<()> {
     let temp = tempdir()?;
@@ -414,6 +507,36 @@ fn remote_operator_telegram_dry_run_status_renders_read_only_projection() -> Res
     let serialized = serde_json::to_string(&result)?;
     assert!(!serialized.contains("fake-token-for-test"));
     assert!(!serialized.contains("999999:"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+#[serial]
+fn remote_operator_telegram_rejects_world_readable_token_file() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    fs::write(
+        &env_path,
+        "TELEGRAM_BOT_TOKEN=999999:fake-token-for-test\nTELEGRAM_OWNER_CHAT_ID=123456789\n",
+    )?;
+    fs::set_permissions(&env_path, fs::Permissions::from_mode(0o644))?;
+
+    let output = remote_operator_command(temp.path())
+        .arg("--dry-run")
+        .arg("--command-text")
+        .arg("/help")
+        .arg("--env-file")
+        .arg(&env_path)
+        .output()?;
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("permissions_too_open:0644"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("chmod 600"), "stderr: {stderr}");
     Ok(())
 }
 
@@ -986,7 +1109,7 @@ fn remote_operator_telegram_agent_clarification_is_visible_in_mobile_receipt() -
     let preview = result["message_preview"].as_str().expect("message preview");
     assert!(preview.contains("<b>확인 필요</b>"));
     assert!(preview.contains("NIMS 안의 EPIMS 파일"));
-    assert!(preview.contains("/plan"));
+    assert!(preview.contains("위 질문에 평문으로 답해주세요"));
     assert!(!preview.contains("<b>의견 접수</b>"));
     assert_mobile_contract(&result);
 
@@ -995,6 +1118,81 @@ fn remote_operator_telegram_agent_clarification_is_visible_in_mobile_receipt() -
         .as_str()
         .expect("agent prompt")
         .contains("same language as telegram_text"));
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_clarification_persists_the_sent_question() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    let request_path = temp.path().join("ollama_thread_request.json");
+    let question = "Scoreboard 경로 확인과 서비스 재시작 중 어느 작업을 원하시나요?";
+    let (base_url, server) = spawn_fake_ollama_with_classification(
+        request_path,
+        json!({
+            "action": "answer",
+            "assistant_reply": "이 문장은 실제로 전송되면 안 됩니다.",
+            "confidence": 0.9,
+            "requires_clarification": true,
+            "clarifying_question": question,
+            "reason": "Need the requested action."
+        }),
+    )?;
+    let update_path = temp.path().join("clarification_update.json");
+    write_text_update(&update_path, 850, 970, "스코어보드가 꺼졌는데 검토해줘")?;
+    let state_path = temp.path().join("telegram_state.json");
+    let out = temp.path().join("clarification_result.json");
+
+    let output = remote_operator_command(temp.path())
+        .arg("--dry-run")
+        .arg("--once")
+        .arg("--replay-update-file")
+        .arg(&update_path)
+        .arg("--forager-bin")
+        .arg(temp.path().join("missing-forager"))
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--state-file")
+        .arg(&state_path)
+        .arg("--agent-intent-mode")
+        .arg("required")
+        .arg("--agent-base-url")
+        .arg(&base_url)
+        .arg("--agent-model")
+        .arg("qwen3-coder-next:latest")
+        .arg("--out")
+        .arg(&out)
+        .output()?;
+
+    server.join().expect("fake ollama server panicked")?;
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&fs::read(&out)?)?;
+    let state: Value = serde_json::from_slice(&fs::read(&state_path)?)?;
+    let chat_hash = result["target_chat_id_hash"].as_str().expect("chat hash");
+    assert_eq!(
+        state["last_interaction_context_by_chat"][chat_hash]["context_kind"],
+        "chat_clarification"
+    );
+    assert_eq!(
+        state["last_interaction_context_by_chat"][chat_hash]["question"],
+        question
+    );
+    let history = state["chat_history_by_chat"][chat_hash]
+        .as_array()
+        .expect("chat history");
+    let reply = history.last().expect("assistant history");
+    assert!(reply["text"]
+        .as_str()
+        .is_some_and(|text| text.contains(question)));
+    assert!(!reply["text"]
+        .as_str()
+        .is_some_and(|text| text.contains("실제로 전송되면 안")));
     Ok(())
 }
 
@@ -1455,6 +1653,37 @@ fn remote_operator_telegram_replay_chat_records_history_without_context_refresh(
                 .as_str()
                 .is_some_and(|text| text.contains("지금 상태 요약해줘"))
     }));
+    let assistant = history
+        .iter()
+        .rev()
+        .find(|entry| entry["role"] == "assistant")
+        .expect("assistant history entry");
+    assert!(assistant["text"]
+        .as_str()
+        .is_some_and(|text| !text.contains("다음 조치:")));
+    let conversation_path = temp
+        .path()
+        .join(".cache/forager/remote_operator_telegram_conversation.jsonl");
+    let conversation = fs::read_to_string(&conversation_path)?;
+    let last_row: Value = serde_json::from_str(
+        conversation
+            .lines()
+            .last()
+            .expect("conversation ledger row"),
+    )?;
+    assert_eq!(
+        last_row["schema"],
+        "remote_operator_telegram_conversation.v1"
+    );
+    assert_eq!(last_row["command"], "chat");
+    assert!(last_row["sent_text"]
+        .as_str()
+        .is_some_and(|text| !text.is_empty()));
+    #[cfg(unix)]
+    assert_eq!(
+        fs::metadata(&conversation_path)?.permissions().mode() & 0o777,
+        0o600
+    );
     // Chat must not refresh the last card context timestamp; otherwise the
     // context-max-age expiry never fires for chatty operators.
     assert_eq!(
@@ -1546,6 +1775,105 @@ fn remote_operator_telegram_replay_remember_records_adaptive_wiki_candidate() ->
     let state: Value = serde_json::from_slice(&fs::read(&state_path)?)?;
     assert_eq!(state["offset"], 611);
     assert!(state["last_interaction_context_by_chat"].is_null());
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_remember_preserves_corrupt_wiki_state() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    let candidates_path = profile_dir(temp.path()).join("adaptive_wiki_candidates.json");
+    fs::create_dir_all(candidates_path.parent().expect("profile directory"))?;
+    let corrupt_state = b"{\"candidates\":";
+    fs::write(&candidates_path, corrupt_state)?;
+    let update_path = temp.path().join("remember_update.json");
+    write_text_update(
+        &update_path,
+        611,
+        780,
+        "/remember 기존 위키를 덮어쓰지 않는다",
+    )?;
+    let out = temp.path().join("remember_result.json");
+
+    let output = remote_operator_command(temp.path())
+        .arg("--dry-run")
+        .arg("--once")
+        .arg("--replay-update-file")
+        .arg(&update_path)
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--state-file")
+        .arg(temp.path().join("state.json"))
+        .arg("--out")
+        .arg(&out)
+        .output()?;
+
+    assert!(output.status.success());
+    let result: Value = serde_json::from_slice(&fs::read(&out)?)?;
+    assert_eq!(result["wiki_candidate_recorded"], false);
+    assert_eq!(result["wiki_candidate_status"], "failed");
+    assert!(result["wiki_candidate_error"]
+        .as_str()
+        .expect("wiki error")
+        .contains("was not reset"));
+    assert_eq!(fs::read(&candidates_path)?, corrupt_state);
+    assert!(!candidates_path.with_extension("json.corrupt").exists());
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_concurrent_remember_writers_preserve_candidates() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    let writers = 8;
+    let mut children = Vec::new();
+    for index in 0..writers {
+        let update_path = temp.path().join(format!("remember_update_{index}.json"));
+        write_text_update(
+            &update_path,
+            10_000 + index,
+            20_000 + index,
+            &format!("/remember concurrent wiki candidate {index}"),
+        )?;
+        let mut command = remote_operator_command(temp.path());
+        command
+            .arg("--dry-run")
+            .arg("--once")
+            .arg("--replay-update-file")
+            .arg(&update_path)
+            .arg("--env-file")
+            .arg(&env_path)
+            .arg("--state-file")
+            .arg(temp.path().join(format!("state_{index}.json")))
+            .arg("--update-journal-file")
+            .arg(temp.path().join(format!("journal_{index}.jsonl")))
+            .arg("--reply-outbox-file")
+            .arg(temp.path().join(format!("reply_outbox_{index}.jsonl")))
+            .arg("--conversation-file")
+            .arg(temp.path().join(format!("conversation_{index}.jsonl")))
+            .arg("--out")
+            .arg(temp.path().join(format!("result_{index}.json")))
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        children.push(command.spawn()?);
+    }
+    for child in children {
+        let output = child.wait_with_output()?;
+        assert!(
+            output.status.success(),
+            "stderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let candidates_path = profile_dir(temp.path()).join("adaptive_wiki_candidates.json");
+    let state: Value = serde_json::from_slice(&fs::read(candidates_path)?)?;
+    let candidates = state["candidates"].as_array().expect("candidate list");
+    assert_eq!(candidates.len(), writers as usize);
     Ok(())
 }
 
@@ -1708,6 +2036,12 @@ fn remote_operator_telegram_confirm_button_applies_pending_without_token() -> Re
     assert_eq!(confirm_result["parsed_command"]["confirm_token"], "");
     assert_eq!(confirm_result["dispatch_result"]["ok"], true);
     assert_eq!(confirm_result["dispatch_result"]["stage"], "applied");
+    assert_eq!(confirm_result["read_only"], false);
+    assert_eq!(confirm_result["mutation_authorized"], true);
+    assert_eq!(confirm_result["approval_resolution_authorized"], true);
+    assert_eq!(confirm_result["approval_authorized"], false);
+    assert_eq!(confirm_result["effect"]["action"], "revise");
+    assert_eq!(confirm_result["effect"]["status"], "applied");
     Ok(())
 }
 
@@ -2299,10 +2633,26 @@ fn remote_operator_telegram_dispatch_validates_recovery_after_confirmation() -> 
         "recovery_validated"
     );
     assert_eq!(confirm_result["dispatch_result"]["kind"], "recovery");
+    assert_eq!(
+        confirm_result["dispatch_result"]["next_local_command"],
+        "forager offdesk closeout-decision --closeout-id closeout-completed-task --kind archive_review --decision preserve-in-place --reason <reason> --json"
+    );
+    assert_eq!(
+        confirm_result["dispatch_result"]["local_execution_required"],
+        true
+    );
     assert!(confirm_result["message_preview"]
         .as_str()
         .expect("preview")
         .contains("검증됨"));
+    assert!(confirm_result["message_preview"]
+        .as_str()
+        .expect("preview")
+        .contains("closeout-decision"));
+    assert!(confirm_result["message_preview"]
+        .as_str()
+        .expect("preview")
+        .contains("&lt;reason&gt;"));
     assert_mobile_contract(&confirm_result);
 
     // Recovery validation records a receipt but must not record accepted truth.
@@ -4156,6 +4506,8 @@ fn remote_operator_telegram_replay_plan_session_builds_init_preview_receipt() ->
         result["remote_plan_session"]["project_init_run"]["status"],
         "created"
     );
+    assert_effect(&result, "artifact_write", "plan_artifact");
+    assert_eq!(result["effect"]["stage"], "init_created");
     let public_command = result["remote_plan_session"]["project_init_run"]["command"]
         .as_array()
         .expect("public command");
@@ -4399,6 +4751,12 @@ fn remote_operator_telegram_replay_plan_session_builds_init_preview_receipt() ->
         result["remote_plan_session"]["plan_registration"]["status"],
         "registered"
     );
+    assert_effect(&result, "plan_registry_mutation", "plan_registry");
+    assert_eq!(result["effect"]["stage"], "plan_registered");
+    assert_eq!(result["approval_authorized"], false);
+    assert_eq!(result["approval_resolution_authorized"], false);
+    let conversation_row = last_conversation_row(temp.path())?;
+    assert_eq!(conversation_row["effect"], result["effect"]);
     assert_eq!(
         result["remote_plan_session"]["plan_registration"]["execution_authorized"],
         false
@@ -4960,6 +5318,10 @@ fn remote_operator_telegram_replay_plan_session_builds_init_preview_receipt() ->
         result["remote_plan_session"]["plan_gate_resolution"]["status"],
         "approved"
     );
+    assert_effect(&result, "approval_resolution", "offdesk_gate");
+    assert_eq!(result["effect"]["action"], "approved");
+    assert_eq!(result["approval_resolution_authorized"], true);
+    assert_eq!(result["approval_authorized"], true);
     assert_eq!(
         result["remote_plan_session"]["plan_gate_resolution"]["approval_resolution_authorized"],
         true
@@ -5622,6 +5984,9 @@ fn remote_operator_telegram_replay_plan_session_builds_init_preview_receipt() ->
         result["remote_plan_session"]["plan_enqueue_run"]["status"],
         "queued"
     );
+    assert_effect(&result, "queue_mutation", "offdesk_task_queue");
+    assert_eq!(result["effect"]["action"], "enqueue");
+    assert_eq!(result["approval_authorized"], false);
     assert_eq!(
         result["remote_plan_session"]["plan_enqueue_run"]["queue_mutation_authorized"],
         true
@@ -6191,6 +6556,13 @@ fn remote_operator_telegram_replay_plan_session_builds_init_preview_receipt() ->
         result["remote_plan_session"]["plan_closeout_verdict"]["status"],
         "recorded"
     );
+    assert_effect(
+        &result,
+        "closeout_review_resolution",
+        "accepted_truth_review",
+    );
+    assert_eq!(result["effect"]["action"], "approved");
+    assert_eq!(result["approval_authorized"], false);
     assert_eq!(
         result["remote_plan_session"]["plan_closeout_verdict"]["verdict"],
         "approved"
@@ -6543,6 +6915,10 @@ fn remote_operator_telegram_replay_poll_loop_handles_updates_without_once() -> R
     assert_eq!(result["poll_count"], 2);
     assert_eq!(result["updates_seen"], 1);
     assert_eq!(result["handled_result_count"], 1);
+    assert_eq!(result["status_counts"]["rendered"], 1);
+    assert_eq!(result["status_counts"]["no_update"], 1);
+    assert_eq!(result["consecutive_error_count"], 0);
+    assert!(result["last_success_at"].is_string());
     assert_eq!(result["last_handled_result"]["status"], "rendered");
     assert_eq!(
         result["last_handled_result"]["parsed_command"]["command"],
@@ -6553,6 +6929,50 @@ fn remote_operator_telegram_replay_poll_loop_handles_updates_without_once() -> R
 
     let state: Value = serde_json::from_slice(&fs::read(&state_path)?)?;
     assert_eq!(state["offset"], 601);
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_listener_lock_rejects_a_second_owner() -> Result<()> {
+    let temp = tempdir()?;
+    let lock_path = temp.path().join("listener.lock");
+    let script_dir = script_path("offdesk_remote_operator_telegram.py")
+        .parent()
+        .expect("script parent")
+        .to_path_buf();
+    let python = r#"
+import os
+import pathlib
+import sys
+sys.path.insert(0, sys.argv[1])
+from offdesk_remote_operator_telegram import acquire_listener_lock
+from telegram_operator.common import RemoteOperatorTelegramError
+first = acquire_listener_lock(pathlib.Path(sys.argv[2]))
+try:
+    try:
+        acquire_listener_lock(pathlib.Path(sys.argv[2]))
+    except RemoteOperatorTelegramError:
+        pass
+    else:
+        raise SystemExit("second listener unexpectedly acquired the lock")
+finally:
+    os.close(first)
+"#;
+    let output = Command::new("python3")
+        .arg("-c")
+        .arg(python)
+        .arg(script_dir)
+        .arg(&lock_path)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    #[cfg(unix)]
+    assert_eq!(fs::metadata(lock_path)?.permissions().mode() & 0o777, 0o600);
     Ok(())
 }
 
@@ -6613,9 +7033,712 @@ fn remote_operator_telegram_health_reports_fresh_listener_status() -> Result<()>
     assert_eq!(result["action_readiness"][0]["status"], "healthy");
     assert_eq!(result["action_readiness"][2]["action"], "build_plan");
     assert_eq!(result["action_readiness"][2]["status"], "healthy");
+    assert_eq!(result["action_readiness"][4]["action"], "session_message");
+    assert_eq!(result["action_readiness"][4]["status"], "blocked");
+    assert_eq!(
+        result["action_readiness"][4]["reason"],
+        "agent_runtime_disabled"
+    );
+    assert!(result["tmux_available"].is_boolean());
     let serialized = serde_json::to_string(&result)?;
     assert!(!serialized.contains("fake-token-for-test"));
     assert!(!serialized.contains("999999:"));
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_corrupt_state_fails_closed_without_reset() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    let state_path = temp.path().join("telegram_state.json");
+    let corrupt_state = b"{\"schema\":";
+    fs::write(&state_path, corrupt_state)?;
+    let update_path = temp.path().join("update.json");
+    write_text_update(&update_path, 9_100, 601, "/help")?;
+    let out = temp.path().join("result.json");
+
+    let output = remote_operator_command(temp.path())
+        .arg("--dry-run")
+        .arg("--once")
+        .arg("--replay-update-file")
+        .arg(&update_path)
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--state-file")
+        .arg(&state_path)
+        .arg("--out")
+        .arg(&out)
+        .output()?;
+
+    assert_eq!(output.status.code(), Some(1));
+    let result: Value = serde_json::from_slice(&fs::read(&out)?)?;
+    assert_eq!(result["status"], "error");
+    assert!(result["error"]
+        .as_str()
+        .expect("state error")
+        .contains("was not reset"));
+    assert_eq!(fs::read(&state_path)?, corrupt_state);
+    assert!(!temp
+        .path()
+        .join(".cache/forager/remote_operator_telegram_updates.jsonl")
+        .exists());
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_health_reports_corrupt_listener_state() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    let state_path = temp.path().join("telegram_state.json");
+    fs::write(&state_path, "not-json")?;
+    let status_path = temp.path().join("loop_status.json");
+    fs::write(
+        &status_path,
+        serde_json::to_string_pretty(&json!({
+            "schema": "remote_operator_telegram_adapter_result.v1",
+            "mode": "live_loop",
+            "status": "polling",
+            "last_result": {
+                "generated_at": "2099-01-01T00:00:00+00:00",
+                "status": "no_update"
+            }
+        }))?,
+    )?;
+    let out = temp.path().join("health.json");
+
+    let output = remote_operator_command(temp.path())
+        .arg("--health")
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--state-file")
+        .arg(&state_path)
+        .arg("--loop-status-file")
+        .arg(&status_path)
+        .arg("--health-max-age-sec")
+        .arg("999999999")
+        .arg("--out")
+        .arg(&out)
+        .output()?;
+
+    assert_eq!(output.status.code(), Some(1));
+    let result: Value = serde_json::from_slice(&fs::read(&out)?)?;
+    assert_eq!(result["health_status"], "unhealthy");
+    assert!(result["transport_issues"]
+        .as_array()
+        .expect("transport issues")
+        .contains(&json!("listener_state_unreadable")));
+    assert_eq!(result["action_readiness"][0]["status"], "blocked");
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_health_reports_pending_reply_delivery() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    let journal_path = temp.path().join("update_journal.jsonl");
+    let outbox_path = temp.path().join("reply_outbox.jsonl");
+    let status_path = temp.path().join("loop_status.json");
+    fs::write(
+        &journal_path,
+        [
+            json!({
+                "schema": "remote_operator_telegram_update_journal.v2",
+                "recorded_at": "2026-08-11T00:00:00+00:00",
+                "status": "started",
+                "update_id": 9_190,
+                "input_hash": "sha256:input",
+                "chat_id_hash": "sha256:chat",
+                "user_id_hash": "sha256:user"
+            }),
+            json!({
+                "schema": "remote_operator_telegram_update_journal.v2",
+                "recorded_at": "2026-08-11T00:00:01+00:00",
+                "status": "effect_committed",
+                "update_id": 9_190,
+                "input_hash": "sha256:input",
+                "result_status": "rendered",
+                "effect": {"kind": "no_effect"},
+                "delivery_id": "telegram_update:9190"
+            }),
+        ]
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<serde_json::Result<Vec<_>>>()?
+        .join("\n")
+            + "\n",
+    )?;
+    fs::write(
+        &outbox_path,
+        serde_json::to_string(&json!({
+            "schema": "remote_operator_telegram_reply_outbox.v1",
+            "recorded_at": "2026-08-11T00:00:02+00:00",
+            "queued_at": "2026-08-11T00:00:01+00:00",
+            "status": "failed",
+            "delivery_id": "telegram_update:9190",
+            "update_id": 9_190,
+            "input_hash": "sha256:input",
+            "payload_hash": "sha256:payload",
+            "chat_id": "123456789",
+            "message": "receipt",
+            "reply_markup": null,
+            "result_status": "rendered",
+            "effect": {"kind": "no_effect"},
+            "attempt_count": 1,
+            "last_error": "temporary failure"
+        }))? + "\n",
+    )?;
+    fs::write(
+        &status_path,
+        serde_json::to_string_pretty(&json!({
+            "schema": "remote_operator_telegram_adapter_result.v1",
+            "mode": "live_loop",
+            "status": "polling",
+            "last_result": {
+                "generated_at": "2099-01-01T00:00:00+00:00",
+                "status": "send_failed"
+            }
+        }))?,
+    )?;
+    let out = temp.path().join("health.json");
+
+    let output = remote_operator_command(temp.path())
+        .arg("--health")
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--update-journal-file")
+        .arg(&journal_path)
+        .arg("--reply-outbox-file")
+        .arg(&outbox_path)
+        .arg("--loop-status-file")
+        .arg(&status_path)
+        .arg("--health-max-age-sec")
+        .arg("999999999")
+        .arg("--out")
+        .arg(&out)
+        .output()?;
+
+    assert_eq!(output.status.code(), Some(1));
+    let result: Value = serde_json::from_slice(&fs::read(&out)?)?;
+    assert_eq!(result["health_status"], "unhealthy");
+    assert!(result["transport_issues"]
+        .as_array()
+        .expect("transport issues")
+        .contains(&json!("update_journal_delivery_incomplete")));
+    assert!(result["transport_issues"]
+        .as_array()
+        .expect("transport issues")
+        .contains(&json!("reply_delivery_pending")));
+    assert_eq!(result["reply_outbox"]["pending_count"], 1);
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_completed_journal_prevents_update_replay() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    let state_path = temp.path().join("telegram_state.json");
+    let journal_path = temp.path().join("update_journal.jsonl");
+    let conversation_path = temp.path().join("conversation.jsonl");
+    let update_path = temp.path().join("update.json");
+    write_text_update(&update_path, 9_200, 602, "/help")?;
+
+    for (index, expected_status) in [(1, "rendered"), (2, "already_processed")] {
+        if index == 2 {
+            fs::write(
+                &state_path,
+                serde_json::to_string_pretty(&json!({
+                    "schema": "remote_operator_telegram_state.v1",
+                    "offset": 0
+                }))?,
+            )?;
+        }
+        let out = temp.path().join(format!("result_{index}.json"));
+        let output = remote_operator_command(temp.path())
+            .arg("--dry-run")
+            .arg("--once")
+            .arg("--replay-update-file")
+            .arg(&update_path)
+            .arg("--env-file")
+            .arg(&env_path)
+            .arg("--state-file")
+            .arg(&state_path)
+            .arg("--update-journal-file")
+            .arg(&journal_path)
+            .arg("--conversation-file")
+            .arg(&conversation_path)
+            .arg("--out")
+            .arg(&out)
+            .output()?;
+        assert!(
+            output.status.success(),
+            "stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result: Value = serde_json::from_slice(&fs::read(&out)?)?;
+        assert_eq!(result["status"], expected_status);
+    }
+
+    let state: Value = serde_json::from_slice(&fs::read(&state_path)?)?;
+    assert_eq!(state["offset"], 9_201);
+    assert_eq!(fs::read_to_string(&conversation_path)?.lines().count(), 1);
+    let rows = fs::read_to_string(&journal_path)?;
+    assert_eq!(rows.lines().count(), 3);
+    assert!(rows
+        .lines()
+        .any(|line| line.contains("\"status\": \"started\"")));
+    assert!(rows
+        .lines()
+        .any(|line| line.contains("\"status\": \"effect_committed\"")));
+    assert!(rows
+        .lines()
+        .any(|line| line.contains("\"status\": \"completed\"")));
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_journal_rejects_changed_input_for_completed_update() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    let state_path = temp.path().join("telegram_state.json");
+    let journal_path = temp.path().join("update_journal.jsonl");
+    let outbox_path = temp.path().join("reply_outbox.jsonl");
+    let update_path = temp.path().join("update.json");
+    write_text_update(&update_path, 9_210, 603, "/help")?;
+
+    let first = remote_operator_command(temp.path())
+        .arg("--dry-run")
+        .arg("--once")
+        .arg("--replay-update-file")
+        .arg(&update_path)
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--state-file")
+        .arg(&state_path)
+        .arg("--update-journal-file")
+        .arg(&journal_path)
+        .arg("--reply-outbox-file")
+        .arg(&outbox_path)
+        .output()?;
+    assert!(first.status.success());
+
+    fs::write(
+        &state_path,
+        serde_json::to_string_pretty(&json!({
+            "schema": "remote_operator_telegram_state.v1",
+            "offset": 0
+        }))?,
+    )?;
+    write_text_update(&update_path, 9_210, 603, "/status")?;
+    let second = remote_operator_command(temp.path())
+        .arg("--dry-run")
+        .arg("--once")
+        .arg("--replay-update-file")
+        .arg(&update_path)
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--state-file")
+        .arg(&state_path)
+        .arg("--update-journal-file")
+        .arg(&journal_path)
+        .arg("--reply-outbox-file")
+        .arg(&outbox_path)
+        .output()?;
+
+    assert_eq!(second.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&second.stderr).contains("input hash does not match"));
+    assert_eq!(fs::read_to_string(&journal_path)?.lines().count(), 3);
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_journal_inspect_and_reconcile_started_update() -> Result<()> {
+    let temp = tempdir()?;
+    let journal_path = temp.path().join("update_journal.jsonl");
+    let outbox_path = temp.path().join("reply_outbox.jsonl");
+    fs::write(
+        &journal_path,
+        serde_json::to_string(&json!({
+            "schema": "remote_operator_telegram_update_journal.v1",
+            "recorded_at": "2026-08-11T00:00:00+00:00",
+            "status": "started",
+            "update_id": 9_220,
+            "input_hash": "sha256:0123456789abcdef",
+            "chat_id_hash": "sha256:chat",
+            "user_id_hash": "sha256:user"
+        }))? + "\n",
+    )?;
+    let inspect_out = temp.path().join("inspect.json");
+    let inspect = remote_operator_command(temp.path())
+        .arg("--journal-inspect")
+        .arg("--journal-update-id")
+        .arg("9220")
+        .arg("--update-journal-file")
+        .arg(&journal_path)
+        .arg("--reply-outbox-file")
+        .arg(&outbox_path)
+        .arg("--out")
+        .arg(&inspect_out)
+        .output()?;
+    assert!(inspect.status.success());
+    let inspection: Value = serde_json::from_slice(&fs::read(&inspect_out)?)?;
+    assert_eq!(inspection["status_counts"]["started"], 1);
+    assert_eq!(inspection["unresolved_update_ids"], json!([9_220]));
+    assert_eq!(inspection["reply_outbox"]["pending_count"], 0);
+
+    let reconcile_out = temp.path().join("reconcile.json");
+    let reconcile = remote_operator_command(temp.path())
+        .arg("--journal-reconcile")
+        .arg("retry")
+        .arg("--journal-update-id")
+        .arg("9220")
+        .arg("--journal-reason")
+        .arg("downstream receipts confirm no effect was applied")
+        .arg("--update-journal-file")
+        .arg(&journal_path)
+        .arg("--reply-outbox-file")
+        .arg(&outbox_path)
+        .arg("--listener-lock-file")
+        .arg(temp.path().join("listener.lock"))
+        .arg("--out")
+        .arg(&reconcile_out)
+        .output()?;
+    assert!(
+        reconcile.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&reconcile.stdout),
+        String::from_utf8_lossy(&reconcile.stderr)
+    );
+    let reconciliation: Value = serde_json::from_slice(&fs::read(&reconcile_out)?)?;
+    assert_eq!(reconciliation["status"], "retry_authorized");
+    assert_eq!(
+        reconciliation["authority_domain"],
+        "telegram_update_journal"
+    );
+
+    let journal = fs::read_to_string(&journal_path)?;
+    assert_eq!(journal.lines().count(), 2);
+    assert!(journal
+        .lines()
+        .last()
+        .expect("reconciliation row")
+        .contains("retry_authorized"));
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_journal_compaction_preserves_unresolved_work() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    let state_path = temp.path().join("telegram_state.json");
+    let journal_path = temp.path().join("update_journal.jsonl");
+    let outbox_path = temp.path().join("reply_outbox.jsonl");
+    let update_path = temp.path().join("update.json");
+    write_text_update(&update_path, 9_240, 605, "/help")?;
+    let first = remote_operator_command(temp.path())
+        .arg("--dry-run")
+        .arg("--once")
+        .arg("--replay-update-file")
+        .arg(&update_path)
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--state-file")
+        .arg(&state_path)
+        .arg("--update-journal-file")
+        .arg(&journal_path)
+        .arg("--reply-outbox-file")
+        .arg(&outbox_path)
+        .output()?;
+    assert!(first.status.success());
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&journal_path)?
+        .write_all(
+            (serde_json::to_string(&json!({
+                "schema": "remote_operator_telegram_update_journal.v2",
+                "recorded_at": "2026-08-11T00:00:00+00:00",
+                "status": "started",
+                "update_id": 9_241,
+                "input_hash": "sha256:pending",
+                "chat_id_hash": "sha256:chat",
+                "user_id_hash": "sha256:user"
+            }))? + "\n")
+                .as_bytes(),
+        )?;
+
+    let out = temp.path().join("compact.json");
+    let compact = remote_operator_command(temp.path())
+        .arg("--journal-compact")
+        .arg("--state-file")
+        .arg(&state_path)
+        .arg("--update-journal-file")
+        .arg(&journal_path)
+        .arg("--reply-outbox-file")
+        .arg(&outbox_path)
+        .arg("--listener-lock-file")
+        .arg(temp.path().join("listener.lock"))
+        .arg("--out")
+        .arg(&out)
+        .output()?;
+    assert!(
+        compact.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compact.stdout),
+        String::from_utf8_lossy(&compact.stderr)
+    );
+    let result: Value = serde_json::from_slice(&fs::read(&out)?)?;
+    assert_eq!(result["trusted_offset"], 9_241);
+    assert_eq!(result["update_journal"]["removed_update_count"], 1);
+    assert_eq!(result["reply_outbox"]["removed_delivery_count"], 1);
+    let journal = fs::read_to_string(&journal_path)?;
+    assert_eq!(journal.lines().count(), 1);
+    assert!(journal.contains("\"update_id\": 9241"));
+    assert!(journal.contains("\"status\": \"started\""));
+    assert!(fs::read_to_string(&outbox_path)?.is_empty());
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_journal_reads_legacy_completed_rows() -> Result<()> {
+    let temp = tempdir()?;
+    let journal_path = temp.path().join("legacy_update_journal.jsonl");
+    fs::write(
+        &journal_path,
+        [
+            json!({
+                "schema": "remote_operator_telegram_update_journal.v1",
+                "recorded_at": "2026-08-10T00:00:00+00:00",
+                "status": "started",
+                "update_id": 9_250,
+                "input_hash": "sha256:legacy",
+                "chat_id_hash": "sha256:chat",
+                "user_id_hash": "sha256:user"
+            }),
+            json!({
+                "schema": "remote_operator_telegram_update_journal.v1",
+                "recorded_at": "2026-08-10T00:00:01+00:00",
+                "status": "completed",
+                "update_id": 9_250,
+                "result_status": "rendered",
+                "send_status": "sent",
+                "conversation_record_status": "recorded",
+                "effect": {"kind": "no_effect"}
+            }),
+        ]
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<serde_json::Result<Vec<_>>>()?
+        .join("\n")
+            + "\n",
+    )?;
+    let out = temp.path().join("inspect_legacy.json");
+    let inspect = remote_operator_command(temp.path())
+        .arg("--journal-inspect")
+        .arg("--journal-update-id")
+        .arg("9250")
+        .arg("--update-journal-file")
+        .arg(&journal_path)
+        .arg("--reply-outbox-file")
+        .arg(temp.path().join("reply_outbox.jsonl"))
+        .arg("--out")
+        .arg(&out)
+        .output()?;
+    assert!(inspect.status.success());
+    let result: Value = serde_json::from_slice(&fs::read(&out)?)?;
+    assert_eq!(result["status_counts"]["completed"], 1);
+    assert_eq!(result["latest_records"][0]["input_hash"], "sha256:legacy");
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_reply_outbox_retries_without_reapplying_effect() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    let state_path = temp.path().join("telegram_state.json");
+    let journal_path = temp.path().join("update_journal.jsonl");
+    let outbox_path = temp.path().join("reply_outbox.jsonl");
+    let conversation_path = temp.path().join("conversation.jsonl");
+    let update = json!({
+        "update_id": 9_230,
+        "message": {
+            "message_id": 604,
+            "date": 1780000000,
+            "chat": {"id": 123456789, "type": "private"},
+            "from": {"id": 987654321, "is_bot": false, "first_name": "Operator"},
+            "text": "/remember retry delivery without duplicate effect"
+        }
+    });
+    let (first_base, first_server) = spawn_fake_telegram(vec![
+        json!({"ok": true, "result": [update]}),
+        json!({"ok": false, "description": "temporary send failure"}),
+    ])?;
+    let first_out = temp.path().join("first.json");
+    let first = remote_operator_command(temp.path())
+        .arg("--once")
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--state-file")
+        .arg(&state_path)
+        .arg("--update-journal-file")
+        .arg(&journal_path)
+        .arg("--reply-outbox-file")
+        .arg(&outbox_path)
+        .arg("--conversation-file")
+        .arg(&conversation_path)
+        .arg("--poll-timeout-sec")
+        .arg("0")
+        .arg("--api-timeout-sec")
+        .arg("2")
+        .arg("--out")
+        .arg(&first_out)
+        .env("OFFDESK_REMOTE_OPERATOR_TELEGRAM_API_BASE_URL", first_base)
+        .output()?;
+    assert!(first.status.success());
+    let first_result: Value = serde_json::from_slice(&fs::read(&first_out)?)?;
+    assert_eq!(first_result["status"], "send_failed");
+    assert_eq!(first_result["update_journal_status"], "effect_committed");
+    assert_eq!(first_result["reply_delivery_pending"], true);
+    let first_requests = first_server.join().expect("first fake Telegram server")?;
+    assert!(first_requests[0].contains("/getUpdates"));
+    assert!(first_requests[1].contains("/sendMessage"));
+
+    let state: Value = serde_json::from_slice(&fs::read(&state_path)?)?;
+    assert_eq!(state["offset"], 9_231);
+    let candidates: Value = serde_json::from_slice(&fs::read(
+        profile_dir(temp.path()).join("adaptive_wiki_candidates.json"),
+    )?)?;
+    assert_eq!(
+        candidates["candidates"]
+            .as_array()
+            .expect("candidates")
+            .len(),
+        1
+    );
+    assert_eq!(candidates["candidates"][0]["occurrence_count"], 1);
+
+    let (second_base, second_server) = spawn_fake_telegram(vec![
+        json!({"ok": true, "result": {"message_id": 777}}),
+        json!({"ok": true, "result": []}),
+    ])?;
+    let second_out = temp.path().join("second.json");
+    let second = remote_operator_command(temp.path())
+        .arg("--once")
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--state-file")
+        .arg(&state_path)
+        .arg("--update-journal-file")
+        .arg(&journal_path)
+        .arg("--reply-outbox-file")
+        .arg(&outbox_path)
+        .arg("--conversation-file")
+        .arg(&conversation_path)
+        .arg("--poll-timeout-sec")
+        .arg("0")
+        .arg("--api-timeout-sec")
+        .arg("2")
+        .arg("--out")
+        .arg(&second_out)
+        .env("OFFDESK_REMOTE_OPERATOR_TELEGRAM_API_BASE_URL", second_base)
+        .output()?;
+    assert!(
+        second.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&second.stdout),
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let second_result: Value = serde_json::from_slice(&fs::read(&second_out)?)?;
+    assert_eq!(second_result["status"], "reply_delivered");
+    assert_eq!(second_result["reply_outbox_delivery"]["delivered_count"], 1);
+    let second_requests = second_server.join().expect("second fake Telegram server")?;
+    assert!(second_requests[0].contains("/sendMessage"));
+    assert!(second_requests[1].contains("/getUpdates"));
+
+    let candidates_after: Value = serde_json::from_slice(&fs::read(
+        profile_dir(temp.path()).join("adaptive_wiki_candidates.json"),
+    )?)?;
+    assert_eq!(candidates_after["candidates"][0]["occurrence_count"], 1);
+    assert!(fs::read_to_string(&journal_path)?
+        .lines()
+        .last()
+        .expect("completed journal row")
+        .contains("\"status\": \"completed\""));
+    assert!(fs::read_to_string(&outbox_path)?
+        .lines()
+        .last()
+        .expect("delivered outbox row")
+        .contains("\"status\": \"delivered\""));
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_health_blocks_unresolvable_registered_projects() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    write_project_registry(temp.path())?;
+    let empty_workspace = temp.path().join("empty-workspace");
+    fs::create_dir_all(&empty_workspace)?;
+    let status_path = temp.path().join("loop_status.json");
+    fs::write(
+        &status_path,
+        serde_json::to_string_pretty(&json!({
+            "schema": "remote_operator_telegram_adapter_result.v1",
+            "mode": "live_loop",
+            "status": "polling",
+            "poll_count": 1,
+            "last_result": {
+                "generated_at": "2099-01-01T00:00:00+00:00",
+                "status": "no_update"
+            }
+        }))?,
+    )?;
+    let out = temp.path().join("health_projects.json");
+
+    let output = remote_operator_command(temp.path())
+        .arg("--health")
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--loop-status-file")
+        .arg(&status_path)
+        .arg("--workspace-root")
+        .arg(&empty_workspace)
+        .arg("--health-max-age-sec")
+        .arg("999999999")
+        .arg("--out")
+        .arg(&out)
+        .output()?;
+
+    assert_eq!(output.status.code(), Some(1));
+    let result: Value = serde_json::from_slice(&fs::read(&out)?)?;
+    assert_eq!(result["health_status"], "degraded");
+    assert_eq!(result["registered_project_count"], 1);
+    assert_eq!(result["resolvable_project_count"], 0);
+    let project_scan = result["action_readiness"]
+        .as_array()
+        .expect("action readiness")
+        .iter()
+        .find(|item| item["action"] == "project_scan")
+        .expect("project scan readiness");
+    assert_eq!(project_scan["status"], "blocked");
+    assert_eq!(project_scan["reason"], "registered_projects_unresolvable");
     Ok(())
 }
 
@@ -6688,6 +7811,8 @@ fn remote_operator_telegram_health_degrades_when_agent_runtime_unavailable() -> 
         result["action_readiness"][2]["blocked_actions"],
         json!(["new_plan", "start_offdesk"])
     );
+    assert_eq!(result["action_readiness"][4]["action"], "session_message");
+    assert_eq!(result["action_readiness"][4]["status"], "blocked");
     Ok(())
 }
 
@@ -6934,6 +8059,9 @@ fn remote_operator_watchdog_accepts_fresh_listener() -> Result<()> {
 #[serial]
 fn telegram_operator_systemd_installer_dry_run_renders_unit() -> Result<()> {
     let temp = tempdir()?;
+    let workspace_root = temp.path().join("Desktop/Workspace");
+    let repo_root = workspace_root.join("98.Harness/forager-cli");
+    fs::create_dir_all(&repo_root)?;
     let env_path = temp.path().join("telegram.env");
     write_env_file(&env_path)?;
     let out = temp.path().join("service.json");
@@ -6941,8 +8069,10 @@ fn telegram_operator_systemd_installer_dry_run_renders_unit() -> Result<()> {
     let output = Command::new("python3")
         .arg(script_path("install_offdesk_telegram_operator_service.py"))
         .arg("--dry-run")
+        .arg("--service-name")
+        .arg("forager-test-telegram")
         .arg("--repo-root")
-        .arg(temp.path())
+        .arg(&repo_root)
         .arg("--forager-bin")
         .arg(temp.path().join("target/debug/forager"))
         .arg("--env-file")
@@ -6965,16 +8095,33 @@ fn telegram_operator_systemd_installer_dry_run_renders_unit() -> Result<()> {
         "forager_telegram_operator_systemd_install.v1"
     );
     assert_eq!(result["installed"], false);
+    assert_eq!(result["service_name"], "forager-test-telegram.service");
+    assert!(result["service_path"]
+        .as_str()
+        .expect("service path")
+        .ends_with("forager-test-telegram.service"));
     let unit = result["unit_preview"].as_str().expect("unit preview");
     assert!(unit.contains("ExecStart="));
     assert!(unit.contains("offdesk_remote_operator_telegram.py"));
     assert!(unit.contains("--poll-timeout-sec 30"));
     assert!(unit.contains("--poll-error-backoff-sec 5"));
+    assert!(unit.contains("--listener-lock-file"));
+    assert!(unit.contains("--update-journal-file"));
+    assert!(unit.contains("--reply-outbox-file"));
+    assert!(unit.contains("--workspace-root"));
+    assert!(unit.contains(workspace_root.to_str().expect("workspace root")));
+    assert!(unit.contains("UMask=0077"));
     // Proactive attention notification is enabled by default for deployments.
     assert!(unit.contains("--attention-notify"));
-    assert!(unit.contains("StartLimitIntervalSec=0"));
-    assert!(unit.contains("Restart=always"));
+    assert!(unit.contains("StartLimitIntervalSec=60"));
+    assert!(unit.contains("StartLimitBurst=5"));
+    assert!(unit.contains("Restart=on-failure"));
     assert!(!unit.contains("fake-token-for-test"));
+    assert!(unit.contains(".local/share/forager/scripts"));
+    assert!(
+        !temp.path().join(".local/share/forager/scripts").exists(),
+        "dry-run must not deploy scripts"
+    );
     Ok(())
 }
 
@@ -7017,6 +8164,7 @@ fn telegram_operator_systemd_installer_dry_run_renders_watchdog_timer() -> Resul
         .expect("watchdog timer unit");
     assert!(service_unit.contains("Type=oneshot"));
     assert!(service_unit.contains("offdesk_remote_operator_watchdog.py"));
+    assert!(service_unit.contains(".local/share/forager/scripts"));
     assert!(service_unit.contains("--systemd-mode required"));
     assert!(service_unit.contains("--alert-min-interval-sec 1800"));
     assert!(timer_unit.contains("OnBootSec=2min"));
@@ -7025,6 +8173,44 @@ fn telegram_operator_systemd_installer_dry_run_renders_watchdog_timer() -> Resul
     let serialized = serde_json::to_string(&result)?;
     assert!(!serialized.contains("fake-token-for-test"));
     assert!(!serialized.contains("999999:"));
+    assert!(
+        !temp.path().join(".local/share/forager/scripts").exists(),
+        "dry-run must not deploy watchdog scripts"
+    );
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn telegram_operator_systemd_installer_refuses_dirty_source_deploy() -> Result<()> {
+    let temp = tempdir()?;
+    let repo_root = temp.path().join("repo");
+    fs::create_dir_all(&repo_root)?;
+    let git_init = Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&repo_root)
+        .output()?;
+    assert!(git_init.status.success());
+    fs::write(repo_root.join("dirty.txt"), "uncommitted\n")?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+
+    let output = Command::new("python3")
+        .arg(script_path("install_offdesk_telegram_operator_service.py"))
+        .arg("--install")
+        .arg("--repo-root")
+        .arg(&repo_root)
+        .arg("--forager-bin")
+        .arg(temp.path().join("forager"))
+        .arg("--env-file")
+        .arg(&env_path)
+        .env("HOME", temp.path())
+        .output()?;
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("dirty Git checkout"));
+    assert!(!temp.path().join(".local/share/forager/scripts").exists());
+    assert!(!temp.path().join(".config/systemd/user").exists());
     Ok(())
 }
 
@@ -7278,10 +8464,434 @@ fn write_project_registry(home: &Path) -> Result<()> {
 
 [projects.twinpaper]
 display_name = "TwinPaper"
+aliases = ["트윈페이퍼"]
 workspace_patterns = ["1.2.8.TwinPaper"]
 wiki_profile = "twinpaper-review"
 "#,
     )?;
+    Ok(())
+}
+
+fn write_ambiguous_project_registry(home: &Path) -> Result<()> {
+    let dir = home.join(".config").join("forager");
+    fs::create_dir_all(&dir)?;
+    fs::write(
+        dir.join("projects.toml"),
+        r#"schema = "forager_project_registry.v1"
+
+[projects.alpha]
+display_name = "Alpha"
+aliases = ["공통프로젝트"]
+workspace_patterns = ["Alpha"]
+wiki_profile = "alpha-wiki"
+
+[projects.beta]
+display_name = "Beta"
+aliases = ["공통프로젝트"]
+workspace_patterns = ["Beta"]
+wiki_profile = "beta-wiki"
+"#,
+    )?;
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_ambiguous_project_alias_never_selects_a_writer() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    write_ambiguous_project_registry(temp.path())?;
+    let state_path = temp.path().join("telegram_state.json");
+
+    let chat_out = temp.path().join("chat.json");
+    let chat = remote_operator_command(temp.path())
+        .arg("--dry-run")
+        .arg("--command-text")
+        .arg("공통프로젝트 상태를 확인해줘")
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--out")
+        .arg(&chat_out)
+        .output()?;
+    assert!(chat.status.success());
+    let chat_result: Value = serde_json::from_slice(&fs::read(&chat_out)?)?;
+    assert!(chat_result["project_focus"].is_null());
+    assert_eq!(chat_result["project_resolution"]["status"], "ambiguous");
+    assert_eq!(
+        chat_result["project_resolution"]["candidates"],
+        json!(["alpha", "beta"])
+    );
+    assert_eq!(
+        chat_result["parsed_command"]["agent_intent"]["reason"],
+        "ambiguous_project_reference"
+    );
+
+    let wiki_out = temp.path().join("wiki.json");
+    let wiki = remote_operator_command(temp.path())
+        .arg("--dry-run")
+        .arg("--command-text")
+        .arg("/wiki 공통프로젝트")
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--out")
+        .arg(&wiki_out)
+        .output()?;
+    assert!(wiki.status.success());
+    let wiki_result: Value = serde_json::from_slice(&fs::read(&wiki_out)?)?;
+    assert_eq!(wiki_result["wiki_summary"]["status"], "ambiguous_project");
+    assert!(wiki_result["message_preview"]
+        .as_str()
+        .expect("wiki preview")
+        .contains("프로젝트 키: alpha, beta"));
+
+    let update_path = temp.path().join("remember.json");
+    write_text_update(
+        &update_path,
+        10_100,
+        20_100,
+        "/remember 공통프로젝트 규칙을 저장한다",
+    )?;
+    let remember_out = temp.path().join("remember_result.json");
+    let remember = remote_operator_command(temp.path())
+        .arg("--dry-run")
+        .arg("--once")
+        .arg("--replay-update-file")
+        .arg(&update_path)
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--state-file")
+        .arg(&state_path)
+        .arg("--out")
+        .arg(&remember_out)
+        .output()?;
+    assert!(remember.status.success());
+    let remember_result: Value = serde_json::from_slice(&fs::read(&remember_out)?)?;
+    assert_eq!(remember_result["wiki_candidate_recorded"], false);
+    assert_eq!(remember_result["wiki_candidate_status"], "blocked");
+    assert_eq!(
+        remember_result["wiki_candidate_error"],
+        "ambiguous_project_reference"
+    );
+    assert!(remember_result["message_preview"]
+        .as_str()
+        .expect("remember preview")
+        .contains("아직 위키 후보를 저장하지 않았습니다"));
+    assert!(!profile_dir(temp.path())
+        .join("adaptive_wiki_candidates.json")
+        .exists());
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_ascii_project_mentions_require_token_boundaries() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    write_project_registry(temp.path())?;
+    let out = temp.path().join("boundary.json");
+
+    let output = remote_operator_command(temp.path())
+        .arg("--dry-run")
+        .arg("--command-text")
+        .arg("Twinpapership이라는 일반 단어를 설명해줘")
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--out")
+        .arg(&out)
+        .output()?;
+
+    assert!(output.status.success());
+    let result: Value = serde_json::from_slice(&fs::read(&out)?)?;
+    assert!(result["project_focus"].is_null());
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_korean_project_alias_overrides_focus() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    write_project_registry(temp.path())?;
+    let out = temp.path().join("alias_focus.json");
+    let request_path = temp.path().join("ollama_alias_request.json");
+    let (base_url, server) = spawn_fake_ollama_with_classification(
+        request_path,
+        json!({
+            "action": "answer",
+            "assistant_reply": "트윈페이퍼 상태를 확인했습니다.",
+            "confidence": 0.9,
+            "requires_clarification": false,
+            "clarifying_question": null,
+            "reason": "Project alias resolved."
+        }),
+    )?;
+
+    let output = remote_operator_command(temp.path())
+        .arg("--dry-run")
+        .arg("--command-text")
+        .arg("트윈페이퍼 마지막 상태를 확인해줘")
+        .arg("--forager-bin")
+        .arg(env!("CARGO_BIN_EXE_forager"))
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--agent-intent-mode")
+        .arg("required")
+        .arg("--agent-base-url")
+        .arg(&base_url)
+        .arg("--agent-model")
+        .arg("qwen3-coder-next:latest")
+        .arg("--out")
+        .arg(&out)
+        .output()?;
+
+    server.join().expect("fake ollama server panicked")?;
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&fs::read(&out)?)?;
+    assert_eq!(result["project_focus"]["key"], "twinpaper");
+    assert_eq!(result["project_focus"]["source"], "mention");
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_projects_lists_only_resolved_access_as_available() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    write_project_registry(temp.path())?;
+    let workspace_root = temp.path().join("workspace");
+    fs::create_dir_all(workspace_root.join("1.2.8.TwinPaper"))?;
+    let out = temp.path().join("projects.json");
+
+    let output = remote_operator_command(temp.path())
+        .arg("--dry-run")
+        .arg("--command-text")
+        .arg("/projects 트윈페이퍼")
+        .arg("--forager-bin")
+        .arg(env!("CARGO_BIN_EXE_forager"))
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--workspace-root")
+        .arg(&workspace_root)
+        .arg("--out")
+        .arg(&out)
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&fs::read(&out)?)?;
+    assert_eq!(result["parsed_command"]["command"], "projects");
+    assert_eq!(result["project_focus"]["key"], "twinpaper");
+    assert_eq!(result["project_summary"]["registered_count"], 1);
+    assert_eq!(result["project_summary"]["available_count"], 1);
+    assert!(result["message_preview"]
+        .as_str()
+        .is_some_and(|text| text.contains("작업공간: 접근 가능")));
+    assert_mobile_contract(&result);
+    Ok(())
+}
+
+fn record_wiki_candidate(home: &Path, profile: &str, claim: &str) -> Result<()> {
+    let output = Command::new(env!("CARGO_BIN_EXE_forager"))
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .args([
+            "--profile",
+            profile,
+            "offdesk",
+            "wiki",
+            "record-candidate",
+            "--kind",
+            "fact",
+            "--scope",
+            "project",
+            "--scope-ref",
+            "twinpaper",
+            "--claim",
+            claim,
+            "--evidence-ref",
+            "telegram:test",
+            "--json",
+        ])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+fn read_wiki_candidates(home: &Path, profile: &str) -> Result<Value> {
+    let output = Command::new(env!("CARGO_BIN_EXE_forager"))
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .args([
+            "--profile",
+            profile,
+            "offdesk",
+            "wiki",
+            "candidates",
+            "--json",
+        ])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(serde_json::from_slice(&output.stdout)?)
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_wiki_lists_project_candidate_pressure() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    write_project_registry(temp.path())?;
+    record_wiki_candidate(
+        temp.path(),
+        "twinpaper-review",
+        "검토되지 않은 실행 결과를 정설로 승격하지 않는다",
+    )?;
+    let out = temp.path().join("wiki_portfolio.json");
+
+    let output = remote_operator_command(temp.path())
+        .arg("--dry-run")
+        .arg("--command-text")
+        .arg("/wiki")
+        .arg("--forager-bin")
+        .arg(env!("CARGO_BIN_EXE_forager"))
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--out")
+        .arg(&out)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&fs::read(&out)?)?;
+    assert_eq!(result["parsed_command"]["command"], "wiki");
+    assert_eq!(result["wiki_summary"]["candidate_count"], 1);
+    assert_eq!(result["wiki_summary"]["projects_with_candidates"], 1);
+    let preview = result["message_preview"].as_str().expect("message preview");
+    assert!(preview.contains("후보 1개"));
+    assert!(preview.contains("twinpaper 1"));
+    assert!(preview.contains("/wiki &lt;project&gt;"));
+    assert!(button_texts(&result).contains(&"/wiki twinpaper".to_string()));
+    assert_mobile_contract(&result);
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_remember_uses_sticky_projects_wiki_profile() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    write_project_registry(temp.path())?;
+    let state_path = temp.path().join("telegram_state.json");
+
+    let focus_update = temp.path().join("focus_update.json");
+    write_text_update(&focus_update, 800, 1000, "/wiki twinpaper")?;
+    let focus_out = temp.path().join("focus_result.json");
+    let output = remote_operator_command(temp.path())
+        .arg("--dry-run")
+        .arg("--once")
+        .arg("--replay-update-file")
+        .arg(&focus_update)
+        .arg("--forager-bin")
+        .arg(env!("CARGO_BIN_EXE_forager"))
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--state-file")
+        .arg(&state_path)
+        .arg("--out")
+        .arg(&focus_out)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let focused: Value = serde_json::from_slice(&fs::read(&focus_out)?)?;
+    assert_eq!(focused["project_focus"]["key"], "twinpaper");
+    assert_eq!(focused["project_focus"]["source"], "explicit");
+
+    let remember_update = temp.path().join("remember_update.json");
+    write_text_update(
+        &remember_update,
+        801,
+        1001,
+        "/remember 근거와 결론을 분리해서 검토한다",
+    )?;
+    let remember_out = temp.path().join("remember_result.json");
+    let output = remote_operator_command(temp.path())
+        .arg("--dry-run")
+        .arg("--once")
+        .arg("--replay-update-file")
+        .arg(&remember_update)
+        .arg("--forager-bin")
+        .arg(env!("CARGO_BIN_EXE_forager"))
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--state-file")
+        .arg(&state_path)
+        .arg("--out")
+        .arg(&remember_out)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let remembered: Value = serde_json::from_slice(&fs::read(&remember_out)?)?;
+    assert_eq!(
+        remembered["parsed_command"]["wiki_profile"],
+        "twinpaper-review"
+    );
+    assert_eq!(remembered["project_focus"]["key"], "twinpaper");
+    assert_eq!(remembered["project_focus"]["source"], "sticky");
+    assert_eq!(remembered["wiki_candidate_status"], "recorded");
+    assert!(remembered["message_preview"]
+        .as_str()
+        .expect("message preview")
+        .contains("twinpaper-review"));
+
+    let project_candidates = read_wiki_candidates(temp.path(), "twinpaper-review")?;
+    assert_eq!(
+        project_candidates.as_array().expect("candidate list").len(),
+        1
+    );
+    assert_eq!(
+        project_candidates[0]["claim"],
+        "근거와 결론을 분리해서 검토한다"
+    );
+    assert_eq!(project_candidates[0]["scope"], "project");
+    assert_eq!(project_candidates[0]["scope_ref"], "twinpaper");
+    let default_candidates = read_wiki_candidates(temp.path(), "default")?;
+    assert!(default_candidates
+        .as_array()
+        .expect("default candidate list")
+        .is_empty());
     Ok(())
 }
 
@@ -7422,6 +9032,59 @@ fn remote_operator_telegram_chat_focus_sticks_across_messages() -> Result<()> {
 
 #[test]
 #[serial]
+fn remote_operator_telegram_stale_project_focus_expires() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    write_project_registry(temp.path())?;
+    let state_path = temp.path().join("telegram_state.json");
+    let chat_hash = "sha256:9dd7fefaf214ceca";
+    fs::write(
+        &state_path,
+        serde_json::to_string_pretty(&json!({
+            "schema": "remote_operator_telegram_state.v1",
+            "offset": 0,
+            "chat_focus_by_chat": {
+                chat_hash: {
+                    "project_key": "twinpaper",
+                    "updated_at": "2026-01-01T00:00:00+00:00"
+                }
+            }
+        }))?,
+    )?;
+    let update_path = temp.path().join("stale_focus_update.json");
+    write_text_update(&update_path, 880, 980, "지금 상태 어때")?;
+    let out = temp.path().join("stale_focus_result.json");
+
+    let output = remote_operator_command(temp.path())
+        .arg("--dry-run")
+        .arg("--once")
+        .arg("--replay-update-file")
+        .arg(&update_path)
+        .arg("--forager-bin")
+        .arg(env!("CARGO_BIN_EXE_forager"))
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--state-file")
+        .arg(&state_path)
+        .arg("--project-focus-max-age-sec")
+        .arg("60")
+        .arg("--out")
+        .arg(&out)
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&fs::read(&out)?)?;
+    assert!(result["project_focus"].is_null());
+    Ok(())
+}
+
+#[test]
+#[serial]
 fn remote_operator_telegram_agent_delegate_intent_offers_capture_without_keywords() -> Result<()> {
     let temp = tempdir()?;
     let env_path = temp.path().join("telegram.env");
@@ -7497,6 +9160,116 @@ fn remote_operator_telegram_agent_delegate_intent_offers_capture_without_keyword
         state["pending_dispatch_confirmations_by_chat"][chat_hash]["note"],
         "TwinPaper 논문 그림을 재정리한다"
     );
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_plain_text_reaches_selected_local_agent() -> Result<()> {
+    if Command::new("tmux").arg("-V").output().is_err() {
+        eprintln!("Skipping test: tmux not available");
+        return Ok(());
+    }
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    let prefix = format!("{:08x}", std::process::id());
+    let session_id = format!("{prefix}00000000");
+    let tmux_name = format!("forager_test_{prefix}");
+    let _ = Command::new("tmux")
+        .args(["kill-session", "-t", &tmux_name])
+        .output();
+    let started = Command::new("tmux")
+        .args(["new-session", "-d", "-s", &tmux_name, "bash --norc -i"])
+        .output()?;
+    assert!(started.status.success(), "failed to create tmux session");
+    thread::sleep(Duration::from_millis(500));
+
+    let status_path = temp.path().join("session_status.json");
+    fs::write(
+        &status_path,
+        serde_json::to_vec(&json!({
+            "sessions": [{
+                "id": session_id,
+                "title": "Codex",
+                "tool": "codex",
+                "project": "forager",
+                "status": "running"
+            }]
+        }))?,
+    )?;
+    let agent_request_path = temp.path().join("ollama_session_message_request.json");
+    let delivered_text = "please rerun all tests and report the result";
+    let (base_url, server) = spawn_fake_ollama_with_classification(
+        agent_request_path.clone(),
+        json!({
+            "action": "send_agent",
+            "session_id": session_id,
+            "message": delivered_text,
+            "assistant_reply": "forager Codex에 전달합니다.",
+            "confidence": 0.96,
+            "requires_clarification": false,
+            "clarifying_question": null,
+            "reason": "operator explicitly addressed the live Codex session"
+        }),
+    )?;
+    let update_path = temp.path().join("session_message_update.json");
+    write_text_update(
+        &update_path,
+        9_400,
+        9_401,
+        "forager Codex에게 전체 테스트를 다시 돌리고 결과를 알려달라고 전해줘",
+    )?;
+    let out = temp.path().join("session_message_result.json");
+
+    let output = remote_operator_command(temp.path())
+        .arg("--dry-run")
+        .arg("--once")
+        .arg("--replay-update-file")
+        .arg(&update_path)
+        .arg("--forager-bin")
+        .arg(env!("CARGO_BIN_EXE_forager"))
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--session-status-file")
+        .arg(&status_path)
+        .arg("--agent-intent-mode")
+        .arg("required")
+        .arg("--agent-base-url")
+        .arg(&base_url)
+        .arg("--agent-model")
+        .arg("qwen3-coder-next:latest")
+        .arg("--out")
+        .arg(&out)
+        .output()?;
+    server.join().expect("fake ollama server panicked")?;
+    thread::sleep(Duration::from_millis(250));
+    let capture = Command::new("tmux")
+        .args(["capture-pane", "-p", "-t", &tmux_name])
+        .output()?;
+    let _ = Command::new("tmux")
+        .args(["kill-session", "-t", &tmux_name])
+        .output();
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&fs::read(&out)?)?;
+    assert_eq!(
+        result["parsed_command"]["agent_intent"]["intent"],
+        "session_message"
+    );
+    assert_eq!(result["dispatch_result"]["ok"], true);
+    assert_eq!(result["dispatch_result"]["kind"], "session_message");
+    assert_effect(&result, "session_message", "agent_session_input");
+    assert!(result["message_preview"]
+        .as_str()
+        .expect("message preview")
+        .contains("로컬 에이전트에 입력 전송됨"));
+    assert!(String::from_utf8_lossy(&capture.stdout).contains(delivered_text));
     Ok(())
 }
 
@@ -7672,6 +9445,65 @@ fn remote_operator_telegram_chat_tools_probe_workspace_and_answer() -> Result<()
         serde_json::from_slice(&fs::read(body_dir.join("generate_2.json"))?)?;
     let third_prompt = third_request["prompt"].as_str().expect("third prompt");
     assert!(third_prompt.contains("focus is module two"));
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[serial]
+fn remote_operator_telegram_port_question_includes_live_listener_evidence() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let request_path = temp.path().join("ollama_port_request.json");
+    let (base_url, server) = spawn_fake_ollama_with_classification(
+        request_path.clone(),
+        json!({
+            "action": "answer",
+            "assistant_reply": format!("{port} 포트는 현재 리슨 중입니다."),
+            "confidence": 0.99,
+            "requires_clarification": false,
+            "clarifying_question": null,
+            "reason": "Answered from service_probe."
+        }),
+    )?;
+    let out = temp.path().join("port_result.json");
+
+    let output = remote_operator_command(temp.path())
+        .arg("--dry-run")
+        .arg("--command-text")
+        .arg(format!("{port} 포트가 지금 실제로 리슨 중인지 확인해줘"))
+        .arg("--forager-bin")
+        .arg(env!("CARGO_BIN_EXE_forager"))
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--agent-intent-mode")
+        .arg("required")
+        .arg("--agent-base-url")
+        .arg(&base_url)
+        .arg("--agent-model")
+        .arg("qwen3-coder-next:latest")
+        .arg("--out")
+        .arg(&out)
+        .output()?;
+
+    server.join().expect("fake ollama server panicked")?;
+    drop(listener);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&fs::read(&out)?)?;
+    assert_eq!(result["chat_tools_used"][0]["tool"], "service_probe");
+    assert_eq!(result["chat_tools_used"][0]["port"], port);
+    assert_eq!(result["chat_tools_used"][0]["status"], "listening");
+    let request: Value = serde_json::from_slice(&fs::read(&request_path)?)?;
+    let prompt = request["prompt"].as_str().expect("agent prompt");
+    assert!(prompt.contains("service_probe"));
+    assert!(prompt.contains("\"status\": \"listening\""));
     Ok(())
 }
 
@@ -7960,6 +9792,7 @@ fn remote_operator_telegram_guide_renders_full_command_surface() -> Result<()> {
             "/decision",
             "/plan",
             "/remember",
+            "/wiki",
             "/pause",
             "/guide",
         ] {
@@ -8057,6 +9890,12 @@ fn remote_operator_telegram_waiting_session_notifies_once_per_episode() -> Resul
             .arg("--out")
             .arg(&out)
             .arg("--session-notify")
+            .args([
+                "--session-notify-quiet-from-hour",
+                "0",
+                "--session-notify-quiet-to-hour",
+                "0",
+            ])
             .arg("--session-status-file")
             .arg(&status_path)
             .output()?;
@@ -8090,5 +9929,92 @@ fn remote_operator_telegram_waiting_session_notifies_once_per_episode() -> Resul
     let entry = &state["waiting_notified_by_session"]["abc123"];
     assert!(entry.is_object());
     assert!(entry["at"].is_number());
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn remote_operator_telegram_multiple_waiting_cards_do_not_choose_a_sticky_session() -> Result<()> {
+    let temp = tempdir()?;
+    let env_path = temp.path().join("telegram.env");
+    write_env_file(&env_path)?;
+    let state_path = temp.path().join("telegram_state.json");
+    fs::write(
+        &state_path,
+        serde_json::to_vec(&json!({
+            "schema": "remote_operator_telegram_state.v1",
+            "offset": 0,
+            "session_focus_by_chat": {
+                "sha256:15e2b0d3c33891eb": {
+                    "session_id": "abc1230000000000",
+                    "project": "first",
+                    "title": "Codex",
+                    "tool": "codex",
+                    "prompt_hash": "oldhash1",
+                    "source": "waiting_card",
+                    "updated_at": "2026-08-11T00:00:00+00:00"
+                }
+            }
+        }))?,
+    )?;
+    let status_path = temp.path().join("status.json");
+    fs::write(
+        &status_path,
+        serde_json::to_vec(&json!({
+            "sessions": [
+                {"id": "abc1230000000000", "title": "Codex", "tool": "codex",
+                 "status": "waiting", "project": "first"},
+                {"id": "def4560000000000", "title": "Claude", "tool": "claude",
+                 "status": "waiting", "project": "second"}
+            ]
+        }))?,
+    )?;
+    let update_path = temp.path().join("update.json");
+    write_text_update(&update_path, 9_500, 9_501, "/status")?;
+    let out = temp.path().join("result.json");
+
+    let output = remote_operator_command(temp.path())
+        .arg("--dry-run")
+        .arg("--once")
+        .arg("--replay-update-file")
+        .arg(&update_path)
+        .arg("--forager-bin")
+        .arg(env!("CARGO_BIN_EXE_forager"))
+        .arg("--env-file")
+        .arg(&env_path)
+        .arg("--state-file")
+        .arg(&state_path)
+        .arg("--out")
+        .arg(&out)
+        .arg("--session-notify")
+        .args([
+            "--session-notify-quiet-from-hour",
+            "0",
+            "--session-notify-quiet-to-hour",
+            "0",
+        ])
+        .arg("--session-status-file")
+        .arg(&status_path)
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&fs::read(&out)?)?;
+    assert_eq!(result["session_notification"]["waiting_count"], 2);
+    assert_eq!(
+        result["session_notification"]["sent"]
+            .as_array()
+            .expect("sent sessions")
+            .len(),
+        2
+    );
+    let state: Value = serde_json::from_slice(&fs::read(&state_path)?)?;
+    assert!(state["session_focus_by_chat"]
+        .as_object()
+        .is_none_or(Map::is_empty));
     Ok(())
 }

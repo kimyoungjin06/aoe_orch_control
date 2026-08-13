@@ -4,13 +4,14 @@
 //! intentionally separate. AI projections are compact and redacted. Human
 //! projections keep governance context such as evidence refs and review state.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Duration, Utc};
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -23,6 +24,7 @@ use super::task_queue::{OffdeskTask, OffdeskTaskStatus};
 const ADAPTIVE_WIKI_VERSION: &str = "2026-05-14.v0";
 const ADAPTIVE_WIKI_ENTRIES_FILE: &str = "adaptive_wiki_entries.json";
 const ADAPTIVE_WIKI_CANDIDATES_FILE: &str = "adaptive_wiki_candidates.json";
+const ADAPTIVE_WIKI_LOCK_FILE: &str = "adaptive_wiki.lock";
 const ADAPTIVE_WIKI_AUDIT_FILE: &str = "adaptive_wiki_audit.jsonl";
 const ADAPTIVE_WIKI_USAGE_FILE: &str = "adaptive_wiki_usage.jsonl";
 const ADAPTIVE_WIKI_CORRECTIONS_FILE: &str = "adaptive_wiki_corrections.jsonl";
@@ -346,6 +348,16 @@ pub struct AdaptiveWikiEntry {
     pub updated_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_after: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AdaptiveWikiEntryEdit {
+    pub kind: Option<AdaptiveWikiKind>,
+    pub agent_modes: Option<Vec<AdaptiveWikiAgentMode>>,
+    pub claim: Option<String>,
+    pub ai_instruction: Option<String>,
+    pub human_summary: Option<String>,
+    pub add_evidence_refs: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1290,6 +1302,16 @@ pub struct AdaptiveWikiStore {
     root: PathBuf,
 }
 
+struct AdaptiveWikiLockGuard {
+    file: File,
+}
+
+impl Drop for AdaptiveWikiLockGuard {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.file);
+    }
+}
+
 impl AdaptiveWikiStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
@@ -1331,11 +1353,27 @@ impl AdaptiveWikiStore {
         self.root.join(ADAPTIVE_WIKI_MARKDOWN_VAULT_DIR)
     }
 
+    fn lock_exclusive(&self) -> Result<AdaptiveWikiLockGuard> {
+        fs::create_dir_all(&self.root)?;
+        let path = self.root.join(ADAPTIVE_WIKI_LOCK_FILE);
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .with_context(|| format!("failed to open adaptive wiki lock {}", path.display()))?;
+        file.lock_exclusive()
+            .with_context(|| format!("failed to lock adaptive wiki state {}", path.display()))?;
+        Ok(AdaptiveWikiLockGuard { file })
+    }
+
     pub fn load_entries(&self) -> Result<AdaptiveWikiEntryState> {
         read_entry_state(&self.entries_path())
     }
 
     pub fn save_entries(&self, state: &AdaptiveWikiEntryState) -> Result<()> {
+        let _lock = self.lock_exclusive()?;
         write_json_state(&self.entries_path(), state)
     }
 
@@ -1344,6 +1382,7 @@ impl AdaptiveWikiStore {
     }
 
     pub fn save_candidates(&self, state: &AdaptiveWikiCandidateState) -> Result<()> {
+        let _lock = self.lock_exclusive()?;
         write_json_state(&self.candidates_path(), state)
     }
 
@@ -1352,7 +1391,8 @@ impl AdaptiveWikiStore {
         input: AdaptiveWikiCandidateInput,
         now: DateTime<Utc>,
     ) -> Result<AdaptiveWikiCandidate> {
-        let mut state = self.load_candidates()?;
+        let _lock = self.lock_exclusive()?;
+        let mut state = read_candidate_state(&self.candidates_path())?;
         let normalized_scope_ref = normalize_scope_ref(input.scope, &input.scope_ref);
         let claim_key = normalize_key(&input.claim);
 
@@ -1420,9 +1460,12 @@ impl AdaptiveWikiStore {
             candidate
         };
 
-        self.save_candidates(&state)?;
+        write_json_state(&self.candidates_path(), &state)?;
         if candidate.signal_kind == AdaptiveWikiSignalKind::OperatorCorrection {
-            self.append_correction_record(&correction_record_from_candidate(&candidate, now))?;
+            append_jsonl(
+                &self.corrections_path(),
+                &correction_record_from_candidate(&candidate, now),
+            )?;
         }
         Ok(candidate)
     }
@@ -1460,7 +1503,8 @@ impl AdaptiveWikiStore {
         agent_modes: Vec<AdaptiveWikiAgentMode>,
         now: DateTime<Utc>,
     ) -> Result<Option<AdaptiveWikiEntry>> {
-        let mut candidate_state = self.load_candidates()?;
+        let _lock = self.lock_exclusive()?;
+        let mut candidate_state = read_candidate_state(&self.candidates_path())?;
         let Some(index) = candidate_state
             .candidates
             .iter()
@@ -1506,15 +1550,16 @@ impl AdaptiveWikiStore {
             review_after: None,
         };
 
-        let mut entry_state = self.load_entries()?;
+        let mut entry_state = read_entry_state(&self.entries_path())?;
         entry_state.entries.push(entry.clone());
-        self.save_entries(&entry_state)?;
-        self.save_candidates(&candidate_state)?;
+        write_json_state(&self.entries_path(), &entry_state)?;
+        write_json_state(&self.candidates_path(), &candidate_state)?;
         Ok(Some(entry))
     }
 
     pub fn reject_candidate(&self, candidate_id: &str) -> Result<Option<AdaptiveWikiCandidate>> {
-        let mut state = self.load_candidates()?;
+        let _lock = self.lock_exclusive()?;
+        let mut state = read_candidate_state(&self.candidates_path())?;
         let Some(index) = state
             .candidates
             .iter()
@@ -1523,7 +1568,7 @@ impl AdaptiveWikiStore {
             return Ok(None);
         };
         let candidate = state.candidates.remove(index);
-        self.save_candidates(&state)?;
+        write_json_state(&self.candidates_path(), &state)?;
         Ok(Some(candidate))
     }
 
@@ -1534,7 +1579,8 @@ impl AdaptiveWikiStore {
         scope_ref: &str,
         now: DateTime<Utc>,
     ) -> Result<Option<AdaptiveWikiEntry>> {
-        let mut state = self.load_entries()?;
+        let _lock = self.lock_exclusive()?;
+        let mut state = read_entry_state(&self.entries_path())?;
         let Some(entry) = state.entries.iter_mut().find(|entry| entry.id == entry_id) else {
             return Ok(None);
         };
@@ -1542,7 +1588,7 @@ impl AdaptiveWikiStore {
         entry.scope_ref = normalize_scope_ref(scope, scope_ref);
         entry.updated_at = now;
         let entry = entry.clone();
-        self.save_entries(&state)?;
+        write_json_state(&self.entries_path(), &state)?;
         Ok(Some(entry))
     }
 
@@ -1551,14 +1597,15 @@ impl AdaptiveWikiStore {
         entry_id: &str,
         now: DateTime<Utc>,
     ) -> Result<Option<AdaptiveWikiEntry>> {
-        let mut state = self.load_entries()?;
+        let _lock = self.lock_exclusive()?;
+        let mut state = read_entry_state(&self.entries_path())?;
         let Some(entry) = state.entries.iter_mut().find(|entry| entry.id == entry_id) else {
             return Ok(None);
         };
         entry.status = AdaptiveWikiStatus::Deprecated;
         entry.updated_at = now;
         let entry = entry.clone();
-        self.save_entries(&state)?;
+        write_json_state(&self.entries_path(), &state)?;
         Ok(Some(entry))
     }
 
@@ -1568,14 +1615,15 @@ impl AdaptiveWikiStore {
         evidence_ref: &str,
         now: DateTime<Utc>,
     ) -> Result<Option<AdaptiveWikiEntry>> {
-        let mut state = self.load_entries()?;
+        let _lock = self.lock_exclusive()?;
+        let mut state = read_entry_state(&self.entries_path())?;
         let Some(entry) = state.entries.iter_mut().find(|entry| entry.id == entry_id) else {
             return Ok(None);
         };
         push_unique(&mut entry.counterexamples, Some(evidence_ref));
         entry.updated_at = now;
         let entry = entry.clone();
-        self.save_entries(&state)?;
+        write_json_state(&self.entries_path(), &state)?;
         Ok(Some(entry))
     }
 
@@ -1587,7 +1635,8 @@ impl AdaptiveWikiStore {
         required_artifact_kinds: &[String],
         now: DateTime<Utc>,
     ) -> Result<Option<AdaptiveWikiEntry>> {
-        let mut state = self.load_entries()?;
+        let _lock = self.lock_exclusive()?;
+        let mut state = read_entry_state(&self.entries_path())?;
         let Some(entry) = state.entries.iter_mut().find(|entry| entry.id == entry_id) else {
             return Ok(None);
         };
@@ -1599,7 +1648,7 @@ impl AdaptiveWikiStore {
         );
         entry.updated_at = now;
         let entry = entry.clone();
-        self.save_entries(&state)?;
+        write_json_state(&self.entries_path(), &state)?;
         Ok(Some(entry))
     }
 
@@ -1609,52 +1658,57 @@ impl AdaptiveWikiStore {
         review_after: DateTime<Utc>,
         now: DateTime<Utc>,
     ) -> Result<Option<AdaptiveWikiEntry>> {
-        let mut state = self.load_entries()?;
+        let _lock = self.lock_exclusive()?;
+        let mut state = read_entry_state(&self.entries_path())?;
         let Some(entry) = state.entries.iter_mut().find(|entry| entry.id == entry_id) else {
             return Ok(None);
         };
         entry.review_after = Some(review_after);
         entry.updated_at = now;
         let entry = entry.clone();
-        self.save_entries(&state)?;
+        write_json_state(&self.entries_path(), &state)?;
         Ok(Some(entry))
     }
 
-    /// Edit an entry's text and/or add evidence refs. Only the provided fields
-    /// change, so a reviewer's `compress` verdict (new claim/instruction) and
-    /// evidence-ref fixes apply in place without reject + re-record.
+    /// Edit an entry's classification, mode scope, text, and/or evidence refs.
+    /// Only the provided fields change, so curator verdicts apply in place
+    /// without reject + re-record.
     pub fn edit_entry(
         &self,
         entry_id: &str,
-        claim: Option<&str>,
-        ai_instruction: Option<&str>,
-        human_summary: Option<&str>,
-        add_evidence_refs: &[String],
+        edit: AdaptiveWikiEntryEdit,
         now: DateTime<Utc>,
     ) -> Result<Option<AdaptiveWikiEntry>> {
-        let mut state = self.load_entries()?;
+        let _lock = self.lock_exclusive()?;
+        let mut state = read_entry_state(&self.entries_path())?;
         let Some(entry) = state.entries.iter_mut().find(|entry| entry.id == entry_id) else {
             return Ok(None);
         };
-        if let Some(claim) = claim {
+        if let Some(kind) = edit.kind {
+            entry.kind = kind;
+        }
+        if let Some(agent_modes) = edit.agent_modes {
+            entry.agent_modes = clean_agent_modes(agent_modes);
+        }
+        if let Some(claim) = edit.claim {
             let claim = claim.trim();
             if !claim.is_empty() {
                 entry.claim = claim.to_string();
             }
         }
-        if let Some(ai_instruction) = ai_instruction {
+        if let Some(ai_instruction) = edit.ai_instruction {
             entry.ai_instruction = ai_instruction.trim().to_string();
         }
-        if let Some(human_summary) = human_summary {
+        if let Some(human_summary) = edit.human_summary {
             entry.human_summary = human_summary.trim().to_string();
         }
         push_unique_many(
             &mut entry.evidence_refs,
-            clean_refs(add_evidence_refs.to_vec()).iter(),
+            clean_refs(edit.add_evidence_refs).iter(),
         );
         entry.updated_at = now;
         let entry = entry.clone();
-        self.save_entries(&state)?;
+        write_json_state(&self.entries_path(), &state)?;
         Ok(Some(entry))
     }
 
@@ -1667,7 +1721,8 @@ impl AdaptiveWikiStore {
         proposed_tags: &[String],
         now: DateTime<Utc>,
     ) -> Result<Option<AdaptiveWikiEntry>> {
-        let mut state = self.load_entries()?;
+        let _lock = self.lock_exclusive()?;
+        let mut state = read_entry_state(&self.entries_path())?;
         let Some(entry) = state.entries.iter_mut().find(|entry| entry.id == entry_id) else {
             return Ok(None);
         };
@@ -1678,11 +1733,12 @@ impl AdaptiveWikiStore {
         );
         entry.updated_at = now;
         let entry = entry.clone();
-        self.save_entries(&state)?;
+        write_json_state(&self.entries_path(), &state)?;
         Ok(Some(entry))
     }
 
     pub fn append_audit(&self, record: &AdaptiveWikiAuditRecord) -> Result<()> {
+        let _lock = self.lock_exclusive()?;
         append_jsonl(&self.audit_path(), record)
     }
 
@@ -1694,10 +1750,11 @@ impl AdaptiveWikiStore {
         &self,
         receipt: &AdaptiveWikiPromotionReceipt,
     ) -> Result<PathBuf> {
+        let _lock = self.lock_exclusive()?;
         let output_dir = self.promotion_receipts_dir();
         fs::create_dir_all(&output_dir)?;
         let path = output_dir.join(promotion_receipt_filename(receipt));
-        fs::write(&path, serde_json::to_string_pretty(receipt)?)?;
+        write_json_state(&path, receipt)?;
         Ok(path)
     }
 
@@ -1746,6 +1803,7 @@ impl AdaptiveWikiStore {
     }
 
     pub fn append_usage_records(&self, records: &[AdaptiveWikiUsageRecord]) -> Result<()> {
+        let _lock = self.lock_exclusive()?;
         for record in records {
             append_jsonl(&self.usage_path(), record)?;
         }
@@ -1757,6 +1815,7 @@ impl AdaptiveWikiStore {
     }
 
     pub fn append_correction_record(&self, record: &AdaptiveWikiCorrectionRecord) -> Result<()> {
+        let _lock = self.lock_exclusive()?;
         append_jsonl(&self.corrections_path(), record)
     }
 
@@ -1768,6 +1827,7 @@ impl AdaptiveWikiStore {
         &self,
         record: &AdaptiveWikiReviewProposalEventRecord,
     ) -> Result<()> {
+        let _lock = self.lock_exclusive()?;
         append_jsonl(&self.review_events_path(), record)
     }
 
@@ -1781,6 +1841,7 @@ impl AdaptiveWikiStore {
         &self,
         record: &AdaptiveWikiRuntimePolicyAcknowledgement,
     ) -> Result<()> {
+        let _lock = self.lock_exclusive()?;
         append_jsonl(&self.runtime_policy_acknowledgements_path(), record)
     }
 
@@ -7346,8 +7407,27 @@ fn write_json_state<T: Serialize>(path: &Path, state: &T) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(path, serde_json::to_string_pretty(state)?)?;
-    Ok(())
+    let serialized = serde_json::to_string_pretty(state)? + "\n";
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("adaptive_wiki_state");
+    let temporary = path.with_file_name(format!(".{file_name}.{}.tmp", Uuid::new_v4()));
+    let result = (|| -> Result<()> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(serialized.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temporary, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
 }
 
 fn append_jsonl<T: Serialize>(path: &Path, value: &T) -> Result<()> {
@@ -7356,6 +7436,7 @@ fn append_jsonl<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     }
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     writeln!(file, "{}", serde_json::to_string(value)?)?;
+    file.sync_data()?;
     Ok(())
 }
 
@@ -7680,6 +7761,8 @@ fn status_order(status: AdaptiveWikiStatus) -> u8 {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
     use tempfile::tempdir;
 
     fn now() -> DateTime<Utc> {
@@ -8341,6 +8424,60 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_candidate_writers_preserve_every_occurrence() -> Result<()> {
+        let temp = tempdir()?;
+        let store = AdaptiveWikiStore::new(temp.path());
+        let writers = 16;
+        let barrier = Arc::new(Barrier::new(writers));
+        let mut handles = Vec::new();
+        for index in 0..writers {
+            let store = store.clone();
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || -> Result<()> {
+                barrier.wait();
+                store.record_candidate(
+                    AdaptiveWikiCandidateInput {
+                        kind: AdaptiveWikiKind::Preference,
+                        scope: AdaptiveWikiScope::Project,
+                        scope_ref: "forager".to_string(),
+                        claim: "Serialize adaptive wiki candidate updates".to_string(),
+                        suggested_ai_instruction: "Use the shared wiki writer lock.".to_string(),
+                        human_summary: "Concurrent writer regression test".to_string(),
+                        evidence_ref: Some(format!("test:writer:{index}")),
+                        signal_kind: AdaptiveWikiSignalKind::Unknown,
+                        origin: AdaptiveWikiOrigin::RuntimeObserved,
+                        source_refs: Vec::new(),
+                        source_hashes: Vec::new(),
+                        suggested_scope: None,
+                        agent_modes: Vec::new(),
+                        core_tags: Vec::new(),
+                        proposed_tags: Vec::new(),
+                        review_reason: "Verify serialization".to_string(),
+                        confidence: AdaptiveWikiConfidence::Repeated,
+                    },
+                    now(),
+                )?;
+                Ok(())
+            }));
+        }
+        for handle in handles {
+            handle.join().expect("candidate writer thread panicked")?;
+        }
+
+        let state = store.load_candidates()?;
+        assert_eq!(state.candidates.len(), 1);
+        assert_eq!(state.candidates[0].occurrence_count, writers as u32);
+        assert_eq!(state.candidates[0].evidence_refs.len(), writers);
+        assert!(!fs::read_dir(temp.path())?.any(|entry| {
+            entry
+                .ok()
+                .and_then(|entry| entry.file_name().into_string().ok())
+                .is_some_and(|name| name.ends_with(".tmp"))
+        }));
+        Ok(())
+    }
+
+    #[test]
     fn legacy_correction_json_loads_with_defaults() -> Result<()> {
         let temp = tempdir()?;
         let store = AdaptiveWikiStore::new(temp.path());
@@ -8764,16 +8901,43 @@ mod tests {
         let edited = store
             .edit_entry(
                 &entry.id,
-                Some("Tight compressed claim."),
-                Some("Do the tight thing."),
-                None,
-                &["doc:two".to_string()],
+                AdaptiveWikiEntryEdit {
+                    kind: Some(AdaptiveWikiKind::Procedure),
+                    agent_modes: Some(vec![
+                        AdaptiveWikiAgentMode::Development,
+                        AdaptiveWikiAgentMode::Review,
+                    ]),
+                    claim: Some("Tight compressed claim.".to_string()),
+                    ai_instruction: Some("Do the tight thing.".to_string()),
+                    add_evidence_refs: vec!["doc:two".to_string()],
+                    ..AdaptiveWikiEntryEdit::default()
+                },
                 now(),
             )?
             .expect("entry edited");
         assert_eq!(edited.claim, "Tight compressed claim.");
         assert_eq!(edited.ai_instruction, "Do the tight thing.");
         assert_eq!(edited.evidence_refs, vec!["doc:one", "doc:two"]);
+        assert_eq!(edited.kind, AdaptiveWikiKind::Procedure);
+        assert_eq!(
+            edited.agent_modes,
+            vec![
+                AdaptiveWikiAgentMode::Development,
+                AdaptiveWikiAgentMode::Review,
+            ]
+        );
+
+        let shared = store
+            .edit_entry(
+                &entry.id,
+                AdaptiveWikiEntryEdit {
+                    agent_modes: Some(Vec::new()),
+                    ..AdaptiveWikiEntryEdit::default()
+                },
+                now(),
+            )?
+            .expect("entry mode scope cleared");
+        assert!(shared.agent_modes.is_empty());
 
         // add-tag appends controlled tags without touching other fields
         let retagged = store
@@ -8798,7 +8962,14 @@ mod tests {
 
         // unknown entry id returns None rather than erroring
         assert!(store
-            .edit_entry("missing", Some("x"), None, None, &[], now())?
+            .edit_entry(
+                "missing",
+                AdaptiveWikiEntryEdit {
+                    claim: Some("x".to_string()),
+                    ..AdaptiveWikiEntryEdit::default()
+                },
+                now(),
+            )?
             .is_none());
         Ok(())
     }

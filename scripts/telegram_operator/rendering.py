@@ -18,7 +18,7 @@ MOBILE_CARD_MAX_CHARS = 360
 # The /guide reference sheet is deliberately not a glanceable card: it is the
 # one message allowed to enumerate the whole command surface, so it gets its
 # own (still bounded) budget.
-GUIDE_SHEET_MAX_LINES = 36
+GUIDE_SHEET_MAX_LINES = 40
 GUIDE_SHEET_MAX_CHARS = 2000
 # Reply budget inside the 360-char mobile card once the title and
 # next-action lines are accounted for. Normalization and rendering must
@@ -775,13 +775,14 @@ def render_attention_summary_message(*, profile: Any, generated_at: Any, summary
     lines.append(
         f"결정 {int(summary.get('decision_count') or 0)} · "
         f"복구 {int(summary.get('recovery_count') or 0)} · "
-        f"작업 {int(summary.get('task_count') or 0)}"
+        f"작업 {int(summary.get('task_count') or 0)} · "
+        f"위키 {int(summary.get('wiki_candidate_count') or 0)}"
     )
     top = summary.get("top")
     if isinstance(top, dict):
         title = sanitize_text(str(top.get("title") or ""), max_chars=60)
         lines.append(f"먼저: {html.escape(title)} → {html.escape(str(top.get('command_hint') or ''))}")
-    lines.append("다음 조치: /decisions · /recovery · /tasks")
+    lines.append("다음 조치: /decisions · /recovery · /tasks · /wiki")
     return "\n".join(lines)
 
 
@@ -923,6 +924,9 @@ def render_recovery_result_message(*, profile: Any, generated_at: Any, result: d
     if result.get("ok"):
         lines.append(f"클로즈아웃 {html.escape(closeout_id)} → {html.escape(action_kind)} 검증됨.")
         lines.append("아직 실제 복구/수용 기록은 아닙니다.")
+        next_local_command = str(result.get("next_local_command") or "").strip()
+        if next_local_command:
+            lines.append(f"로컬에서: <code>{html.escape(next_local_command)}</code>")
     else:
         stage = str(result.get("stage") or "unknown")
         lines.append(f"검증되지 않음 ({html.escape(stage)}).")
@@ -1014,7 +1018,7 @@ def render_chat_message(
             [
                 title_with_profile("확인 필요", profile),
                 html.escape(clarifying_question),
-                "다음 조치: /plan 또는 /feedback",
+                "다음 조치: 위 질문에 평문으로 답해주세요.",
             ]
         )
     assistant_reply = agent_assistant_reply(agent_intent)
@@ -1108,9 +1112,174 @@ def render_wiki_candidate_message(
             title_with_profile("위키 후보", profile),
             status_line,
             "아직 런타임 지식은 아닙니다.",
-            "다음 조치: offdesk wiki review",
+            "다음 조치: /wiki",
         ]
     )
+
+
+def render_wiki_summary_message(
+    *,
+    profile: Any,
+    generated_at: Any,
+    summary: dict[str, Any],
+) -> str:
+    """Render the global or one-project adaptive-wiki review queue."""
+
+    if summary.get("status") == "unknown_project":
+        selector = sanitize_text(str(summary.get("project_selector") or ""), max_chars=60)
+        return "\n".join(
+            [
+                title_with_profile("위키 검토", profile),
+                f"등록 프로젝트를 찾을 수 없습니다: {html.escape(selector)}",
+                "다음 조치: /wiki",
+            ]
+        )
+    if summary.get("status") == "ambiguous_project":
+        selector = sanitize_text(str(summary.get("project_selector") or ""), max_chars=60)
+        candidates = ", ".join(
+            sanitize_text(str(value), max_chars=40)
+            for value in summary.get("project_candidates") or []
+        )
+        return "\n".join(
+            [
+                title_with_profile("위키 검토", profile),
+                f"프로젝트 별칭이 겹칩니다: {html.escape(selector)}",
+                f"프로젝트 키: {html.escape(candidates)}",
+                "다음 조치: 정확한 키로 /wiki &lt;project&gt;",
+            ]
+        )
+    if summary.get("schema") == "telegram_wiki_portfolio.v1":
+        count = int(summary.get("candidate_count") or 0)
+        project_count = int(summary.get("projects_with_candidates") or 0)
+        lines = [
+            title_with_profile("위키 검토", profile),
+            f"후보 {count}개 · 검토 대기 프로젝트 {project_count}개",
+        ]
+        leaders = [
+            row
+            for row in summary.get("projects") or []
+            if isinstance(row, dict) and int(row.get("candidate_count") or 0) > 0
+        ][:3]
+        if leaders:
+            lines.append(
+                "많은 순서: "
+                + " · ".join(
+                    f"{html.escape(str(row.get('project_key') or ''))} "
+                    f"{int(row.get('candidate_count') or 0)}"
+                    for row in leaders
+                )
+            )
+            lines.append("다음 조치: /wiki &lt;project&gt;")
+        else:
+            lines.append("지금 검토할 후보가 없습니다.")
+            lines.append("다음 조치: /attention")
+        return "\n".join(lines)
+
+    display_name = sanitize_text(
+        str(summary.get("display_name") or summary.get("project_key") or "project"),
+        max_chars=60,
+    )
+    wiki_profile = summary.get("wiki_profile") or profile
+    lines = [title_with_profile(f"위키 검토 · {display_name}", wiki_profile)]
+    if summary.get("status") != "ok":
+        lines.append("위키 상태를 불러오지 못했습니다.")
+        lines.append("다음 조치: /wiki")
+        return "\n".join(lines)
+    lines.append(
+        f"후보 {int(summary.get('candidate_count') or 0)}개 · "
+        f"승격 {int(summary.get('promoted_count') or 0)}개"
+    )
+    candidates = [
+        item for item in summary.get("recent_candidates") or [] if isinstance(item, dict)
+    ][:2]
+    for index, item in enumerate(candidates, 1):
+        claim = sanitize_text(str(item.get("claim") or ""), max_chars=72)
+        lines.append(f"{index}. {html.escape(claim)}")
+    lines.append("다음 조치: 로컬 wiki review에서 승격·거절")
+    return "\n".join(lines)
+
+
+def render_project_portfolio_message(
+    *,
+    profile: Any,
+    generated_at: Any,
+    summary: dict[str, Any],
+    selected_key: str | None = None,
+) -> str:
+    """Render registered projects without claiming an unresolved path is accessible."""
+
+    rows = [row for row in summary.get("projects") or [] if isinstance(row, dict)]
+    if summary.get("selection_status") == "ambiguous":
+        selector = sanitize_text(str(summary.get("project_selector") or ""), max_chars=60)
+        candidates = ", ".join(
+            sanitize_text(str(value), max_chars=40)
+            for value in summary.get("selection_candidates") or []
+        )
+        return "\n".join(
+            [
+                title_with_profile("프로젝트", profile),
+                f"프로젝트 별칭이 겹칩니다: {html.escape(selector)}",
+                f"프로젝트 키: {html.escape(candidates)}",
+                "다음 조치: 정확한 키로 /projects &lt;project&gt;",
+            ]
+        )
+    if summary.get("selection_status") == "unknown":
+        selector = sanitize_text(str(summary.get("project_selector") or ""), max_chars=60)
+        return "\n".join(
+            [
+                title_with_profile("프로젝트", profile),
+                f"등록 프로젝트를 찾을 수 없습니다: {html.escape(selector)}",
+                "다음 조치: /projects",
+            ]
+        )
+    if selected_key:
+        selected = next((row for row in rows if row.get("key") == selected_key), None)
+        if selected is None:
+            return "\n".join(
+                [
+                    title_with_profile("프로젝트", profile),
+                    f"등록 프로젝트를 찾을 수 없습니다: {html.escape(selected_key)}",
+                    "다음 조치: /projects",
+                ]
+            )
+        counts = selected.get("session_counts") or {}
+        path_label = "접근 가능" if selected.get("workspace_status") == "available" else "경로 확인 필요"
+        return "\n".join(
+            [
+                title_with_profile(f"프로젝트 · {selected.get('display_name')}", profile),
+                f"작업공간: {path_label}",
+                "세션: "
+                + " · ".join(
+                    f"{state} {int(counts.get(state) or 0)}"
+                    for state in ("running", "waiting", "idle", "stopped")
+                ),
+                f"현재 포커스: {html.escape(str(selected.get('key') or ''))}",
+                "다음 조치: 평문으로 상태 질문 또는 /wiki "
+                + html.escape(str(selected.get("key") or "")),
+            ]
+        )
+    lines = [
+        title_with_profile("프로젝트", profile),
+        f"등록 {int(summary.get('registered_count') or 0)} · 접근 가능 {int(summary.get('available_count') or 0)} · 활성 {int(summary.get('active_count') or 0)}",
+    ]
+    active = [row for row in rows if int(row.get("active_sessions") or 0) > 0]
+    lines.append(
+        "활성: "
+        + (
+            " · ".join(
+                f"{html.escape(str(row.get('key') or ''))}({int(row.get('active_sessions') or 0)})"
+                for row in active[:4]
+            )
+            if active
+            else "없음"
+        )
+    )
+    available = [row for row in rows if row.get("workspace_status") == "available"]
+    shown = " · ".join(html.escape(str(row.get("key") or "")) for row in available[:4])
+    remainder = max(0, len(available) - 4)
+    lines.append(f"접근: {shown}" + (f" · +{remainder}" if remainder else ""))
+    lines.append("다음 조치: /projects &lt;project&gt;")
+    return "\n".join(lines)
 
 
 def agent_assistant_reply(agent_intent: dict[str, Any] | None) -> str | None:

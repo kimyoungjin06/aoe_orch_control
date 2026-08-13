@@ -42,7 +42,11 @@ pub struct CreatedWorktree {
 ///
 /// This does NOT start the instance. New Docker sandbox creation is blocked here
 /// because new-session parameters no longer carry inherited sandbox fields.
-pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Result<BuildResult> {
+pub fn build_instance(
+    params: InstanceParams,
+    existing_titles: &[&str],
+    config: &Config,
+) -> Result<BuildResult> {
     let mut final_path = PathBuf::from(&params.path)
         .canonicalize()
         .map(|p| p.to_string_lossy().to_string())
@@ -58,7 +62,6 @@ pub fn build_instance(params: InstanceParams, existing_titles: &[&str]) -> Resul
             bail!("Path is not in a git repository");
         }
 
-        let config = Config::load()?;
         let main_repo_path = GitWorktree::find_main_repo(&path)?;
         let git_wt = GitWorktree::new(main_repo_path.clone())?;
 

@@ -1,0 +1,108 @@
+# FIXTURE: Codex - Running State
+# Captured from: gpt-5.6-sol session on 97.scoreboard, 2026-08-07
+# Capture date: 2026-08-07
+#
+# Expected status: Running
+# Key indicators: bottom status line shows "Working (... esc to interrupt)".
+#   The composer below it holds only its placeholder text.
+#
+  화면 초안에서는 e-2를 교신저자 기반 주도권으로 설명하지만, 지표 계약은 “지식 흐름의 주도적 위치”라고 정의하면서 산식은 아직 확인 대기 상태입니다. 이를 해결하기 전
+  에는 지식 주도권 시나리오를 공개 준비로 볼 수 없습니다.
+
+  4. 정의 칸이 채워졌다고 완료된 것도 아닙니다.
+
+  34개 중 정의·산식이 비어 있는 지표가 19개이며, 형식상 값이 있는 지표 중에서도 다음은 원천 기준 확인 대기입니다.
+
+  - c-5-share: 주도 국제공저 판정 기준
+  - d-8: SDG 태그 분류 기준
+  - e-2: 산식 자체
+
+  따라서 단순 null 검사보다 원천 기준까지 확정됐는가를 공개 게이트로 사용해야 합니다. design-v2/contracts/indicator-semantics.v1.draft.json
+
+  5. 안전조건이 시나리오마다 고르게 연결되지 않았습니다.
+
+  추가하거나 명시적으로 연결해야 할 항목은 다음과 같습니다.
+
+  - 영향력 추세·부상 기술: 규모 하한과 관측연도 충족
+  - 협력 성과: 국제공동연구 논문 분모 하한
+  - 협력 상대구조: 국가쌍 공동논문 수·관계 안정성
+  - 특허·공공 연결: 이미 있는 특허·정책·SDG 분모 하한을 Plot에 실제 연결
+  - G7: 회원국 버전·등록국 교집합
+  - 인력: 저자 식별 품질·소속국 판정·관측창 정합성
+  - 집중도: 등록국 universe와 counting 방식 고정
+
+  ## 현행 14종의 최종 처분
+
+  - 그대로 유지·보강: 격차와 역전, 집중 감시, 위치와 변화, 부상 기술, 협력과 영향력, 특허 활용, 점유와 주도권, 세부기술 구성
+  - 통합: SDG + 정책문서 인용 → 공공 연결 경로
+  - 분리: 인력과 산출 → 핵심 연구인력 기반 + 연구인력 이동 균형
+  - variant 강등: G7 준거 비교
+  - 자료 유입 후 variant: 에너지 특화, 우주항공 기업협력
+  - 신규 저작: 협력 상대구조—원천은 우주항공 카드가 아니라 기존 Q09 관계 분석
+
+  저작 우선순위는 다음이 효율적입니다.
+
+  1. 정의가 비교적 안정된 추격·집중·위치·부상 기술·G7 variant·세부기술 구성
+  2. c·d·e·f 계열 정의를 보강하면서 협력·특허·주도권
+  3. 정의가 질문의 핵심인 협력 상대구조·공공 연결·인력 2종
+  4. 마지막에 전 시나리오의 인사이트 상태 문구와 claim boundary 작성
+
+  이번 검토는 읽기 전용으로 진행했으며, D-03 비교판과 등록부는 아직 수정하지 않았습니다. 다음 작업은 이 판정을 core / curated variant / data-waiting variant 구조로
+  비교판에 반영하는 것입니다.
+
+─ Worked for 6m 03s ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+› 좋아 그렇게 진행하되, 변수의 적절함은 고민이 끝난게 맞아?
+
+
+• 아니요. 지금까지 끝난 것은 “어떤 시나리오에 어떤 지표군을 둘 것인가”라는 구조 적합성 검토이고, 변수 적절성의 최종 판정은 아직 아닙니다. 특히 특허·정책 지표군의 수
+  학적 중복, C2의 국가쌍 지지량, e-2 산식 충돌, f-2의 정의와 성과지표 간 순환 가능성, e-1의 세부기술 축 실행 가능성을 더 확인해야 합니다. 원천 정의서와 대조가 필요하
+  므로 이번 단계에서는 doc 지침을 사용해 v0.5 원문까지 확인한 뒤 편성판을 수정하겠습니다.
+
+• Explored
+  └ Read SKILL.md (doc skill)
+
+• Updated Plan
+  └ □ 지표정의서 v0.5 원문에서 문제 변수 정의·산식·분모 대조
+    □ 12 core + variant의 29개 지표를 primary/context/guard/exploration으로 재분류
+    □ 수학적 중복·관측단위·시간창·실행축을 반영해 시나리오별 변수 수정안 확정
+    □ D-03 비교 데이터·내부 화면·감사 문서를 새 편성 원칙으로 개정
+    □ 계약·브라우저·공개경계 회귀 검증
+
+• Ran rg --files | rg '지표.*(docx|doc)$|0[._]5.*docx$|indicator.*docx$'
+  │ command -v soffice || true
+  │ command -v pdftoppm || true
+  │ … +9 lines
+  └ python-docx=missing No module named 'docx'
+    {
+    … +67 lines (ctrl + t to view transcript)
+    }
+    zsh:12: no matches found: design-v2/contracts/q04*
+
+• Ran mkdir -p tmp/docs/indicator-v05
+  │ soffice -env:UserInstallation=file:///tmp/lo_profile_scoreboard_v05 --headless --convert-to pdf --outdir tmp/docs/indicator-v05
+  │ scoreboard_linux_migration_2026-07-28/data/전략기술_지표정의서_v0.5.docx >/tmp/scoreboard-v05-soffice.log 2>&1
+  │ … +21 lines
+  └ Pages:           11
+    Page size:       595.304 x 841.89 pts (A4)
+    … +124 lines (ctrl + t to view transcript)
+    P108: [e-1] 대칭화 RTA((RTA−1)/(RTA+1), 범위 −1~1)의 병산 여부.
+    P109: [d-7] SDG 판별에 OpenAlex sustainable_development_goals 필드 사용 시 score threshold 결정 필요.
+
+• Ran uv run --with python-docx python3 - <<'PY'
+  │ from docx import Document
+  │ p='scoreboard_linux_migration_2026-07-28/data/전략기술_지표정의서_v0.5.docx'
+  │ … +6 lines
+  └
+    === TABLE 11 ===
+    … +122 lines (ctrl + t to view transcript)
+    3: Universe | 10대 전략기술, 55개 중점기술 각각(f-1 활동연구자 모집단으로 필터).
+    4: 비고 | 조건 ②에 의해 한 연구자는 focal 국가에 대해 유입·유출 중 최대 하나로만 판정된다(상호배타).
+
+• Working (1m 02s • esc to interrupt) · 11 background terminals running · /ps to view · /stop to close
+
+
+› Write tests for @filename
+
+  gpt-5.6-sol xhigh · ~/Desktop/Workspace/97.scoreboard

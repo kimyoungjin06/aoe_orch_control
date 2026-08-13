@@ -1,8 +1,7 @@
 //! Repository-level configuration (`.forager/config.toml`, with `.aoe/config.toml` fallback)
 //!
-//! Allows repos to define hooks and override session/sandbox/worktree settings.
-//! Settings that are personal/global (theme, updates, tmux, claude config_dir) are
-//! intentionally not overridable at the repo level.
+//! Allows repos to define hooks and override the settings represented by
+//! `RepoConfig`. Theme and Claude config directory remain personal settings.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -22,8 +21,8 @@ pub enum HookProgress {
 
 use super::config::Config;
 use super::profile_config::{
-    HooksConfigOverride, ProfileConfig, SandboxConfigOverride, SessionConfigOverride,
-    TmuxConfigOverride, UpdatesConfigOverride, WorktreeConfigOverride,
+    DiffConfigOverride, HooksConfigOverride, ProfileConfig, SandboxConfigOverride,
+    SessionConfigOverride, TmuxConfigOverride, UpdatesConfigOverride, WorktreeConfigOverride,
 };
 
 /// Repository-level configuration loaded from `.forager/config.toml` or `.aoe/config.toml`.
@@ -41,12 +40,17 @@ pub struct RepoConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<WorktreeConfigOverride>,
 
+    /// Compatibility-only. Repo-level update settings are not applied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updates: Option<UpdatesConfigOverride>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tmux: Option<TmuxConfigOverride>,
 
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<DiffConfigOverride>,
+
+    /// Compatibility-only. Repo-level sound settings are not applied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sound: Option<crate::sound::SoundConfigOverride>,
 }
@@ -145,11 +149,14 @@ pub fn save_repo_config(project_path: &Path, config: &RepoConfig) -> Result<()> 
     Ok(())
 }
 
-/// Merge repo config overrides into an already-resolved config (global + profile).
-pub fn merge_repo_config(mut config: Config, repo: &RepoConfig) -> Config {
+/// Merge repo config without enforcing executable trust boundaries.
+///
+/// Runtime callers should use `resolve_config_with_repo`, which prevents repo
+/// hooks and arbitrary orchestrator commands from entering the trusted config.
+pub fn merge_repo_config_unchecked(mut config: Config, repo: &RepoConfig) -> Config {
     use super::profile_config::{
-        apply_sandbox_overrides, apply_session_overrides, apply_tmux_overrides,
-        apply_worktree_overrides,
+        apply_diff_overrides, apply_sandbox_overrides, apply_session_overrides,
+        apply_tmux_overrides, apply_worktree_overrides,
     };
 
     if let Some(ref session_override) = repo.session {
@@ -173,27 +180,12 @@ pub fn merge_repo_config(mut config: Config, repo: &RepoConfig) -> Config {
         }
     }
 
-    if let Some(ref updates_override) = repo.updates {
-        if let Some(check_enabled) = updates_override.check_enabled {
-            config.updates.check_enabled = check_enabled;
-        }
-        if let Some(auto_update) = updates_override.auto_update {
-            config.updates.auto_update = auto_update;
-        }
-        if let Some(check_interval_hours) = updates_override.check_interval_hours {
-            config.updates.check_interval_hours = check_interval_hours;
-        }
-        if let Some(notify_in_cli) = updates_override.notify_in_cli {
-            config.updates.notify_in_cli = notify_in_cli;
-        }
-    }
-
     if let Some(ref tmux_override) = repo.tmux {
         apply_tmux_overrides(&mut config.tmux, tmux_override);
     }
 
-    if let Some(ref sound_override) = repo.sound {
-        crate::sound::apply_sound_overrides(&mut config.sound, sound_override);
+    if let Some(ref diff_override) = repo.diff {
+        apply_diff_overrides(&mut config.diff, diff_override);
     }
 
     config
@@ -208,6 +200,7 @@ pub fn repo_config_to_profile(repo: &RepoConfig) -> ProfileConfig {
         worktree: repo.worktree.clone(),
         sandbox: repo.sandbox.clone(),
         tmux: repo.tmux.clone(),
+        diff: repo.diff.clone(),
         session: repo.session.clone(),
         sound: repo.sound.clone(),
         hooks: repo.hooks.as_ref().map(|h| HooksConfigOverride {
@@ -238,6 +231,7 @@ pub fn profile_to_repo_config(profile: &ProfileConfig) -> RepoConfig {
         worktree: profile.worktree.clone(),
         updates: profile.updates.clone(),
         tmux: profile.tmux.clone(),
+        diff: profile.diff.clone(),
         sound: profile.sound.clone(),
     }
 }
@@ -247,7 +241,16 @@ pub fn resolve_config_with_repo(profile: &str, project_path: &Path) -> Result<Co
     let config = super::profile_config::resolve_config(profile)?;
 
     match load_repo_config(project_path)? {
-        Some(repo_config) => Ok(merge_repo_config(config, &repo_config)),
+        Some(repo_config) => {
+            let trusted_base_hooks = config.hooks.clone();
+            let trusted_orchestrator_command = config.session.orchestrator_command.clone();
+            let mut merged = merge_repo_config_unchecked(config, &repo_config);
+            // Repo hooks are executable input and must only enter the runtime
+            // through check_hook_trust. Other repo settings can be merged here.
+            merged.hooks = trusted_base_hooks;
+            merged.session.orchestrator_command = trusted_orchestrator_command;
+            Ok(merged)
+        }
         None => Ok(config),
     }
 }
@@ -554,22 +557,23 @@ pub const INIT_TEMPLATE: &str = r#"# Forager - Repository Configuration
 
 # [session]
 # default_tool = "claude"
+# auto_orchestrator = false
 
 # Legacy sandbox settings are intentionally omitted from the default repo
 # template while sandbox support is deferred.
 
 # [worktree]
-# enabled = true
-
-# [updates]
-# check_enabled = false
+# path_template = "../{repo-name}-worktrees/{branch}"
+# show_branch_in_tui = true
 
 # [tmux]
 # status_bar = "auto"
 # mouse = "auto"
 
-# [sound]
-# enabled = false
+# [diff]
+# default_branch = "main"
+# context_lines = 3
+
 "#;
 
 #[cfg(test)]
@@ -678,7 +682,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let merged = merge_repo_config(config, &repo);
+        let merged = merge_repo_config_unchecked(config, &repo);
         assert_eq!(merged.session.default_tool, Some("opencode".to_string()));
     }
 
@@ -691,7 +695,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let merged = merge_repo_config(config, &repo);
+        let merged = merge_repo_config_unchecked(config, &repo);
         assert!(!merged.sandbox.auto_cleanup);
     }
 
@@ -706,7 +710,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let merged = merge_repo_config(config, &repo);
+        let merged = merge_repo_config_unchecked(config, &repo);
         assert!(merged.worktree.enabled);
         assert_eq!(merged.worktree.path_template, "../wt/{branch}");
     }
@@ -715,7 +719,7 @@ mod tests {
     fn test_merge_repo_config_no_overrides() {
         let config = Config::default();
         let repo = RepoConfig::default();
-        let merged = merge_repo_config(config.clone(), &repo);
+        let merged = merge_repo_config_unchecked(config.clone(), &repo);
         assert_eq!(merged.worktree.enabled, config.worktree.enabled);
         assert_eq!(merged.sandbox.auto_cleanup, config.sandbox.auto_cleanup);
     }
@@ -817,7 +821,7 @@ mod tests {
             ..Default::default()
         };
 
-        let merged = merge_repo_config(config, &repo);
+        let merged = merge_repo_config_unchecked(config, &repo);
         // Overridden fields should change
         assert!(!merged.sandbox.auto_cleanup);
         assert!(!merged.worktree.enabled);

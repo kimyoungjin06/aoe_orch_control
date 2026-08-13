@@ -5,7 +5,7 @@ use clap::Args;
 use std::path::{Path, PathBuf};
 
 use crate::session::repo_config;
-use crate::session::{civilizations, Config, GroupTree, Instance, Storage};
+use crate::session::{civilizations, resolve_config_with_repo, GroupTree, Instance, Storage};
 
 #[derive(Args)]
 pub struct AddArgs {
@@ -74,6 +74,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     if !path.is_dir() {
         bail!("Path is not a directory: {}", path.display());
     }
+    let config = resolve_config_with_repo(profile, &path)?;
 
     let mut worktree_info_opt = None;
 
@@ -87,8 +88,6 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         if !GitWorktree::is_git_repo(&path) {
             bail!("Path is not in a git repository\nTip: Navigate to a git repository first");
         }
-
-        let config = Config::load()?;
 
         let main_repo_path = GitWorktree::find_main_repo(&path)?;
         let git_wt = GitWorktree::new(main_repo_path.clone())?;
@@ -174,16 +173,21 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     if let Some(cmd) = &args.command {
         instance.command = cmd.clone();
         instance.tool = detect_tool(cmd)?;
+    } else if let Some(tool) = config
+        .session
+        .default_tool
+        .as_deref()
+        .map(str::trim)
+        .filter(|tool| !tool.is_empty())
+    {
+        instance.tool = detect_tool(tool)?;
     }
 
     if let Some(worktree_info) = worktree_info_opt {
         instance.worktree_info = Some(worktree_info);
     }
 
-    instance.yolo_mode = args.yolo
-        || Config::load()
-            .map(|c| c.session.yolo_mode_default)
-            .unwrap_or(false);
+    instance.yolo_mode = args.yolo || config.session.yolo_mode_default;
 
     // Check for repository hooks
     let hook_result: Result<()> = (|| {
@@ -250,8 +254,11 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
 
     instances.push(instance.clone());
 
-    let auto_orchestrator =
-        crate::session::auto_orchestrator::maybe_create_for_instance(&mut instances, &instance);
+    let auto_orchestrator = crate::session::auto_orchestrator::maybe_create_for_instance(
+        &mut instances,
+        &instance,
+        &config,
+    );
 
     // Rebuild group tree
     let mut group_tree = GroupTree::new_with_groups(&instances, &groups);
@@ -291,7 +298,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             .iter()
             .position(|i| i.id == instance.id)
             .expect("just added instance");
-        instances[idx].start_with_size(crate::terminal::get_size())?;
+        instances[idx].start_with_size(crate::terminal::get_size(), &config)?;
         storage.save_with_groups(&instances, &group_tree)?;
 
         let tmux_session = crate::tmux::Session::new(&instance.id, &instance.title)?;

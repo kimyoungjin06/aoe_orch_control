@@ -1,0 +1,24 @@
+# FIXTURE: Codex - Waiting on command approval
+# Reconstructed (not a live capture): no session was sitting on an approval
+#   prompt when the codex fixtures were added on 2026-08-07. Replace with a
+#   real capture via scripts/capture-fixtures.sh when one is available.
+# Capture date: 2026-08-07
+#
+# Expected status: Waiting
+# Key indicators: short question line carrying "Allow", a numbered selection
+#   menu under the cursor, and the "Enter to select / Esc to cancel" footer.
+#
+• Ran cargo build
+  └ Finished dev profile in 4.21s
+
+  Codex wants to run the following command:
+
+  $ rm -rf target
+
+  Allow this command?
+
+❯ 1. Yes, run this command
+  2. Yes, and don't ask again this session
+  3. No, tell Codex what to do differently
+
+  Press Enter to select · Esc to cancel

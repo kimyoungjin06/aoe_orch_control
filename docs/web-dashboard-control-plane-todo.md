@@ -433,15 +433,16 @@ executable action-card proposal preflight loops remain deferred.
 - Over-broad backend authority: mitigated by a local-only Forager control API
   or action packet processor with explicit schemas.
 
-## Current Completeness Review - 2026-06-19
+## Current Completeness Review - 2026-08-12
 
-Current baseline checked with `npm run test:visual`: 26 Playwright tests pass
+Current baseline checked with `npm run test:visual`: 32 Playwright tests pass
 across desktop and mobile. Visual tests now build and run under a website build
-lock and use an isolated Playwright preview port instead of reusing an existing
-local server, reducing stale-preview and concurrent-`dist` race failures. This
-is now a useful route-level smoke baseline, but it still misses deeper product
-gaps such as backend action API wiring, a real assistant answer surface, and
-expanded graph exploration.
+lock, use an isolated Playwright preview port, keep Astro 7 in foreground mode
+inside detected agent environments, and bound worker concurrency. This reduces
+stale-preview, concurrent-`dist`, and resource-contention failures. This is now
+a useful route-level smoke baseline, but it still misses deeper product gaps
+such as backend action API wiring, a real assistant answer surface, and expanded
+graph exploration.
 
 ### P0 - Make `/decisions/` a selectable action center
 

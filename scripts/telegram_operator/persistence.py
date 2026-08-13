@@ -7,7 +7,7 @@ import json
 import pathlib
 from typing import Any
 
-from .common import load_json, utc_now, write_json
+from .common import RemoteOperatorTelegramError, load_json, utc_now, write_json
 
 
 STATE_SCHEMA = "remote_operator_telegram_state.v1"
@@ -15,17 +15,36 @@ CHAT_HISTORY_MAX_ENTRIES = 12
 CHAT_HISTORY_ENTRY_MAX_CHARS = 400
 
 
+class RemoteOperatorStateError(RemoteOperatorTelegramError):
+    """Raised when listener state cannot be trusted enough to continue."""
+
+
 def load_state(path: pathlib.Path) -> dict[str, Any]:
     if not path.exists():
         return {"schema": STATE_SCHEMA, "offset": 0}
     try:
         state = load_json(path)
-    except (OSError, json.JSONDecodeError):
-        return {"schema": STATE_SCHEMA, "offset": 0}
+    except (OSError, json.JSONDecodeError) as error:
+        raise RemoteOperatorStateError(
+            f"listener state is unreadable and was not reset: {path} ({type(error).__name__})"
+        ) from error
     if not isinstance(state, dict):
-        return {"schema": STATE_SCHEMA, "offset": 0}
-    state.setdefault("schema", STATE_SCHEMA)
-    state.setdefault("offset", 0)
+        raise RemoteOperatorStateError(
+            f"listener state must be a JSON object and was not reset: {path}"
+        )
+    schema = state.get("schema")
+    if schema is None:
+        state["schema"] = STATE_SCHEMA
+    elif schema != STATE_SCHEMA:
+        raise RemoteOperatorStateError(
+            f"unsupported listener state schema {schema!r}: {path}"
+        )
+    offset = state.get("offset", 0)
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise RemoteOperatorStateError(
+            f"listener state offset must be a non-negative integer: {path}"
+        )
+    state["offset"] = offset
     return state
 
 
@@ -125,6 +144,96 @@ def append_chat_history(
     histories[key] = entries[-CHAT_HISTORY_MAX_ENTRIES:]
 
 
+def project_focus_for_chat_hash(
+    state: dict[str, Any],
+    chat_hash: Any,
+    *,
+    max_age_sec: int,
+) -> dict[str, Any] | None:
+    focuses = state.get("chat_focus_by_chat")
+    if not isinstance(focuses, dict):
+        return None
+    focus = focuses.get(str(chat_hash or ""))
+    if not isinstance(focus, dict):
+        return None
+    if max_age_sec >= 0:
+        updated_at = parse_utc_timestamp(focus.get("updated_at"))
+        now = dt.datetime.now(dt.timezone.utc)
+        if updated_at is None or (now - updated_at).total_seconds() > max_age_sec:
+            return None
+    return focus
+
+
+def session_focus_for_chat_hash(
+    state: dict[str, Any],
+    chat_hash: Any,
+    *,
+    max_age_sec: int,
+) -> dict[str, Any] | None:
+    focuses = state.get("session_focus_by_chat")
+    if not isinstance(focuses, dict):
+        return None
+    focus = focuses.get(str(chat_hash or ""))
+    if not isinstance(focus, dict):
+        return None
+    if max_age_sec >= 0:
+        updated_at = parse_utc_timestamp(focus.get("updated_at"))
+        now = dt.datetime.now(dt.timezone.utc)
+        if updated_at is None or (now - updated_at).total_seconds() > max_age_sec:
+            return None
+    return focus
+
+
+def remember_session_focus(
+    state: dict[str, Any],
+    chat_hash: Any,
+    *,
+    session_id: str,
+    project: str,
+    title: str,
+    tool: str,
+    prompt_hash: str = "",
+    source: str,
+) -> None:
+    if not str(session_id or "").strip():
+        return
+    focuses = state.setdefault("session_focus_by_chat", {})
+    if not isinstance(focuses, dict):
+        focuses = {}
+        state["session_focus_by_chat"] = focuses
+    focuses[str(chat_hash or "")] = {
+        "session_id": str(session_id),
+        "project": str(project),
+        "title": str(title),
+        "tool": str(tool),
+        "prompt_hash": str(prompt_hash),
+        "source": str(source),
+        "updated_at": utc_now(),
+    }
+
+
+def clear_session_focus_for_chat_hash(
+    state: dict[str, Any],
+    chat_hash: Any,
+    *,
+    session_id: str | None = None,
+    sources: set[str] | None = None,
+) -> bool:
+    focuses = state.get("session_focus_by_chat")
+    if not isinstance(focuses, dict):
+        return False
+    key = str(chat_hash or "")
+    focus = focuses.get(key)
+    if not isinstance(focus, dict):
+        return False
+    if session_id is not None and str(focus.get("session_id") or "") != str(session_id):
+        return False
+    if sources is not None and str(focus.get("source") or "") not in sources:
+        return False
+    focuses.pop(key, None)
+    return True
+
+
 def remember_context_for_chat_hash(
     state: dict[str, Any],
     chat_hash: Any,
@@ -132,9 +241,29 @@ def remember_context_for_chat_hash(
 ) -> None:
     context = rendered.get("interaction_context")
     parsed = rendered.get("parsed_command") if isinstance(rendered.get("parsed_command"), dict) else {}
-    # Chat results carry the previous card's context; re-storing it would
-    # refresh remembered_at and defeat context expiry for chatty operators.
-    if not isinstance(context, dict) or parsed.get("command") in {"feedback", "remember", "chat"}:
+    key = str(chat_hash or "")
+    if parsed.get("command") == "chat":
+        contexts = state.get("last_interaction_context_by_chat")
+        # A model clarification is a real short-lived thread. Ordinary chat
+        # must not refresh an older status card, and answering a clarification
+        # consumes that thread instead of leaking it into future topics.
+        if isinstance(context, dict) and context.get("context_kind") == "chat_clarification":
+            if not isinstance(contexts, dict):
+                contexts = {}
+                state["last_interaction_context_by_chat"] = contexts
+            remembered = dict(context)
+            remembered["remembered_at"] = utc_now()
+            if isinstance(rendered.get("sent_message_id"), int):
+                remembered["source_message_id"] = rendered["sent_message_id"]
+            contexts[key] = remembered
+        elif isinstance(contexts, dict) and isinstance(contexts.get(key), dict) and contexts[key].get(
+            "context_kind"
+        ) == "chat_clarification":
+            contexts.pop(key, None)
+        return
+    # Feedback and remember results carry the previous card's context;
+    # re-storing it would refresh remembered_at and defeat context expiry.
+    if not isinstance(context, dict) or parsed.get("command") in {"feedback", "remember"}:
         return
     contexts = state.setdefault("last_interaction_context_by_chat", {})
     if not isinstance(contexts, dict):
@@ -144,4 +273,4 @@ def remember_context_for_chat_hash(
     remembered["remembered_at"] = utc_now()
     if isinstance(rendered.get("sent_message_id"), int):
         remembered["source_message_id"] = rendered["sent_message_id"]
-    contexts[str(chat_hash or "")] = remembered
+    contexts[key] = remembered

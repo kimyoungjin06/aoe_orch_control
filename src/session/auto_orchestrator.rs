@@ -62,13 +62,13 @@ fn orchestrator_title(config: &Config) -> String {
 pub fn maybe_create_for_instance(
     instances: &mut Vec<Instance>,
     trigger_instance: &Instance,
+    config: &Config,
 ) -> Option<AutoOrchestratorOutcome> {
-    let config = Config::load().unwrap_or_default();
-    if !auto_orchestrator_enabled(&config) {
+    if !auto_orchestrator_enabled(config) {
         return None;
     }
 
-    let title = orchestrator_title(&config);
+    let title = orchestrator_title(config);
     if trigger_instance.title.eq_ignore_ascii_case(&title) {
         return None;
     }
@@ -112,7 +112,7 @@ pub fn maybe_create_for_instance(
 
     let session_id = orchestrator.id.clone();
     let mut launched = false;
-    if let Err(e) = orchestrator.start_with_size(None) {
+    if let Err(e) = orchestrator.start_with_size(None, config) {
         tracing::warn!(
             "Failed to auto-start orchestrator session '{}' for '{}': {}",
             title,
@@ -134,12 +134,12 @@ pub fn maybe_create_for_instance(
 
 /// Ensure orchestrator sessions exist for all existing project sessions.
 /// Returns the number of newly created orchestrator sessions.
-pub fn ensure_for_existing_sessions(instances: &mut Vec<Instance>) -> usize {
+pub fn ensure_for_existing_sessions(instances: &mut Vec<Instance>, config: &Config) -> usize {
     let snapshot = instances.clone();
     let mut created = 0usize;
 
     for inst in &snapshot {
-        if maybe_create_for_instance(instances, inst).is_some() {
+        if maybe_create_for_instance(instances, inst, config).is_some() {
             created += 1;
         }
     }
@@ -158,5 +158,13 @@ mod tests {
         assert_eq!(parse_bool_env("0"), Some(false));
         assert_eq!(parse_bool_env("off"), Some(false));
         assert_eq!(parse_bool_env("maybe"), None);
+    }
+
+    #[test]
+    fn orchestrator_title_comes_from_the_supplied_effective_config() {
+        let mut config = Config::default();
+        config.session.orchestrator_title = Some("Active Profile Orchestrator".to_string());
+
+        assert_eq!(orchestrator_title(&config), "Active Profile Orchestrator");
     }
 }

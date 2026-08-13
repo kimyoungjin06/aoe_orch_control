@@ -1,6 +1,6 @@
 # Adaptive Wiki
 
-Forager's adaptive wiki is the planned Offdesk learning layer inspired by
+Forager's adaptive wiki is the active Offdesk learning layer inspired by
 Hermes' memory and operator-preference patterns. It is not a raw transcript
 store and it is not a prompt-injection channel. The canonical record is shared,
 while the AI and human surfaces are generated as separate projections.
@@ -93,6 +93,14 @@ The v0 Offdesk artifacts are profile-local JSON files:
   signals.
 - `adaptive_wiki_review_events.jsonl` records operator decisions on curator
   review proposals, such as accepted, rejected, or superseded.
+
+All canonical Wiki writers, including the Rust CLI and Telegram `/remember`,
+serialize updates through the profile-local `adaptive_wiki.lock`. JSON state
+files are written to a same-directory temporary file, synced, and atomically
+renamed while that lock is held; JSONL rows are synced before the writer lock
+is released. Telegram does not quarantine and replace malformed candidate
+state. It reports the candidate write as failed and preserves the original
+bytes for local recovery.
 
 Canonical entries use this conceptual schema:
 
@@ -437,7 +445,7 @@ The current CLI exposes both inspection and governed review mutation commands:
 - `forager offdesk wiki record-candidate --kind <kind> --scope <scope> --scope-ref <ref> --claim <text> [--ai-instruction <text>] [--evidence-ref <ref>]... [--core-tag <tag>]... [--origin <who>] [--signal-kind <what>]`
 - `forager offdesk wiki promote <candidate-id> --scope <scope> --scope-ref <ref> --activation-mode <mode> --agent-mode <mode>`
 - `forager offdesk wiki reject <candidate-id> --reason <text>`
-- `forager offdesk wiki edit <entry-id> [--claim <text>] [--ai-instruction <text>] [--human-summary <text>] [--evidence-ref <ref>]... --reason <text>`
+- `forager offdesk wiki edit <entry-id> [--kind <kind>] [--agent-mode <mode>]... [--clear-agent-modes] [--claim <text>] [--ai-instruction <text>] [--human-summary <text>] [--evidence-ref <ref>]... --reason <text>`
 - `forager offdesk wiki add-tag <entry-id> [--core-tag <tag>]... [--proposed-tag <tag>]... --reason <text>`
 - `forager offdesk wiki rescope <entry-id> --scope <scope> --scope-ref <ref>`
 - `forager offdesk wiki deprecate <entry-id> --reason <text>`
@@ -448,6 +456,11 @@ The current CLI exposes both inspection and governed review mutation commands:
 Mutation commands change only the adaptive wiki store and append audit records.
 They do not rewrite commands, workdirs, launch specs, provider/model choices, or
 approval state.
+
+`wiki edit --agent-mode` replaces the complete mode list with the repeated
+values supplied in that command. Use `--clear-agent-modes` to make an entry
+universal. The two forms are mutually exclusive, so an omitted mode option
+continues to mean "leave the current mode scope unchanged."
 
 ## Markdown Human Vault
 

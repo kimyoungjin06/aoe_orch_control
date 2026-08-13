@@ -21,14 +21,11 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from telegram_operator.config import default_telegram_env_file
+
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
-DEFAULT_ENV_FILE = pathlib.Path(
-    os.environ.get(
-        "OFFDESK_TELEGRAM_ENV",
-        "/home/kimyoungjin06/Desktop/Workspace/aoe_orch_control/.aoe-team/telegram.env",
-    )
-)
+DEFAULT_ENV_FILE = default_telegram_env_file()
 DEFAULT_CACHE_DIR = pathlib.Path.home() / ".cache" / "forager"
 WATCHDOG_SCHEMA = "remote_operator_telegram_watchdog.v1"
 STATE_SCHEMA = "remote_operator_telegram_watchdog_state.v1"

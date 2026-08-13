@@ -60,11 +60,21 @@ impl Session {
         command: Option<&str>,
         size: Option<(u16, u16)>,
     ) -> Result<()> {
+        self.create_with_size_env(working_dir, command, size, &[])
+    }
+
+    pub fn create_with_size_env(
+        &self,
+        working_dir: &str,
+        command: Option<&str>,
+        size: Option<(u16, u16)>,
+        environment: &[(String, String)],
+    ) -> Result<()> {
         if self.exists() {
             return Ok(());
         }
 
-        let args = build_create_args(&self.name, working_dir, command, size);
+        let args = build_create_args(&self.name, working_dir, command, size, environment);
         let output = Command::new("tmux").args(&args).output()?;
 
         // Note: With -d flag, tmux new-session returns 0 even if the shell command fails.
@@ -213,9 +223,8 @@ impl Session {
 
     pub fn detect_status(&self, tool: &str) -> Result<Status> {
         let content = self.capture_pane(50)?;
-        let fg_pid = self.get_foreground_pid();
         Ok(super::status_detection::detect_status_from_content(
-            &content, tool, fg_pid,
+            &content, tool, None,
         ))
     }
 }
@@ -240,6 +249,7 @@ fn build_create_args(
     working_dir: &str,
     command: Option<&str>,
     size: Option<(u16, u16)>,
+    environment: &[(String, String)],
 ) -> Vec<String> {
     let mut args = vec![
         "new-session".to_string(),
@@ -255,6 +265,11 @@ fn build_create_args(
         args.push(width.to_string());
         args.push("-y".to_string());
         args.push(height.to_string());
+    }
+
+    for (key, value) in environment {
+        args.push("-e".to_string());
+        args.push(format!("{key}={value}"));
     }
 
     if let Some(cmd) = command {
@@ -293,7 +308,7 @@ mod tests {
 
     #[test]
     fn test_build_create_args_without_size() {
-        let args = build_create_args("test_session", "/tmp/work", None, None);
+        let args = build_create_args("test_session", "/tmp/work", None, None, &[]);
         assert_eq!(
             args,
             vec!["new-session", "-d", "-s", "test_session", "-c", "/tmp/work"]
@@ -304,7 +319,7 @@ mod tests {
 
     #[test]
     fn test_build_create_args_with_size() {
-        let args = build_create_args("test_session", "/tmp/work", None, Some((120, 40)));
+        let args = build_create_args("test_session", "/tmp/work", None, Some((120, 40)), &[]);
         assert!(args.contains(&"-x".to_string()));
         assert!(args.contains(&"120".to_string()));
         assert!(args.contains(&"-y".to_string()));
@@ -319,13 +334,19 @@ mod tests {
 
     #[test]
     fn test_build_create_args_with_command() {
-        let args = build_create_args("test_session", "/tmp/work", Some("claude"), None);
+        let args = build_create_args("test_session", "/tmp/work", Some("claude"), None, &[]);
         assert_eq!(args.last().unwrap(), "claude");
     }
 
     #[test]
     fn test_build_create_args_with_size_and_command() {
-        let args = build_create_args("test_session", "/tmp/work", Some("claude"), Some((80, 24)));
+        let args = build_create_args(
+            "test_session",
+            "/tmp/work",
+            Some("claude"),
+            Some((80, 24)),
+            &[],
+        );
 
         // Size args should be present
         assert!(args.contains(&"-x".to_string()));
@@ -334,6 +355,25 @@ mod tests {
         assert!(args.contains(&"24".to_string()));
 
         // Command should be last
+        assert_eq!(args.last().unwrap(), "claude");
+    }
+
+    #[test]
+    fn test_build_create_args_with_environment() {
+        let environment = vec![(
+            "CLAUDE_CONFIG_DIR".to_string(),
+            "/tmp/Claude Config".to_string(),
+        )];
+        let args = build_create_args(
+            "test_session",
+            "/tmp/work",
+            Some("claude"),
+            None,
+            &environment,
+        );
+
+        let env_index = args.iter().position(|arg| arg == "-e").unwrap();
+        assert_eq!(args[env_index + 1], "CLAUDE_CONFIG_DIR=/tmp/Claude Config");
         assert_eq!(args.last().unwrap(), "claude");
     }
 }

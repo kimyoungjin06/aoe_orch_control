@@ -372,7 +372,7 @@ impl ExecutionBrief {
         self.approved
             && self
                 .fresh_until
-                .map_or(true, |fresh_until| fresh_until >= now)
+                .is_none_or(|fresh_until| fresh_until >= now)
     }
 
     fn matches_context(&self, request: &ActionApprovalRequest) -> bool {

@@ -35,6 +35,9 @@ pub struct ProfileConfig {
     pub session: Option<SessionConfigOverride>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<DiffConfigOverride>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hooks: Option<HooksConfigOverride>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -123,6 +126,15 @@ pub struct SessionConfigOverride {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DiffConfigOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_branch: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_lines: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HooksConfigOverride {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_create: Option<Vec<String>>,
@@ -167,6 +179,7 @@ pub fn profile_has_overrides(config: &ProfileConfig) -> bool {
         || config.sandbox.is_some()
         || config.tmux.is_some()
         || config.session.is_some()
+        || config.diff.is_some()
         || config.hooks.is_some()
         || config.sound.is_some()
 }
@@ -231,20 +244,34 @@ pub fn apply_session_overrides(
     target: &mut super::config::SessionConfig,
     source: &SessionConfigOverride,
 ) {
-    if source.default_tool.is_some() {
-        target.default_tool = source.default_tool.clone();
-    }
+    apply_optional_string_override(&mut target.default_tool, &source.default_tool);
     if let Some(yolo_mode_default) = source.yolo_mode_default {
         target.yolo_mode_default = yolo_mode_default;
     }
     if let Some(auto_orchestrator) = source.auto_orchestrator {
         target.auto_orchestrator = auto_orchestrator;
     }
-    if source.orchestrator_title.is_some() {
-        target.orchestrator_title = source.orchestrator_title.clone();
+    apply_optional_string_override(&mut target.orchestrator_title, &source.orchestrator_title);
+    apply_optional_string_override(
+        &mut target.orchestrator_command,
+        &source.orchestrator_command,
+    );
+}
+
+pub fn apply_diff_overrides(target: &mut super::config::DiffConfig, source: &DiffConfigOverride) {
+    apply_optional_string_override(&mut target.default_branch, &source.default_branch);
+    if let Some(context_lines) = source.context_lines {
+        target.context_lines = context_lines;
     }
-    if source.orchestrator_command.is_some() {
-        target.orchestrator_command = source.orchestrator_command.clone();
+}
+
+fn apply_optional_string_override(target: &mut Option<String>, source: &Option<String>) {
+    if let Some(value) = source {
+        *target = if value.trim().is_empty() {
+            None
+        } else {
+            Some(value.clone())
+        };
     }
 }
 
@@ -267,9 +294,7 @@ pub fn merge_configs(mut global: Config, profile: &ProfileConfig) -> Config {
     }
 
     if let Some(ref claude_override) = profile.claude {
-        if claude_override.config_dir.is_some() {
-            global.claude.config_dir = claude_override.config_dir.clone();
-        }
+        apply_optional_string_override(&mut global.claude.config_dir, &claude_override.config_dir);
     }
 
     if let Some(ref updates_override) = profile.updates {
@@ -301,6 +326,10 @@ pub fn merge_configs(mut global: Config, profile: &ProfileConfig) -> Config {
 
     if let Some(ref session_override) = profile.session {
         apply_session_overrides(&mut global.session, session_override);
+    }
+
+    if let Some(ref diff_override) = profile.diff {
+        apply_diff_overrides(&mut global.diff, diff_override);
     }
 
     if let Some(ref hooks_override) = profile.hooks {
@@ -377,6 +406,26 @@ mod tests {
         assert!(config.worktree.is_none());
         assert!(config.sandbox.is_none());
         assert!(config.tmux.is_none());
+        assert!(config.diff.is_none());
+    }
+
+    #[test]
+    fn diff_overrides_merge_into_effective_profile_config() {
+        let mut global = Config::default();
+        global.diff.default_branch = Some("main".to_string());
+        global.diff.context_lines = 3;
+        let profile = ProfileConfig {
+            diff: Some(DiffConfigOverride {
+                default_branch: Some("develop".to_string()),
+                context_lines: Some(9),
+            }),
+            ..Default::default()
+        };
+
+        let merged = merge_configs(global, &profile);
+
+        assert_eq!(merged.diff.default_branch.as_deref(), Some("develop"));
+        assert_eq!(merged.diff.context_lines, 9);
     }
 
     #[test]

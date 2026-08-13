@@ -6,7 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 use tracing::warn;
 
-use crate::session::{get_app_dir, get_update_settings};
+use crate::session::{get_app_dir, resolve_config, UpdatesConfig};
 
 const GITHUB_API_LATEST: &str =
     "https://api.github.com/repos/kimyoungjin06/forager-cli/releases/latest";
@@ -60,9 +60,11 @@ fn save_cache(cache: &UpdateCache) -> Result<()> {
     Ok(())
 }
 
-pub async fn check_for_update(current_version: &str, force: bool) -> Result<UpdateInfo> {
-    let settings = get_update_settings();
-
+pub async fn check_for_update(
+    current_version: &str,
+    force: bool,
+    settings: &UpdatesConfig,
+) -> Result<UpdateInfo> {
     if !force {
         if let Some(cache) = load_cache() {
             let age = chrono::Utc::now() - cache.checked_at;
@@ -207,15 +209,17 @@ fn is_newer_version(latest: &str, current: &str) -> bool {
     false
 }
 
-pub async fn print_update_notice() {
-    let settings = get_update_settings();
+pub async fn print_update_notice(profile: &str) {
+    let settings = resolve_config(profile)
+        .map(|config| config.updates)
+        .unwrap_or_default();
     if !settings.check_enabled || !settings.notify_in_cli {
         return;
     }
 
     let version = env!("CARGO_PKG_VERSION");
 
-    if let Ok(info) = check_for_update(version, false).await {
+    if let Ok(info) = check_for_update(version, false, &settings).await {
         if info.available {
             eprintln!(
                 "\nUpdate available: v{} -> v{} (download: https://github.com/kimyoungjin06/forager-cli/releases/latest)",

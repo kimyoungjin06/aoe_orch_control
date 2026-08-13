@@ -124,6 +124,7 @@ fn default_profile() -> String {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ThemeConfig {
+    /// Compatibility-only key. The current TUI uses the KISTI theme.
     #[serde(default)]
     pub name: String,
 }
@@ -139,6 +140,7 @@ pub struct UpdatesConfig {
     #[serde(default = "default_true")]
     pub check_enabled: bool,
 
+    /// Compatibility-only key. Updates are never installed automatically.
     #[serde(default)]
     pub auto_update: bool,
 
@@ -170,6 +172,7 @@ fn default_check_interval() -> u64 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorktreeConfig {
+    /// Compatibility-only key. Worktrees are requested per session.
     #[serde(default)]
     pub enabled: bool,
 
@@ -279,9 +282,8 @@ pub fn user_has_tmux_config() -> bool {
 }
 
 /// Determine if status bar styling should be applied based on config and environment.
-pub fn should_apply_tmux_status_bar() -> bool {
-    let config = Config::load().unwrap_or_default();
-    match config.tmux.status_bar {
+pub fn should_apply_tmux_status_bar(config: &TmuxConfig) -> bool {
+    match config.status_bar {
         TmuxStatusBarMode::Enabled => true,
         TmuxStatusBarMode::Disabled => false,
         TmuxStatusBarMode::Auto => !user_has_tmux_config(),
@@ -290,9 +292,8 @@ pub fn should_apply_tmux_status_bar() -> bool {
 
 /// Determine if mouse support should be enabled based on config and environment.
 /// Returns Some(true) to enable, Some(false) to disable, None to not touch the setting.
-pub fn should_apply_tmux_mouse() -> Option<bool> {
-    let config = Config::load().unwrap_or_default();
-    match config.tmux.mouse {
+pub fn should_apply_tmux_mouse(config: &TmuxConfig) -> Option<bool> {
+    match config.mouse {
         TmuxMouseMode::Enabled => Some(true),
         TmuxMouseMode::Disabled => Some(false),
         TmuxMouseMode::Auto => {
@@ -351,26 +352,6 @@ pub fn save_config(config: &Config) -> Result<()> {
     let content = toml::to_string_pretty(config)?;
     fs::write(&path, content)?;
     Ok(())
-}
-
-pub fn get_update_settings() -> UpdatesConfig {
-    load_config()
-        .ok()
-        .flatten()
-        .map(|c| c.updates)
-        .unwrap_or_default()
-}
-
-pub fn get_claude_config_dir() -> Option<PathBuf> {
-    let config = load_config().ok().flatten()?;
-    config.claude.config_dir.map(|s| {
-        if let Some(stripped) = s.strip_prefix("~/") {
-            if let Some(home) = dirs::home_dir() {
-                return home.join(stripped);
-            }
-        }
-        PathBuf::from(s)
-    })
 }
 
 #[cfg(test)]
@@ -638,10 +619,8 @@ models = ["qwen3-coder-next:latest"]
         assert!(config.app_state.has_seen_welcome);
     }
 
-    // Test get_update_settings helper
     #[test]
-    fn test_get_update_settings_returns_defaults_when_no_config() {
-        // This test doesn't access the filesystem, so it should return defaults
+    fn test_update_settings_defaults() {
         let settings = UpdatesConfig::default();
         assert!(settings.check_enabled);
         assert_eq!(settings.check_interval_hours, 24);
@@ -740,6 +719,23 @@ models = ["qwen3-coder-next:latest"]
         let tmux: TmuxConfig = toml::from_str(toml).unwrap();
         assert_eq!(tmux.status_bar, TmuxStatusBarMode::Enabled);
         assert_eq!(tmux.mouse, TmuxMouseMode::Enabled);
+    }
+
+    #[test]
+    fn tmux_policy_uses_the_supplied_effective_config() {
+        let enabled = TmuxConfig {
+            status_bar: TmuxStatusBarMode::Enabled,
+            mouse: TmuxMouseMode::Enabled,
+        };
+        let disabled = TmuxConfig {
+            status_bar: TmuxStatusBarMode::Disabled,
+            mouse: TmuxMouseMode::Disabled,
+        };
+
+        assert!(should_apply_tmux_status_bar(&enabled));
+        assert_eq!(should_apply_tmux_mouse(&enabled), Some(true));
+        assert!(!should_apply_tmux_status_bar(&disabled));
+        assert_eq!(should_apply_tmux_mouse(&disabled), Some(false));
     }
 
     #[test]

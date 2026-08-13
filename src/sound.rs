@@ -403,20 +403,20 @@ pub fn apply_sound_overrides(target: &mut SoundConfig, source: &SoundConfigOverr
     if let Some(ref mode) = source.mode {
         target.mode = mode.clone();
     }
-    if source.on_start.is_some() {
-        target.on_start = source.on_start.clone();
-    }
-    if source.on_running.is_some() {
-        target.on_running = source.on_running.clone();
-    }
-    if source.on_waiting.is_some() {
-        target.on_waiting = source.on_waiting.clone();
-    }
-    if source.on_idle.is_some() {
-        target.on_idle = source.on_idle.clone();
-    }
-    if source.on_error.is_some() {
-        target.on_error = source.on_error.clone();
+    apply_optional_sound_override(&mut target.on_start, &source.on_start);
+    apply_optional_sound_override(&mut target.on_running, &source.on_running);
+    apply_optional_sound_override(&mut target.on_waiting, &source.on_waiting);
+    apply_optional_sound_override(&mut target.on_idle, &source.on_idle);
+    apply_optional_sound_override(&mut target.on_error, &source.on_error);
+}
+
+fn apply_optional_sound_override(target: &mut Option<String>, source: &Option<String>) {
+    if let Some(value) = source {
+        *target = if value.trim().is_empty() {
+            None
+        } else {
+            Some(value.clone())
+        };
     }
 }
 

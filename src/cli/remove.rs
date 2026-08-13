@@ -4,7 +4,7 @@ use anyhow::Result;
 use clap::Args;
 
 use crate::containers;
-use crate::session::{Config, GroupTree, Instance, Storage};
+use crate::session::{GroupTree, Instance, Storage};
 
 #[derive(Args)]
 pub struct RemoveArgs {
@@ -43,6 +43,10 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
     })?;
     let inst = instances.remove(index);
     let removed_title = inst.title.clone();
+    let effective_config = crate::session::resolve_config_with_repo(
+        profile,
+        std::path::Path::new(&inst.project_path),
+    )?;
 
     let will_cleanup_worktree = needs_worktree_cleanup(&inst, &args);
 
@@ -126,8 +130,7 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
     // Legacy sandbox container cleanup (if config allows and user didn't request --keep-container)
     if let Some(sandbox) = &inst.sandbox_info {
         if sandbox.enabled && !args.keep_container {
-            let config = Config::load().ok().unwrap_or_default();
-            if config.sandbox.auto_cleanup {
+            if effective_config.sandbox.auto_cleanup {
                 let container = containers::DockerContainer::from_stored_name(
                     &inst.id,
                     &sandbox.image,

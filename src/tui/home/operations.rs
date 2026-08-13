@@ -8,8 +8,13 @@ use crate::tui::dialogs::{DeleteOptions, GroupDeleteOptions, NewSessionData};
 use super::HomeView;
 
 impl HomeView {
-    pub(super) fn create_session(&mut self, data: NewSessionData) -> anyhow::Result<String> {
+    pub(super) fn create_session(&mut self, mut data: NewSessionData) -> anyhow::Result<String> {
         let existing_titles: Vec<&str> = self.instances.iter().map(|i| i.title.as_str()).collect();
+        let config = crate::session::resolve_config_with_repo(
+            self.storage.profile(),
+            std::path::Path::new(&data.path),
+        )?;
+        self.apply_effective_session_defaults(&mut data, &config);
 
         let params = InstanceParams {
             title: data.title,
@@ -21,7 +26,7 @@ impl HomeView {
             yolo_mode: data.yolo_mode,
         };
 
-        let build_result = builder::build_instance(params, &existing_titles)?;
+        let build_result = builder::build_instance(params, &existing_titles, &config)?;
         let instance = build_result.instance;
 
         let session_id = instance.id.clone();
@@ -29,6 +34,7 @@ impl HomeView {
         let _ = crate::session::auto_orchestrator::maybe_create_for_instance(
             &mut self.instances,
             &instance,
+            &config,
         );
         self.group_tree = GroupTree::new_with_groups(&self.instances, &self.groups);
         if !instance.group_path.is_empty() {

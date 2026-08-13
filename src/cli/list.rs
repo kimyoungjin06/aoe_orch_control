@@ -106,7 +106,7 @@ pub async fn run(profile: &str, args: ListArgs) -> Result<()> {
     }
     println!("\nTotal: {} sessions", instances.len());
 
-    crate::update::print_update_notice().await;
+    crate::update::print_update_notice(profile).await;
 
     Ok(())
 }

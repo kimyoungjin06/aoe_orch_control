@@ -1,6 +1,6 @@
 # Project State
 
-Updated: 2026-07-21
+Updated: 2026-08-13
 
 This is the small current surface for Forager development work. It is separate
 from the public product README and from the mdBook user guides.
@@ -53,7 +53,8 @@ out of product-facing docs. The product direction is defined in
   migration.
 - Telegram Remote Operator health is live for the default profile. It reports a
   polling listener, configured chat allowlist, local model availability, and a
-  read-only action surface. Remote launch remains blocked by design.
+  guarded action surface. Runtime mutation still requires the documented
+  confirmation and task-binding gates.
 - The external Telegram Remote Operator watchdog can run outside the listener
   process, read loop-status and systemd state, send rate-limited emergency
   alerts, and render user-service/timer units through the installer.
@@ -76,13 +77,18 @@ out of product-facing docs. The product direction is defined in
   handoff-bound `approved`, `revise`, or `blocked` closeout-review verdicts
   from Telegram. Accepted truth is recorded only when the resulting
   `closeout_receipt.v1` status is `accepted`.
-- Closeout follow-up decision resolution and accepted-truth recovery surfaces
-  still need a separate design and implementation pass.
+- Closeout follow-up decision resolution and evidence-incomplete retirement are
+  available through receipt-backed CLI workflows. Decision resolution now
+  fails closed on stale tasks, missing evidence, required reads, unsafe
+  operations, and unknown or pending wiki promotion state. A receipt exposes
+  `accepted_scope` only when its final status is `accepted`.
 - The Telegram listener now survives known transport failures, and the external
   watchdog covers stale listener, failed service, and emergency alert paths.
-- Website dependencies were refreshed to close `npm audit` findings; Astro 6,
+- Website dependencies were refreshed to close `npm audit` findings; Astro 7,
   Tailwind 4, and an esbuild security override are now part of the verified
-  site build path.
+  site build path. CI installs the lockfile with `npm ci`, runs the action
+  bridge tests, rejects high-severity audit findings, builds the static site,
+  and runs 32 desktop/mobile Playwright scenarios before release.
 - UI surfaces now have a first shared operator-state contract, compact Telegram
   decision relay cards, semantic TUI Offdesk summaries, a fixture-backed WebUI
   review route, live `review_surface.v1` export/hydration for the WebUI route,
@@ -153,8 +159,32 @@ out of product-facing docs. The product direction is defined in
   --json` command writes only
   `accepted_truth_recovery_action_receipt.v1` validation/stale receipts and
   never executes the fallback or records accepted truth.
-- Large Offdesk and Telegram adapter modules need staged decomposition before
-  adding more mutation-capable remote actions.
+- The Rust Offdesk CLI decomposition now keeps clap value parsing in
+  `src/cli/offdesk/parsing.rs`; canonical decision resolution and handoff/
+  receipt transitions, adaptive-wiki proposal receipt construction, and
+  closeout acceptance/follow-up receipt calculation now live in
+  `src/offdesk/workflow/`. Stored closeout receipt parsing also shares that
+  fail-closed workflow boundary: missing or unknown evidence/wiki states map
+  to `missing`/`audit_unavailable`, never review-ready accepted truth. Typed
+  ordinary review, decision-resolution, and retirement record builders now own
+  input normalization, receipt construction, authorization boundaries, and
+  accepted scope calculation. Review records and receipts use one normalized
+  evidence list, so placeholders such as `none` and `n/a` cannot appear in one
+  while disappearing from the other. The CLI's `wiki_proposal_receipts.rs`,
+  `closeout_records.rs`, `closeout_report.rs`, and `closeout_render.rs` modules
+  now own their bounded responsibilities. The closeout record adapter covers artifact discovery, task
+  freshness checks, append-only path allocation, review/receipt persistence,
+  and idempotent RETURN_PACKAGE section rendering. Its accepted-truth scan fails
+  closed on corrupt review JSON rather than silently allowing
+  evidence-incomplete retirement. The closeout report adapter owns report
+  assembly, output-directory allocation, and the five initial artifact writes.
+  It allocates the default output directory only after source reads succeed and
+  preflights every target before writing, so an explicit-output collision cannot
+  leave a partial closeout package. The pure closeout renderer owns the plan,
+  RETURN_PACKAGE, and commercial-review Markdown contracts plus their bounded
+  list limits and ordering helpers. The main Offdesk CLI module retains command
+  routing, human output, and evidence computation. The next staged extraction
+  is implementation-packet evidence coverage calculation.
 - The 2026-06-26 refactor baseline is captured in
   `docs/refactor-baseline-20260626.md`. The mutation-freeze has been lifted by
   product decision to widen the Telegram operator surface, but new remote
@@ -172,12 +202,12 @@ out of product-facing docs. The product direction is defined in
   `accepted-truth-recovery-envelope`, which validates and records a receipt but
   stops short of recording accepted truth. `/cancel` clears a pending
   confirmation. It never records accepted truth.
-- The Telegram adapter decomposition is complete: the monolith dropped from
-  ~7,367 to ~1,885 lines (CLI entrypoint, run loop, projection commands,
-  dispatch wiring, feedback ingest). Health, redaction, plan-message
+- The Telegram adapter has extracted health, redaction, plan-message
   renderers, schemas, stage receipt builders, shared result plumbing
-  (`base.py`), and the plan-session state machine (`plan_workflow.py`) are now
-  separate, acyclic modules under `scripts/telegram_operator/`.
+  (`base.py`), and the plan-session state machine (`plan_workflow.py`) into
+  acyclic modules under `scripts/telegram_operator/`. The main adapter is now
+  about 4,372 lines after later journaling, session-delivery, and plain-text
+  agent work expanded it again, so decomposition is not considered complete.
 - Runtime dispatch is available but opt-in: `/runtime` lists post-closeout
   handoffs and `/dispatch <closeout-id> <runner> -- <command>` queues an
   operator-supplied command, gated behind `--enable-runtime-dispatch`
@@ -239,7 +269,7 @@ out of product-facing docs. The product direction is defined in
 
 - The adaptive-wiki knowledge graph now has a servable web visualization: the
   `/knowledge` route (`website/src/pages/knowledge.astro`) renders the tag graph
-  with Plotly (`plotly.js-dist-min`) as a clustered network -- records
+  with Plotly (`plotly.js-basic-dist-min`) as a clustered network -- records
   (promoted/candidate/deprecated) grouped into regions by tag prefix, derived
   structural edges hidden by default, hover detail, read-only/advisory. Data is
   plugged in via `npm run export:wiki-graph` (`website/scripts/export-wiki-graph.mjs`
@@ -247,8 +277,8 @@ out of product-facing docs. The product direction is defined in
   status/kind/scope/occurrence, writes the gitignored `public/wiki-graph.json`);
   the route builds from the committed `src/data/wiki-graph.sample.json` fixture and
   hydrates from the live export at runtime, mirroring the workstation-surface
-  pattern. Note: bundling Plotly adds a large (~4.8 MB) JS chunk scoped to the
-  `/knowledge` page only.
+  pattern. The basic Plotly bundle still adds a large (~1.1 MB) JS chunk scoped
+  to the `/knowledge` page only.
 - `/knowledge` is multi-view along two axes: a **profile** selector (tenant; from
   a `public/wiki-graph/index.json` manifest written by `--profiles`) and a
   **facet** filter (research vs ops) sliced within a profile. Facet is derived
@@ -257,8 +287,8 @@ out of product-facing docs. The product direction is defined in
   deep-link the view. This realizes the "knowledge planes" model: a project's
   research knowledge and its operational (harness-use) knowledge separate by
   facet, while Forager's own operating knowledge is intended to live in a
-  dedicated `forager-ops` profile (not yet stood up). Astro dev/preview bind to
-  all interfaces (`server.host`/`preview.host`) for remote access.
+  dedicated `forager-ops` profile. Astro dev/preview bind to all interfaces
+  (`server.host`/`preview.host`) for remote access.
 - Operators can author knowledge directly (e.g. from a doc review) with
   `forager offdesk wiki record-candidate --kind --scope --scope-ref --claim ...`
   which records a governed candidate (origin `operator_explicit`, signal
@@ -285,11 +315,13 @@ out of product-facing docs. The product direction is defined in
   has no automatic correction extraction (model-in-the-loop memory tool only),
   so this is a deliberate divergence, not an adoption. `record-candidate` gains
   `--signal-kind`.
-- Entries are editable in place: `forager offdesk wiki edit <id> [--claim]
-  [--ai-instruction] [--human-summary] [--evidence-ref]...` and
+- Entries are editable in place: `forager offdesk wiki edit <id> [--kind]
+  [--agent-mode]... [--clear-agent-modes] [--claim] [--ai-instruction]
+  [--human-summary] [--evidence-ref]...` and
   `forager offdesk wiki add-tag <id> [--core-tag]... [--proposed-tag]...`. This
-  lets a reviewer's compress / evidence-fix / retag verdicts apply without
-  reject + re-record; each appends an audit record (`edit` / `retag`). The
+  lets a reviewer's reclassification, mode-scope, compress, evidence-fix, and
+  retag verdicts apply without reject + re-record; each appends an audit record
+  (`edit` / `retag`). The
   doc->distillation contract and review rubric live in
   `docs/adaptive-wiki-distillation.md`, validated by an A/B test (18-40% less
   projected context) and an independent reviewing-agent pass.
@@ -311,42 +343,48 @@ out of product-facing docs. The product direction is defined in
   complete `supported_commands` surface from `routing.py::COMMAND_SURFACE`,
   and `scrub_unknown_commands()` rewrites hallucinated slash commands to
   `/help`. Before this the agent answered state questions with "cannot check"
-  and invented commands like `/list` and `/projects` that bounced as
-  unsupported. `/guide` (aliases `/qna`, `/usage`, `/commands`) renders the
+  and invented commands like `/list` that bounced as unsupported. `/projects`
+  now renders the registered portfolio, and `/projects <project>` selects one
+  project through the same registry resolver. `/guide` (aliases `/qna`,
+  `/usage`, `/commands`) renders the
   full grouped command reference sheet from the same `COMMAND_SURFACE` truth
   table under a relaxed reference-sheet budget; `/help` stays a 5-line card
   and points to it.
 
 - Multi-project orchestration now has a single project registry:
   `~/.config/forager/projects.toml` (`forager_project_registry.v1`) maps each
-  project key to workspace path patterns, forager session group, and wiki
-  profile. Consumers: the Telegram chat snapshot (`registered_projects`), the
+  project key to workspace path patterns, human-language aliases, forager
+  session group, and wiki profile. Consumers: the Telegram chat snapshot
+  (`registered_projects`), the
   session miner (`--use-project-registry`, replacing hardcoded
   `--project-map` lines in the nightly playbook), and the web portfolio
   surface (`website/scripts/export-portfolio.mjs` ->
   `public/portfolio-surface.json` -> `/portfolio` page: one row per project
   with live session counts by tool, wiki plane entry/candidate counts, and a
   link into `/knowledge?profile=...`). Loader:
-  `scripts/telegram_operator/projects.py`. Fan-out routing (`/p <key>`
-  prefix) and per-project attention cards are the next slices and should
-  resolve through this registry.
+  `scripts/telegram_operator/projects.py`. Telegram `/wiki` aggregates
+  candidate pressure across these planes, `/wiki <key>` opens one plane and
+  sets chat focus, and focused `/remember` writes a project-scoped candidate
+  into that plane. A general `/p <key>` prefix remains a later convenience.
 
 - Telegram chat now has project focus grounding: a plain-text message that
   names a registered project (key, display name, or folder alias,
   case-insensitive) resolves to that project, and the chat agent receives a
   `project_focus` block with the project's live sessions (from
   `forager status --json` rows), session counts, and its wiki plane's entry
-  count plus recent claims. The focus is sticky per chat
+  candidate/promoted counts, recent candidates, and recent promoted claims.
+  The focus is sticky per chat for 24 hours by default
   (`chat_focus_by_chat` in listener state): follow-up messages that drop the
-  project name keep answering about the same project until another project
-  is mentioned. Resolution and probes live in
+  project name keep answering about the same project, but an old focus cannot
+  silently contaminate a much later conversation. Resolution and probes live in
   `scripts/telegram_operator/projects.py` (`resolve_chat_focus`,
   `build_project_focus`); every probe degrades without breaking chat.
 
 - Telegram plain text runs an agentic tool loop, not intent enumeration: per
   message the chat agent may call up to 3 read-only tools
-  (`workspace_overview`, `list_dir`, `read_file`, all confined to registered
-  projects with path-traversal guards, in
+  (`workspace_overview`, `list_dir`, `read_file`, confined to registered
+  projects with path-traversal guards, plus `service_probe` for an observed
+  local TCP listener check, in
   `scripts/telegram_operator/projects.py`) and must finish with one terminal
   action: `answer` (chat reply) or `propose_plan` (delegation_goal -> the
   existing plan-capture confirm card; tap stays the only approval). The loop
@@ -359,6 +397,48 @@ out of product-facing docs. The product direction is defined in
   unreachable. Per operator decision, new chat capabilities should be new
   tools or terminal actions in this loop, never keyword lists.
 
+- Telegram runtime state is now auditable and fail-closed at the local file
+  boundary. The env file must be mode `0600`; generated state, feedback,
+  conversation, and loop-status files are forced to `0600` under private
+  directories. The service installer pins the actual workspace root before
+  deploying stable scripts, limits restart bursts, and passes a single-listener
+  lock file. Listener health reports registered versus resolvable project
+  counts, status counts, and consecutive errors. Each handled inbound message
+  also appends a hashed-ID conversation row containing the exact semantic text
+  sent to Telegram and a receipt-linked effect envelope with its concrete
+  authority domain. A durable started/effect-committed/completed update journal
+  and private reply outbox prevent effect replay while allowing a failed reply
+  to be retried after the Telegram offset advances. Ambiguous `started` rows
+  require explicit local inspect/reconcile with the listener stopped. Corrupt
+  listener state, journals, and outboxes fail closed and surface through
+  listener health; chat clarifications preserve their own follow-up context
+  instead of refreshing unrelated card context.
+  Telegram plain text can now select a current supervised Codex or Claude
+  session through the local intent model and deliver a bracketed-paste message
+  plus Enter to its tmux pane. A deterministic validator requires one exact
+  live target after applying explicit project, agent-title, and reply-card
+  constraints, so the model cannot select the first Codex or Claude from an
+  ambiguous list. Multiple waiting cards do not create a sticky session;
+  direct replies remain card-bound. Delivery receipts distinguish tmux input
+  queued and pane reacted from application-level work acceptance, and direct
+  dry-run previews never send tmux input. Health exposes separate
+  `session_message` readiness for the local model and tmux.
+  Live verification on 2026-08-13 confirmed the explicit-target path end to
+  end: a user-originated Telegram message mentioning `forager` selected the
+  one live Forager Codex session, committed an authorized `session_message`
+  effect in the `agent_session_input` authority domain, produced a reacting
+  pane, completed the update journal row, and delivered the Telegram receipt
+  with no pending outbox entry. The production adapter also passed the
+  complementary no-project dry-run against five live Codex candidates: the
+  model's proposed target was replaced by `session_target_ambiguous`, the
+  mobile response named the candidates and asked for clarification, and the
+  resulting effect remained unauthorized `none` with no tmux dispatch. A
+  user-originated live replay then confirmed the same network inbound boundary
+  while the chat still held a sticky `forager` focus: sticky context did not
+  narrow the target, the bot asked the operator to choose among five live Codex
+  sessions, the completed journal row retained an unauthorized `none` effect,
+  the reply was delivered, and the outbox had no pending entry.
+
 - `forager go [tool] [-- args]` is the zero-friction wrapper for direct agent
   work (`src/cli/go.rs`, Rust registry loader in
   `src/session/project_registry.rs`): resolves cwd against the registry,
@@ -367,8 +447,8 @@ out of product-facing docs. The product direction is defined in
   attaches. Reuse is idempotent; extra args update a stopped session's
   command but are ignored (with a notice) on a running one. `--no-attach`
   and `--no-brief` exist for scripts. Recommended: `alias cc='forager go
-  claude'`. Waiting-state Telegram notification for these sessions is the
-  next wrapper slice.
+  claude'`. Waiting-state Telegram notification and prompt-bound remote input
+  are now part of this wrapper path.
 
 - Harness services resolve the forager binary through
   `scripts/forager_bin.py` (`$FORAGER_BIN` -> `~/.local/bin/forager` ->
@@ -382,9 +462,41 @@ out of product-facing docs. The product direction is defined in
   line in human output (signals shared with the TUI via
   `offdesk::orchestration`). The Telegram listener's `--session-notify`
   (installer default on) pushes one card per waiting-episode of a supervised
-  session, project-tagged from the registry, with per-session backoff;
+  session, project-tagged from the registry, with per-prompt backoff;
   episodes that end clear immediately. A `forager go` session that hits a
   permission prompt while the operator is away now reaches the phone.
+- Waiting-session notification is hardened against false Codex approval
+  matches. Prompt detection uses prompt-shaped bottom-of-pane evidence, a
+  changed prompt hash resets its own reminder budget, quiet hours default to
+  23:00 through 08:00, and repeated reminders use bounded exponential
+  backoff. Telegram session input reports success only after the pane reacts;
+  an unchanged pane is recorded as `no_effect` and is not offered again for
+  that exact prompt.
+- Telegram wiki triage is project-aware. `/attention` includes the registered
+  wiki candidate total without turning the existing backlog into proactive
+  alerts. `/wiki` ranks projects by candidate count and offers the busiest
+  plane as a one-tap next action; `/wiki <key>` shows its newest candidate
+  claims. Project mention or sticky focus routes `/remember` to the registry's
+  `wiki_profile` with project scope instead of the listener's default profile.
+  Rust and Telegram Wiki writers share `adaptive_wiki.lock`, use atomic JSON
+  replacement, and preserve corrupt state instead of resetting it. Duplicate
+  project aliases now block chat focus and `/remember` writes until the
+  operator supplies a canonical project key.
+- TUI navigation now renders the home session list with stateful scrolling, so
+  repeated Down input keeps the selected row visible on the first screen. TUI
+  startup explicitly clears the alternate-screen buffer. Forager applies the
+  configured session-local tmux mouse option but never rewrites server-global
+  drag or copy-mode bindings. This preserves explicit clipboard and selection
+  behavior such as `copy-pipe-no-clear`; terminal-native selection remains
+  available with Shift-drag. New Forager-managed Claude sessions set
+  `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1`, keeping their conversation in tmux
+  scrollback so selection and wheel behavior matches Codex sessions without
+  changing standalone Claude or terminal sessions. Home preview capture now
+  runs outside the input/render thread. Status polling refreshes the selected
+  session every second and background sessions every three seconds, and status
+  detection no longer performs an unused pane PID lookup. In the 2026-08-12
+  live A/B check, `forager status --json` median latency fell from about 1.39s
+  to 0.76s and system CPU time fell by about 44% across six runs per build.
 
 - New-project onboarding is a one-liner or one tap: `forager go --register
   [--key <key>]` appends the directory to the project registry (folder name
@@ -404,28 +516,28 @@ out of product-facing docs. The product direction is defined in
 
 ## Next Work Candidates
 
-0. Apply the deferred council verdicts once a kind/agent-mode edit primitive
-   exists (`wiki edit` covers text/evidence only): reclassify
+0. Apply the deferred council verdicts with the new `wiki edit --kind
+   --agent-mode/--clear-agent-modes` primitive: reclassify
    telegram-guarded-execution and offdesk-tick entries (forager-ops),
    direction-review entry (twinpaper-review, procedure->policy_rule), and fix
    agent-mode projection on migrations (drop maintenance), tick (universal),
    and figure-anchors (+analysis).
 
-1. Fix harvest-pipeline defects found by the first tier-3 pass: the
-   prereview quote fallback turns missing quotes into unverifiable
-   "pointer quotes" (should mark unclear instead), review_reason truncation
-   can cut the stored quote, and the session distiller fans one quote into
-   many near-duplicate claims (needs a per-quote cap). Also spot-check
-   prereview-"supported" items for quote-claim mismatch.
+1. Curate the live 124-candidate portfolio through the project-ranked queue.
+   Spot-check prereview-supported items for quote-claim mismatch before any
+   promotion. The measured pointer-quote, quote-truncation, and per-quote
+   fan-out defects are already fixed in the harvest pipeline.
 2. Extend learning signals to the remaining lifecycle events (pre-compression
    extraction, wiki projection usage) and add a curator-style staleness report
    (Hermes patterns #9 follow-up and #10).
-2. Split the large Offdesk CLI (`src/cli/offdesk.rs`, ~18k lines) into command
-   handling and typed workflow transition modules, applying the same
-   extraction pattern proven on the Telegram adapter.
-3. Optionally split `scripts/telegram_operator/receipts.py` (~1,960 lines) by
+3. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~15.7k
+   lines). Value parsing and the first typed decision, adaptive-wiki, and
+   closeout receipt workflows are separated. Move closeout decision-resolution
+   and retirement record construction through the same typed boundary next;
+   keep artifact I/O and RETURN_PACKAGE rendering in CLI adapters.
+4. Optionally split `scripts/telegram_operator/receipts.py` (~1,960 lines) by
    stage family if it keeps growing; it is cohesive today.
-4. Optionally add parameterized `/run` templates (constrained argument
+5. Optionally add parameterized `/run` templates (constrained argument
    substitution) if fixed commands prove too rigid; keep injection surface in
    mind.
 

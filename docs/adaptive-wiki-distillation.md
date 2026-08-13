@@ -173,6 +173,9 @@ Apply the verdicts in place, without reject and re-record:
 
 - `compress` -> `forager offdesk wiki edit <id> --claim <shorter> [--ai-instruction <text>]`
 - evidence fix -> `forager offdesk wiki edit <id> --evidence-ref <ref>`
+- reclassify -> `forager offdesk wiki edit <id> --kind <kind>`
+- mode scope -> `forager offdesk wiki edit <id> --agent-mode <mode>...` or
+  `--clear-agent-modes` for a universal entry
 - retag / classify -> `forager offdesk wiki add-tag <id> --core-tag facet/<x>`
 - `rescope` -> `forager offdesk wiki rescope <id> --scope <scope> --scope-ref <ref>`
 - `reject` -> `forager offdesk wiki reject <id> --reason <text>`

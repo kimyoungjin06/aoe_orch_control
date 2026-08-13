@@ -19,6 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
 
       - name: Validate version matches tag
         run: |
@@ -39,9 +41,57 @@ jobs:
           fi
           echo "✓ Versions match"
 
+  preflight:
+    name: Release Quality Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        with:
+          node-version: '22.12.0'
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - name: Install tmux
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+      - name: Lint all Rust targets
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - name: Test all Rust targets
+        run: cargo test --locked --all-targets --all-features
+      - name: Compile operational Python scripts
+        run: python3 -m compileall -q scripts
+      - name: Test release installer integrity checks
+        run: bash tests/install_script.sh
+      - name: Install locked website dependencies
+        working-directory: website
+        run: npm ci
+      - name: Audit website dependencies
+        working-directory: website
+        run: npm audit --audit-level=high
+      - name: Test website action bridge
+        working-directory: website
+        run: npm run test:bridge
+      - name: Build website
+        working-directory: website
+        run: npm run build
+      - name: Install Playwright Chromium
+        working-directory: website
+        run: npx playwright install --with-deps chromium
+      - name: Test visual operator surfaces
+        working-directory: website
+        run: npm run test:visual
+
   build:
     name: Build ${{ matrix.target }}
-    needs: validate
+    needs: [validate, preflight]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -66,6 +116,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -83,7 +135,7 @@ jobs:
           if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
           fi
-          cargo build --release --target ${{ matrix.target }}
+          cargo build --locked --release --target ${{ matrix.target }}
 
       - name: Package
         run: |
@@ -91,9 +143,9 @@ jobs:
           cp target/${{ matrix.target }}/release/forager dist/${{ matrix.name }}
           cp target/${{ matrix.target }}/release/aoe dist/${{ matrix.legacy_name }}
           cd dist
-          tar -czvf ${{ matrix.name }}.tar.gz ${{ matrix.name }}
+          tar -czf ${{ matrix.name }}.tar.gz ${{ matrix.name }}
           shasum -a 256 ${{ matrix.name }}.tar.gz > ${{ matrix.name }}.tar.gz.sha256
-          tar -czvf ${{ matrix.legacy_name }}.tar.gz ${{ matrix.legacy_name }}
+          tar -czf ${{ matrix.legacy_name }}.tar.gz ${{ matrix.legacy_name }}
           shasum -a 256 ${{ matrix.legacy_name }}.tar.gz > ${{ matrix.legacy_name }}.tar.gz.sha256
 
       - name: Upload artifact
@@ -106,14 +158,48 @@ jobs:
             dist/${{ matrix.legacy_name }}.tar.gz
             dist/${{ matrix.legacy_name }}.tar.gz.sha256
 
+  operator-bundle:
+    name: Package Telegram Operator
+    needs: [validate, preflight]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+      - name: Build operator bundle
+        run: |
+          VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          BUNDLE="forager-operator-${VERSION}"
+          mkdir -p "dist/${BUNDLE}/docs"
+          cp -R scripts "dist/${BUNDLE}/"
+          cp README.md LICENSE "dist/${BUNDLE}/"
+          cp docs/remote-operator.md docs/adaptive-wiki.md docs/offdesk-operation-status.md \
+            docs/guides/configuration.md "dist/${BUNDLE}/docs/"
+          python3 -m compileall -q "dist/${BUNDLE}/scripts"
+          "dist/${BUNDLE}/scripts/offdesk_remote_operator_telegram.py" --help >/dev/null
+          "dist/${BUNDLE}/scripts/install_offdesk_telegram_operator_service.py" --help >/dev/null
+          find "dist/${BUNDLE}" -type d -name __pycache__ -prune -exec rm -r {} +
+          tar -C dist -czf "dist/${BUNDLE}.tar.gz" "${BUNDLE}"
+          cd dist
+          shasum -a 256 "${BUNDLE}.tar.gz" > "${BUNDLE}.tar.gz.sha256"
+      - name: Upload operator artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: forager-operator
+          path: |
+            dist/forager-operator-*.tar.gz
+            dist/forager-operator-*.tar.gz.sha256
+
   release:
     name: Create Release
-    needs: build
+    needs: [build, operator-bundle]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
 
       - name: Download all artifacts
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
