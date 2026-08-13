@@ -176,19 +176,22 @@ direction is defined in `docs/project-direction.md`.
   evidence list, so placeholders such as `none` and `n/a` cannot appear in one
   while disappearing from the other. The CLI's `wiki_proposal_receipts.rs`,
   `closeout_records.rs`, `closeout_report.rs`, and `closeout_render.rs` modules
-  now own their bounded responsibilities. The closeout record adapter covers artifact discovery, task
-  freshness checks, append-only path allocation, review/receipt persistence,
-  and idempotent RETURN_PACKAGE section rendering. Its accepted-truth scan fails
-  closed on corrupt review JSON rather than silently allowing
-  evidence-incomplete retirement. The closeout report adapter owns report
+  now own their bounded responsibilities. The closeout record adapter covers
+  artifact discovery, task freshness checks, append-only path allocation,
+  review/receipt persistence, and idempotent RETURN_PACKAGE section rendering.
+  Its accepted-truth scan fails closed on corrupt review JSON rather than
+  silently allowing evidence-incomplete retirement. The closeout report adapter owns report
   assembly, output-directory allocation, and the five initial artifact writes.
   It allocates the default output directory only after source reads succeed and
   preflights every target before writing, so an explicit-output collision cannot
   leave a partial closeout package. The pure closeout renderer owns the plan,
   RETURN_PACKAGE, and commercial-review Markdown contracts plus their bounded
-  list limits and ordering helpers. The main Offdesk CLI module retains command
-  routing, human output, and evidence computation. The next staged extraction
-  is implementation-packet evidence coverage calculation.
+  list limits and ordering helpers. Implementation-packet goal status, detail
+  acceptance, and work-slice receipt trust now live as typed policy in
+  `src/offdesk/workflow/implementation_packet_coverage.rs`; the CLI retains
+  packet and receipt discovery, evidence-record assembly, rendering, and human
+  output. The next staged extraction is the remaining implementation-packet
+  coverage record construction.
 - The 2026-06-26 refactor baseline is captured in
   `docs/refactor-baseline-20260626.md`. The mutation-freeze has been lifted by
   product decision to widen the Telegram operator surface, but new remote
@@ -520,11 +523,12 @@ direction is defined in `docs/project-direction.md`.
 
 ## Next Work Candidates
 
-0. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~15.7k
+0. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~15.6k
    lines). Value parsing and the first typed decision, adaptive-wiki, and
-   closeout receipt workflows are separated. Move implementation-packet
-   evidence coverage and the remaining record construction through typed
-   boundaries while keeping artifact I/O in CLI adapters.
+   closeout receipt workflows are separated. Implementation-packet goal,
+   detail, and work-slice trust policy is also separated. Move the remaining
+   coverage record construction through typed boundaries while keeping packet
+   and receipt I/O in CLI adapters.
 1. Add the deferred actionable TUI attention panel using the existing shared
    operator-state and next-safe-action contracts.
 2. Apply the deferred council verdicts with the new `wiki edit --kind

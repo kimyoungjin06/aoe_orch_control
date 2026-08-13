@@ -33,7 +33,8 @@ use super::project_audit::{
     audit_recommendations_for_project, AuditRecommendation, DocumentationAuditProfile,
 };
 use crate::offdesk::{
-    assess_offdesk_mode, build_graph_export_files, build_usage_records_with_policy,
+    assess_implementation_packet_detail, assess_implementation_packet_goal, assess_offdesk_mode,
+    assess_work_slice_receipt, build_graph_export_files, build_usage_records_with_policy,
     default_capability_registry, implementation_packet_from_path,
     implementation_packet_record_from_path, latest_implementation_packet_for_project,
     launch_background_command, launch_background_run, normalize_decision_choice,
@@ -66,18 +67,19 @@ use crate::offdesk::{
     CloseoutVerdict, DecisionLedger, DecisionMateriality, DecisionOption, DecisionRaisedBy,
     DecisionReceiptInput, DecisionRecord, DecisionRecordView, DecisionRequest,
     DecisionResolutionInput, DecisionRoute, DecisionRouteTarget, DecisionStatus, DecisionTraceRef,
-    DecisionValidationIssue, ExecutionBrief, ImplementationPacket, ImplementationPacketSummary,
-    JudgmentEvaluator, JudgmentRoute, LatestImplementationPacket, LearningScanReport,
-    LocalCommandLaunchSpec, MutationRestoreOperation, MutationRestorePlan, MutationSnapshot,
-    MutationSnapshotStore, MutationSnapshotVerification, OffdeskModeAssessment,
+    DecisionValidationIssue, ExecutionBrief, ImplementationPacket,
+    ImplementationPacketCoverageStatus, ImplementationPacketExecutionEvidence,
+    ImplementationPacketSummary, JudgmentEvaluator, JudgmentRoute, LatestImplementationPacket,
+    LearningScanReport, LocalCommandLaunchSpec, MutationRestoreOperation, MutationRestorePlan,
+    MutationSnapshot, MutationSnapshotStore, MutationSnapshotVerification, OffdeskModeAssessment,
     OffdeskModeLifecycle, OffdeskNextSafeAction, OffdeskPendingApprovalView, OffdeskTask,
     OffdeskTaskInput, OffdeskTaskLifecycleReport, OffdeskTaskStatus, OffdeskTaskStore,
     OffdeskTaskView, OffdeskTickOptions, OperatorPauseState, OperatorPauseStore,
     PendingActionApproval, ProviderCapacityState, ProviderCapacityStore,
     ProviderFallbackRecommendation, ResumeStatus, RiskLevel, SchedulerGate, SchedulerGateRequest,
     SchedulerGateStatus, TaskResumeState, TaskResumeStore, WorkSliceExecutionReceipt,
-    WorkSliceExecutionStatus, WorkSliceReceiptProducerRole, WorkSliceVerificationStatus,
-    DECISION_RECORD_SCHEMA, JUDGMENT_ROUTE_SCHEMA, WORK_SLICE_EXECUTION_RECEIPTS_FILE,
+    WorkSliceExecutionStatus, DECISION_RECORD_SCHEMA, JUDGMENT_ROUTE_SCHEMA,
+    WORK_SLICE_EXECUTION_RECEIPTS_FILE,
 };
 use crate::session::{get_profile_dir, resolved_app_dir_path, DEFAULT_PROFILE};
 
@@ -11668,14 +11670,20 @@ fn closeout_implementation_packet_coverage(
 
     let mut coverage = CloseoutImplementationPacketCoverage::default();
     for aggregate in packets.into_values() {
-        let (goal_status, reason) = closeout_packet_goal_status(&aggregate);
-        let details = closeout_packet_detail_coverage(&aggregate, goal_status);
-        match goal_status {
-            "completed" => coverage.completed += 1,
-            "deferred" => coverage.deferred += 1,
-            "missing" => coverage.missing += 1,
-            "drifted" => coverage.drifted += 1,
-            _ => {}
+        let goal_coverage = assess_implementation_packet_goal(
+            &aggregate.summary,
+            ImplementationPacketExecutionEvidence {
+                has_completed: aggregate.has_completed_evidence,
+                has_active: aggregate.has_active_evidence,
+                has_failed: aggregate.has_failed_evidence,
+            },
+        );
+        let details = closeout_packet_detail_coverage(&aggregate, goal_coverage.status);
+        match goal_coverage.status {
+            ImplementationPacketCoverageStatus::Completed => coverage.completed += 1,
+            ImplementationPacketCoverageStatus::Deferred => coverage.deferred += 1,
+            ImplementationPacketCoverageStatus::Missing => coverage.missing += 1,
+            ImplementationPacketCoverageStatus::Drifted => coverage.drifted += 1,
         }
         closeout_count_packet_details(&mut coverage, &details.work_slices);
         closeout_count_packet_details(&mut coverage, &details.validation_items);
@@ -11690,8 +11698,8 @@ fn closeout_implementation_packet_coverage(
                 success_state: summary.success_state,
                 outcome: summary.outcome,
                 safe_to_delegate: summary.safe_to_delegate,
-                goal_status,
-                reason,
+                goal_status: goal_coverage.status.as_str(),
+                reason: goal_coverage.reason.to_string(),
                 evidence_refs: aggregate.evidence_refs.into_iter().take(20).collect(),
                 required_revisions: summary.required_revisions,
                 drift_signals: summary.drift_signals,
@@ -11773,7 +11781,7 @@ fn closeout_packet_add_match_ref(
 
 fn closeout_packet_detail_coverage(
     aggregate: &CloseoutPacketAggregate,
-    packet_status: &'static str,
+    packet_status: ImplementationPacketCoverageStatus,
 ) -> CloseoutPacketDetailGroups {
     let packet_path = aggregate.summary.packet_path.trim();
     if packet_path.is_empty() {
@@ -11857,7 +11865,7 @@ fn closeout_packet_detail_coverage(
 
 fn closeout_work_slice_details(
     work_slices: &[String],
-    packet_status: &'static str,
+    packet_status: ImplementationPacketCoverageStatus,
     receipts: &[LoadedWorkSliceExecutionReceipt],
     aggregate: &CloseoutPacketAggregate,
 ) -> Vec<CloseoutPacketCoverageDetail> {
@@ -11871,7 +11879,7 @@ fn closeout_work_slice_details(
             CloseoutPacketCoverageDetail {
                 category: "work_slice",
                 label: crate::offdesk::operator_safe_text(slice),
-                status: packet_status,
+                status: packet_status.as_str(),
                 reason: "Work-slice execution evidence is not itemized yet; this item inherits the packet-level closeout status and needs manual review.".to_string(),
                 evidence_refs: Vec::new(),
                 receipt_source: None,
@@ -12013,20 +12021,18 @@ fn closeout_work_slice_detail_from_receipt(
     aggregate: &CloseoutPacketAggregate,
 ) -> CloseoutPacketCoverageDetail {
     let receipt = &loaded.receipt;
-    let role = receipt.resolved_producer_role();
+    let coverage = assess_work_slice_receipt(receipt);
+    let role = coverage.role;
     let reported_status = receipt.status.as_str();
-    let status = closeout_effective_work_slice_status(receipt, role);
-    let trust_tier = closeout_receipt_trust_tier(role, receipt.verification_status);
+    let status = coverage.effective_status.as_str();
+    let trust_tier = coverage.trust_tier.as_str();
     let summary = crate::offdesk::operator_safe_text(&receipt.summary);
     let mut reason = if summary.is_empty() {
-        format!(
-            "{} reports `{reported_status}`.",
-            closeout_receipt_role_label(role)
-        )
+        format!("{} reports `{reported_status}`.", coverage.role_label())
     } else {
         format!(
             "{} reports `{reported_status}`: {summary}",
-            closeout_receipt_role_label(role)
+            coverage.role_label()
         )
     };
     if status != reported_status {
@@ -12098,60 +12104,10 @@ fn closeout_work_slice_detail_from_receipt(
     }
 }
 
-fn closeout_effective_work_slice_status(
-    receipt: &WorkSliceExecutionReceipt,
-    role: WorkSliceReceiptProducerRole,
-) -> &'static str {
-    let reported_status = receipt.status.as_str();
-    if reported_status != "completed" {
-        return reported_status;
-    }
-    match role {
-        WorkSliceReceiptProducerRole::DeterministicVerification
-        | WorkSliceReceiptProducerRole::ReviewJudgment => "completed",
-        WorkSliceReceiptProducerRole::CloseoutCollector
-            if receipt.verification_status.is_independently_verified() =>
-        {
-            "completed"
-        }
-        _ => "deferred",
-    }
-}
-
-fn closeout_receipt_trust_tier(
-    role: WorkSliceReceiptProducerRole,
-    verification_status: WorkSliceVerificationStatus,
-) -> &'static str {
-    match role {
-        WorkSliceReceiptProducerRole::RunnerObservation => "runtime_observation",
-        WorkSliceReceiptProducerRole::WorkerClaim => "worker_claim",
-        WorkSliceReceiptProducerRole::DeterministicVerification => "source_verified",
-        WorkSliceReceiptProducerRole::ReviewJudgment => "review_judgment",
-        WorkSliceReceiptProducerRole::CloseoutCollector
-            if verification_status.is_independently_verified() =>
-        {
-            "closeout_verified"
-        }
-        WorkSliceReceiptProducerRole::CloseoutCollector => "closeout_observation",
-        WorkSliceReceiptProducerRole::LegacyReceipt => "legacy_receipt",
-    }
-}
-
-fn closeout_receipt_role_label(role: WorkSliceReceiptProducerRole) -> &'static str {
-    match role {
-        WorkSliceReceiptProducerRole::RunnerObservation => "Runner observation",
-        WorkSliceReceiptProducerRole::WorkerClaim => "Worker claim",
-        WorkSliceReceiptProducerRole::CloseoutCollector => "Closeout observation",
-        WorkSliceReceiptProducerRole::DeterministicVerification => "Deterministic verification",
-        WorkSliceReceiptProducerRole::ReviewJudgment => "Review judgment",
-        WorkSliceReceiptProducerRole::LegacyReceipt => "Legacy receipt",
-    }
-}
-
 fn closeout_validation_item_details(
     packet: &ImplementationPacket,
     aggregate: &CloseoutPacketAggregate,
-    packet_status: &'static str,
+    packet_status: ImplementationPacketCoverageStatus,
 ) -> Vec<CloseoutPacketCoverageDetail> {
     let mut items = Vec::new();
     closeout_push_validation_details(
@@ -12190,17 +12146,17 @@ fn closeout_push_validation_details(
     category: &'static str,
     labels: &[String],
     aggregate: &CloseoutPacketAggregate,
-    packet_status: &'static str,
+    packet_status: ImplementationPacketCoverageStatus,
 ) {
     for label in labels {
         let evidence_refs = closeout_packet_matching_refs(aggregate, label);
-        let (status, reason) =
-            closeout_detail_status_from_match(packet_status, !evidence_refs.is_empty());
+        let detail_coverage =
+            assess_implementation_packet_detail(packet_status, !evidence_refs.is_empty());
         items.push(CloseoutPacketCoverageDetail {
             category,
             label: crate::offdesk::operator_safe_text(label),
-            status,
-            reason,
+            status: detail_coverage.status.as_str(),
+            reason: detail_coverage.reason.to_string(),
             evidence_refs,
             receipt_source: None,
             receipt_role: None,
@@ -12225,19 +12181,19 @@ fn closeout_push_validation_details(
 fn closeout_expected_artifact_details(
     expected_artifacts: &[String],
     aggregate: &CloseoutPacketAggregate,
-    packet_status: &'static str,
+    packet_status: ImplementationPacketCoverageStatus,
 ) -> Vec<CloseoutPacketCoverageDetail> {
     expected_artifacts
         .iter()
         .map(|artifact| {
             let evidence_refs = closeout_packet_matching_refs(aggregate, artifact);
-            let (status, reason) =
-                closeout_detail_status_from_match(packet_status, !evidence_refs.is_empty());
+            let detail_coverage =
+                assess_implementation_packet_detail(packet_status, !evidence_refs.is_empty());
             CloseoutPacketCoverageDetail {
                 category: "expected_artifact",
                 label: crate::offdesk::operator_safe_text(artifact),
-                status,
-                reason,
+                status: detail_coverage.status.as_str(),
+                reason: detail_coverage.reason.to_string(),
                 evidence_refs,
                 receipt_source: None,
                 receipt_role: None,
@@ -12260,40 +12216,17 @@ fn closeout_expected_artifact_details(
         .collect()
 }
 
-fn closeout_detail_status_from_match(
-    packet_status: &'static str,
-    has_match: bool,
-) -> (&'static str, String) {
-    if matches!(packet_status, "deferred" | "missing" | "drifted") {
-        return (
-            packet_status,
-            "Packet-level status prevents item-level acceptance.".to_string(),
-        );
-    }
-    if has_match {
-        (
-            "completed",
-            "Closeout evidence matched this packet item.".to_string(),
-        )
-    } else {
-        (
-            "missing",
-            "No closeout artifact or evidence ref matched this packet item.".to_string(),
-        )
-    }
-}
-
 fn closeout_summary_only_details(
     category: &'static str,
     count: usize,
-    packet_status: &'static str,
+    packet_status: ImplementationPacketCoverageStatus,
     aggregate: &CloseoutPacketAggregate,
 ) -> Vec<CloseoutPacketCoverageDetail> {
     (0..count)
         .map(|index| CloseoutPacketCoverageDetail {
             category,
             label: format!("{category}_{}", index + 1),
-            status: packet_status,
+            status: packet_status.as_str(),
             reason: "Only the packet summary was available, so item text could not be inspected."
                 .to_string(),
             evidence_refs: Vec::new(),
@@ -12391,44 +12324,6 @@ fn closeout_path_tail(path: &str) -> String {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or(path),
-    )
-}
-
-fn closeout_packet_goal_status(aggregate: &CloseoutPacketAggregate) -> (&'static str, String) {
-    let summary = &aggregate.summary;
-    if !summary.safe_to_delegate
-        || !summary.outcome.eq_ignore_ascii_case("pass")
-        || !summary.required_revisions.is_empty()
-        || !summary.drift_signals.is_empty()
-        || !summary.missing_decisions.is_empty()
-    {
-        return (
-            "drifted",
-            "Implementation packet alignment was not clean; revise the packet or resolve listed drift before accepting the run.".to_string(),
-        );
-    }
-    if aggregate.has_failed_evidence {
-        return (
-            "drifted",
-            "Execution evidence shows failed, cancelled, stale, or reconstructable work for this packet.".to_string(),
-        );
-    }
-    if aggregate.has_active_evidence {
-        return (
-            "deferred",
-            "Execution is still queued, running, pending approval, or waiting for resume."
-                .to_string(),
-        );
-    }
-    if aggregate.has_completed_evidence {
-        return (
-            "completed",
-            "Execution evidence exists for this packet; acceptance still depends on closeout review and first-read verification.".to_string(),
-        );
-    }
-    (
-        "missing",
-        "The packet is linked to closeout, but no task or background completion evidence was found.".to_string(),
     )
 }
 

@@ -3,6 +3,7 @@
 mod closeout_receipt;
 mod closeout_records;
 mod decision;
+mod implementation_packet_coverage;
 mod wiki_proposal_receipt;
 
 pub use closeout_receipt::{
@@ -22,6 +23,12 @@ pub use closeout_records::{
 pub use decision::{
     normalize_decision_choice, receipt_decision_record, resolve_decision_record,
     DecisionReceiptInput, DecisionResolutionInput,
+};
+pub use implementation_packet_coverage::{
+    assess_implementation_packet_detail, assess_implementation_packet_goal,
+    assess_work_slice_receipt, ImplementationPacketCoverageStatus,
+    ImplementationPacketDetailCoverage, ImplementationPacketExecutionEvidence,
+    ImplementationPacketGoalCoverage, WorkSliceReceiptCoverage, WorkSliceReceiptTrustTier,
 };
 pub use wiki_proposal_receipt::{
     build_adaptive_wiki_proposal_receipt, AdaptiveWikiProposalReceipt,
