@@ -203,8 +203,11 @@ direction is defined in `docs/project-direction.md`.
   registration summaries, record construction, and base authorization denials
   now live in `src/offdesk/workflow/plan_registration.rs`; source reads,
   hashing, copy/path allocation, and persistence remain in the CLI adapter.
-  The next staged extraction is plan registry read-model and review-state
-  construction while directory traversal and JSON loading stay in the CLI.
+  Plan registry list/detail read models and review-state calculation now live
+  in `src/offdesk/workflow/plan_registry.rs`; directory traversal, JSON
+  loading, and path resolution remain in the CLI adapter. The next staged
+  extraction is a bounded CLI plan-registry storage adapter for those remaining
+  filesystem responsibilities without moving policy back into the CLI.
 - The 2026-06-26 refactor baseline is captured in
   `docs/refactor-baseline-20260626.md`. The mutation-freeze has been lifted by
   product decision to widen the Telegram operator surface, but new remote
@@ -536,16 +539,17 @@ direction is defined in `docs/project-direction.md`.
 
 ## Next Work Candidates
 
-0. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~15.0k
+0. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~14.9k
    lines). Value parsing and the first typed decision, adaptive-wiki, and
    closeout receipt workflows are separated. Implementation-packet coverage
    policy and record construction are separated, as are plan-review validation
    and record construction. Approved-review selection and launch-preparation
    packet construction are also separated. Plan-registration validation and
-   record construction now share the same typed boundary. Next move plan
-   registry read models and review-state calculation into a typed workflow
-   while keeping directory traversal, JSON loading, and path resolution in the
-   CLI adapter.
+   record construction now share the same typed boundary. Plan registry
+   list/detail read models and review-state calculation are also separated.
+   Next move registry directory traversal, JSON loading, and path resolution
+   into a bounded CLI storage adapter while retaining policy in the workflow
+   layer.
 1. Add the deferred actionable TUI attention panel using the existing shared
    operator-state and next-safe-action contracts.
 2. Apply the deferred council verdicts with the new `wiki edit --kind

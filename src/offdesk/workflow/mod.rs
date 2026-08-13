@@ -6,6 +6,7 @@ mod decision;
 mod implementation_packet_coverage;
 mod plan_launch_prep;
 mod plan_registration;
+mod plan_registry;
 mod plan_review;
 mod wiki_proposal_receipt;
 
@@ -46,6 +47,11 @@ pub use plan_registration::{
     validate_offdesk_plan_input, OffdeskPlanInputSummary, OffdeskPlanRegistration,
     OffdeskPlanRegistrationArtifacts, OffdeskPlanRegistrationBuildInput,
     OFFDESK_PLAN_REGISTRATION_SCHEMA, OFFDESK_PLAN_REQUIRED_DENIALS,
+};
+pub use plan_registry::{
+    build_offdesk_plan_registry_detail, build_offdesk_plan_registry_item,
+    build_offdesk_plan_review_state, OffdeskPlanRegistryDetail, OffdeskPlanRegistryItem,
+    OffdeskPlanReviewState,
 };
 pub use plan_review::{
     build_offdesk_plan_review_record, offdesk_plan_review_denials,
