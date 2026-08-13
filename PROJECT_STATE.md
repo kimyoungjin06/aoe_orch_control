@@ -1,6 +1,6 @@
 # Project State
 
-Updated: 2026-08-12
+Updated: 2026-08-13
 
 This is the small current surface for Forager development work. It is separate
 from the public product README and from the mdBook user guides.
@@ -423,6 +423,21 @@ out of product-facing docs. The product direction is defined in
   queued and pane reacted from application-level work acceptance, and direct
   dry-run previews never send tmux input. Health exposes separate
   `session_message` readiness for the local model and tmux.
+  Live verification on 2026-08-13 confirmed the explicit-target path end to
+  end: a user-originated Telegram message mentioning `forager` selected the
+  one live Forager Codex session, committed an authorized `session_message`
+  effect in the `agent_session_input` authority domain, produced a reacting
+  pane, completed the update journal row, and delivered the Telegram receipt
+  with no pending outbox entry. The production adapter also passed the
+  complementary no-project dry-run against five live Codex candidates: the
+  model's proposed target was replaced by `session_target_ambiguous`, the
+  mobile response named the candidates and asked for clarification, and the
+  resulting effect remained unauthorized `none` with no tmux dispatch. A
+  user-originated live replay then confirmed the same network inbound boundary
+  while the chat still held a sticky `forager` focus: sticky context did not
+  narrow the target, the bot asked the operator to choose among five live Codex
+  sessions, the completed journal row retained an unauthorized `none` effect,
+  the reply was delivered, and the outbox had no pending entry.
 
 - `forager go [tool] [-- args]` is the zero-friction wrapper for direct agent
   work (`src/cli/go.rs`, Rust registry loader in
