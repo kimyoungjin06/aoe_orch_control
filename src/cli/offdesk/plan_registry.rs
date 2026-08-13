@@ -5,6 +5,8 @@
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -12,9 +14,64 @@ use std::path::{Path, PathBuf};
 use super::{read_only_profile_dir, write_new_file};
 use crate::offdesk::{
     build_offdesk_plan_registry_detail, build_offdesk_plan_registry_item,
-    OffdeskPlanLaunchPrepPacket, OffdeskPlanRegistration, OffdeskPlanRegistryDetail,
-    OffdeskPlanRegistryItem, OffdeskPlanReviewRecord,
+    OffdeskPlanLaunchPrepPacket, OffdeskPlanRegistration, OffdeskPlanRegistrationArtifacts,
+    OffdeskPlanRegistryDetail, OffdeskPlanRegistryItem, OffdeskPlanReviewRecord,
 };
+
+pub(super) struct OffdeskPlanSource {
+    pub value: Value,
+    pub source_path: String,
+    pub source_sha256: String,
+    bytes: Vec<u8>,
+}
+
+pub(super) fn read_offdesk_plan_source(input: &Path) -> Result<OffdeskPlanSource> {
+    let bytes = fs::read(input)
+        .with_context(|| format!("read Offdesk plan artifact {}", input.display()))?;
+    let value = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parse Offdesk plan artifact {}", input.display()))?;
+    let source_path = fs::canonicalize(input)
+        .unwrap_or_else(|_| input.to_path_buf())
+        .display()
+        .to_string();
+    let source_sha256 = {
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        format!("{:x}", hasher.finalize())
+    };
+    Ok(OffdeskPlanSource {
+        value,
+        source_path,
+        source_sha256,
+        bytes,
+    })
+}
+
+pub(super) fn persist_offdesk_plan_source_copy(
+    profile_dir: Option<&Path>,
+    registered_at: DateTime<Utc>,
+    artifact_kind: &str,
+    source: &OffdeskPlanSource,
+) -> Result<OffdeskPlanRegistrationArtifacts> {
+    let Some(profile_dir) = profile_dir else {
+        return Ok(OffdeskPlanRegistrationArtifacts {
+            registry_dir: None,
+            registration_json: None,
+            copied_source_json: None,
+        });
+    };
+
+    let registry_dir =
+        allocate_offdesk_plan_registry_dir(profile_dir, registered_at, artifact_kind)?;
+    let copied_source = registry_dir.join("source.json");
+    write_new_file(&copied_source, &source.bytes)
+        .with_context(|| format!("write Offdesk plan source copy {}", copied_source.display()))?;
+    Ok(OffdeskPlanRegistrationArtifacts {
+        registry_dir: Some(registry_dir.display().to_string()),
+        registration_json: Some(registry_dir.join("registration.json").display().to_string()),
+        copied_source_json: Some(copied_source.display().to_string()),
+    })
+}
 
 pub(super) fn allocate_offdesk_plan_registry_dir(
     profile_dir: &Path,
@@ -356,6 +413,75 @@ mod tests {
             &[],
             &[],
         )
+    }
+
+    #[test]
+    fn source_ingestion_observes_canonical_path_hash_and_json() {
+        let temp = tempdir().expect("temp dir");
+        let source_path = temp.path().join("plan.json");
+        fs::write(&source_path, b"{}").expect("write source");
+
+        let source = read_offdesk_plan_source(&source_path).expect("read plan source");
+
+        assert_eq!(source.value, json!({}));
+        assert_eq!(
+            source.source_path,
+            fs::canonicalize(&source_path)
+                .expect("canonical source")
+                .display()
+                .to_string()
+        );
+        assert_eq!(
+            source.source_sha256,
+            "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+        );
+
+        fs::write(&source_path, b"{").expect("write invalid source");
+        let error = read_offdesk_plan_source(&source_path)
+            .err()
+            .expect("invalid JSON must fail");
+        assert!(error.to_string().contains("parse Offdesk plan artifact"));
+    }
+
+    #[test]
+    fn source_copy_is_write_free_for_dry_run_and_preserves_exact_bytes() {
+        let temp = tempdir().expect("temp dir");
+        let source_path = temp.path().join("plan.json");
+        let source_bytes = b"{\n  \"schema\": \"offdesk_multiturn_plan.v1\"\n}\n";
+        fs::write(&source_path, source_bytes).expect("write source");
+        let source = read_offdesk_plan_source(&source_path).expect("read source");
+        let registered_at: DateTime<Utc> = "2026-08-13T01:02:03Z".parse().expect("valid timestamp");
+
+        let dry_run = persist_offdesk_plan_source_copy(
+            None,
+            registered_at,
+            "offdesk_multiturn_plan",
+            &source,
+        )
+        .expect("dry-run source persistence");
+        assert!(dry_run.registry_dir.is_none());
+        assert!(!temp.path().join("offdesk_plans").exists());
+
+        let stored = persist_offdesk_plan_source_copy(
+            Some(temp.path()),
+            registered_at,
+            "offdesk_multiturn_plan",
+            &source,
+        )
+        .expect("persist source copy");
+        let copied_source = stored
+            .copied_source_json
+            .as_deref()
+            .expect("copied source path");
+        assert_eq!(
+            fs::read(copied_source).expect("read source copy"),
+            source_bytes
+        );
+        assert!(stored
+            .registration_json
+            .as_deref()
+            .expect("registration path")
+            .ends_with("/registration.json"));
     }
 
     #[test]

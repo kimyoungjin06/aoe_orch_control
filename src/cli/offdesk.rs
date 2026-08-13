@@ -16,11 +16,12 @@ use closeout_render::{
 use closeout_report::build_closeout_report;
 use parsing::*;
 use plan_registry::{
-    allocate_offdesk_plan_launch_prep_path, allocate_offdesk_plan_registry_dir,
-    allocate_offdesk_plan_review_record_path, find_offdesk_plan_registry_item,
-    load_offdesk_plan_registry_detail, load_offdesk_plan_registry_items, load_offdesk_plan_reviews,
-    offdesk_plan_registry_dir, write_offdesk_plan_launch_prep_packet,
-    write_offdesk_plan_registration, write_offdesk_plan_review_record,
+    allocate_offdesk_plan_launch_prep_path, allocate_offdesk_plan_review_record_path,
+    find_offdesk_plan_registry_item, load_offdesk_plan_registry_detail,
+    load_offdesk_plan_registry_items, load_offdesk_plan_reviews, offdesk_plan_registry_dir,
+    persist_offdesk_plan_source_copy, read_offdesk_plan_source,
+    write_offdesk_plan_launch_prep_packet, write_offdesk_plan_registration,
+    write_offdesk_plan_review_record,
 };
 use wiki_proposal_receipts::wiki_proposal_receipt;
 
@@ -84,12 +85,12 @@ use crate::offdesk::{
     MutationRestoreOperation, MutationRestorePlan, MutationSnapshot, MutationSnapshotStore,
     MutationSnapshotVerification, OffdeskModeAssessment, OffdeskModeLifecycle,
     OffdeskNextSafeAction, OffdeskPendingApprovalView, OffdeskPlanLaunchPrepBuildInput,
-    OffdeskPlanLaunchPrepPacket, OffdeskPlanRegistration, OffdeskPlanRegistrationArtifacts,
-    OffdeskPlanRegistrationBuildInput, OffdeskPlanRegistryDetail, OffdeskPlanRegistryItem,
-    OffdeskPlanReviewBuildInput, OffdeskPlanReviewDecision, OffdeskPlanReviewRecord,
-    OffdeskPlanReviewState, OffdeskTask, OffdeskTaskInput, OffdeskTaskLifecycleReport,
-    OffdeskTaskStatus, OffdeskTaskStore, OffdeskTaskView, OffdeskTickOptions, OperatorPauseState,
-    OperatorPauseStore, PendingActionApproval, ProviderCapacityState, ProviderCapacityStore,
+    OffdeskPlanLaunchPrepPacket, OffdeskPlanRegistration, OffdeskPlanRegistrationBuildInput,
+    OffdeskPlanRegistryDetail, OffdeskPlanRegistryItem, OffdeskPlanReviewBuildInput,
+    OffdeskPlanReviewDecision, OffdeskPlanReviewRecord, OffdeskPlanReviewState, OffdeskTask,
+    OffdeskTaskInput, OffdeskTaskLifecycleReport, OffdeskTaskStatus, OffdeskTaskStore,
+    OffdeskTaskView, OffdeskTickOptions, OperatorPauseState, OperatorPauseStore,
+    PendingActionApproval, ProviderCapacityState, ProviderCapacityStore,
     ProviderFallbackRecommendation, ResumeStatus, RiskLevel, SchedulerGate, SchedulerGateRequest,
     SchedulerGateStatus, TaskResumeState, TaskResumeStore, WorkSliceExecutionReceipt,
     WorkSliceExecutionStatus, DECISION_RECORD_SCHEMA, JUDGMENT_ROUTE_SCHEMA,
@@ -8165,47 +8166,27 @@ fn build_offdesk_plan_registration(
     profile: &str,
     args: &PlanArgs,
 ) -> Result<OffdeskPlanRegistration> {
-    let source_bytes = fs::read(&args.input)
-        .with_context(|| format!("read Offdesk plan artifact {}", args.input.display()))?;
-    let source_value: Value = serde_json::from_slice(&source_bytes)
-        .with_context(|| format!("parse Offdesk plan artifact {}", args.input.display()))?;
-    let summary = crate::offdesk::validate_offdesk_plan_input(&source_value)?;
-    let source_path = fs::canonicalize(&args.input).unwrap_or_else(|_| args.input.clone());
+    let source = read_offdesk_plan_source(&args.input)?;
+    let summary = crate::offdesk::validate_offdesk_plan_input(&source.value)?;
     let registered_at = Utc::now();
-    let source_sha256 = {
-        let mut hasher = Sha256::new();
-        hasher.update(&source_bytes);
-        format!("{:x}", hasher.finalize())
-    };
-
-    let artifacts = if args.dry_run {
-        OffdeskPlanRegistrationArtifacts {
-            registry_dir: None,
-            registration_json: None,
-            copied_source_json: None,
-        }
+    let profile_dir = if args.dry_run {
+        None
     } else {
-        let profile_dir = get_profile_dir(profile)?;
-        let registry_dir =
-            allocate_offdesk_plan_registry_dir(&profile_dir, registered_at, summary.artifact_kind)?;
-        let copied_source = registry_dir.join("source.json");
-        write_new_file(&copied_source, &source_bytes).with_context(|| {
-            format!("write Offdesk plan source copy {}", copied_source.display())
-        })?;
-        OffdeskPlanRegistrationArtifacts {
-            registry_dir: Some(registry_dir.display().to_string()),
-            registration_json: Some(registry_dir.join("registration.json").display().to_string()),
-            copied_source_json: Some(copied_source.display().to_string()),
-        }
+        Some(get_profile_dir(profile)?)
     };
+    let artifacts = persist_offdesk_plan_source_copy(
+        profile_dir.as_deref(),
+        registered_at,
+        summary.artifact_kind,
+        &source,
+    )?;
 
-    let source_path = source_path.display().to_string();
     let registration =
         crate::offdesk::build_offdesk_plan_registration(OffdeskPlanRegistrationBuildInput {
             registered_at,
             forager_profile: profile,
-            source_path: &source_path,
-            source_sha256: &source_sha256,
+            source_path: &source.source_path,
+            source_sha256: &source.source_sha256,
             summary,
             project_key: args.project_key.as_deref(),
             request_id: args.request_id.as_deref(),

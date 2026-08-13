@@ -1,6 +1,6 @@
 # Project State
 
-Updated: 2026-08-13
+Updated: 2026-08-14
 
 This is the small current surface for Forager development work. It is separate
 from the public product README and from the mdBook user guides.
@@ -204,15 +204,18 @@ direction is defined in `docs/project-direction.md`.
   review, and launch-prep JSON persistence.
   Plan-registration schema validation, ordered fail-closed findings,
   registration summaries, record construction, and base authorization denials
-  now live in `src/offdesk/workflow/plan_registration.rs`; source reads,
-  hashing, copy/path allocation, and persistence remain in the CLI adapter.
+  now live in `src/offdesk/workflow/plan_registration.rs`. Source reading,
+  fail-closed JSON parsing, canonical path observation, SHA-256 calculation,
+  and exact-byte source-copy persistence now live in
+  `src/cli/offdesk/plan_registry.rs`.
   Plan registry list/detail read models and review-state calculation now live
   in `src/offdesk/workflow/plan_registry.rs`; directory traversal, fail-closed
   JSON loading, history ordering, and plan-reference path resolution now live
   in `src/cli/offdesk/plan_registry.rs`, together with append-only allocation
-  and completed-record persistence. The next staged extraction is plan source
-  reading, canonicalization, hashing, and source-copy persistence into that CLI
-  adapter without moving validation or record policy back into the CLI.
+  and completed-record persistence. The next staged extraction is the remaining
+  registration/review/launch-prep command construction from the main Offdesk
+  CLI into a bounded plan command adapter, while retaining validation and record
+  policy in the workflow layer and storage I/O in the registry adapter.
 - The 2026-06-26 refactor baseline is captured in
   `docs/refactor-baseline-20260626.md`. The mutation-freeze has been lifted by
   product decision to widen the Telegram operator surface, but new remote
@@ -553,9 +556,10 @@ direction is defined in `docs/project-direction.md`.
    record construction now share the same typed boundary. Plan registry
    list/detail read models and review-state calculation are also separated, as
    are registry loading, append-only allocation, and completed-record
-   persistence in the CLI storage adapter. Next move plan source reading,
-   canonicalization, hashing, and source-copy persistence into that adapter
-   while retaining validation and record policy in the workflow layer.
+   persistence in the CLI storage adapter. Plan source ingestion, hashing, and
+   exact-byte copying are also separated. Next move the remaining registration,
+   review, and launch-prep command construction into a bounded plan command
+   adapter while retaining validation and record policy in the workflow layer.
 1. Add the deferred actionable TUI attention panel using the existing shared
    operator-state and next-safe-action contracts.
 2. Apply the deferred council verdicts with the new `wiki edit --kind
