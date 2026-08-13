@@ -3,16 +3,16 @@
 //! This module coordinates the registry storage adapter with typed workflow
 //! policy. It does not own validation rules or record serialization.
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use chrono::Utc;
 use uuid::Uuid;
 
+use super::plan_queries::resolve_offdesk_plan_item;
 use super::plan_registry::{
     allocate_offdesk_plan_launch_prep_path, allocate_offdesk_plan_review_record_path,
-    find_offdesk_plan_registry_item, load_offdesk_plan_registry_items, load_offdesk_plan_reviews,
-    offdesk_plan_registry_dir, persist_offdesk_plan_source_copy, read_offdesk_plan_source,
-    write_offdesk_plan_launch_prep_packet, write_offdesk_plan_registration,
-    write_offdesk_plan_review_record,
+    load_offdesk_plan_reviews, offdesk_plan_registry_dir, persist_offdesk_plan_source_copy,
+    read_offdesk_plan_source, write_offdesk_plan_launch_prep_packet,
+    write_offdesk_plan_registration, write_offdesk_plan_review_record,
 };
 use super::{PlanArgs, PlanLaunchPrepArgs, PlanReviewArgs};
 use crate::offdesk::{
@@ -63,10 +63,7 @@ pub(super) fn record_offdesk_plan_review(
     profile: &str,
     args: &PlanReviewArgs,
 ) -> Result<OffdeskPlanReviewRecord> {
-    let items = load_offdesk_plan_registry_items(profile)?;
-    let Some(item) = find_offdesk_plan_registry_item(items, &args.plan_ref) else {
-        bail!("Registered Offdesk plan not found: {}", args.plan_ref);
-    };
+    let item = resolve_offdesk_plan_item(profile, &args.plan_ref)?;
     let record = build_offdesk_plan_review_record(profile, &item, args)?;
     write_offdesk_plan_review_record(&record)?;
     Ok(record)
@@ -76,10 +73,7 @@ pub(super) fn prepare_offdesk_plan_launch(
     profile: &str,
     args: &PlanLaunchPrepArgs,
 ) -> Result<OffdeskPlanLaunchPrepPacket> {
-    let items = load_offdesk_plan_registry_items(profile)?;
-    let Some(item) = find_offdesk_plan_registry_item(items, &args.plan_ref) else {
-        bail!("Registered Offdesk plan not found: {}", args.plan_ref);
-    };
+    let item = resolve_offdesk_plan_item(profile, &args.plan_ref)?;
     let packet = build_offdesk_plan_launch_prep_packet(profile, &item, args)?;
     write_offdesk_plan_launch_prep_packet(&packet)?;
     Ok(packet)
