@@ -198,16 +198,19 @@ direction is defined in `docs/project-direction.md`.
   Approved-review selection, eligibility and source-hash validation,
   first-read assembly, and launch-preparation packet construction now live in
   `src/offdesk/workflow/plan_launch_prep.rs`. Registry lookup, record loading,
-  append-only path allocation, and persistence remain in the CLI adapter.
+  timestamp ordering, and artifact-path reference resolution now live in
+  `src/cli/offdesk/plan_registry.rs`; append-only path allocation and
+  persistence remain in the main CLI adapter.
   Plan-registration schema validation, ordered fail-closed findings,
   registration summaries, record construction, and base authorization denials
   now live in `src/offdesk/workflow/plan_registration.rs`; source reads,
   hashing, copy/path allocation, and persistence remain in the CLI adapter.
   Plan registry list/detail read models and review-state calculation now live
-  in `src/offdesk/workflow/plan_registry.rs`; directory traversal, JSON
-  loading, and path resolution remain in the CLI adapter. The next staged
-  extraction is a bounded CLI plan-registry storage adapter for those remaining
-  filesystem responsibilities without moving policy back into the CLI.
+  in `src/offdesk/workflow/plan_registry.rs`; directory traversal, fail-closed
+  JSON loading, history ordering, and plan-reference path resolution now live
+  in `src/cli/offdesk/plan_registry.rs`. The next staged extraction is
+  append-only registry path allocation and registration/review/launch-prep
+  persistence into that CLI adapter without moving policy back into the CLI.
 - The 2026-06-26 refactor baseline is captured in
   `docs/refactor-baseline-20260626.md`. The mutation-freeze has been lifted by
   product decision to widen the Telegram operator surface, but new remote
@@ -539,17 +542,17 @@ direction is defined in `docs/project-direction.md`.
 
 ## Next Work Candidates
 
-0. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~14.9k
+0. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~14.7k
    lines). Value parsing and the first typed decision, adaptive-wiki, and
    closeout receipt workflows are separated. Implementation-packet coverage
    policy and record construction are separated, as are plan-review validation
    and record construction. Approved-review selection and launch-preparation
    packet construction are also separated. Plan-registration validation and
    record construction now share the same typed boundary. Plan registry
-   list/detail read models and review-state calculation are also separated.
-   Next move registry directory traversal, JSON loading, and path resolution
-   into a bounded CLI storage adapter while retaining policy in the workflow
-   layer.
+   list/detail read models and review-state calculation are also separated, as
+   is the read-only CLI storage adapter. Next move append-only registry path
+   allocation and registration/review/launch-prep persistence into that adapter
+   while retaining policy in the workflow layer.
 1. Add the deferred actionable TUI attention panel using the existing shared
    operator-state and next-safe-action contracts.
 2. Apply the deferred council verdicts with the new `wiki edit --kind

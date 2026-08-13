@@ -4,6 +4,7 @@ mod closeout_records;
 mod closeout_render;
 mod closeout_report;
 mod parsing;
+mod plan_registry;
 mod wiki_proposal_receipts;
 
 use closeout_records::{
@@ -14,6 +15,10 @@ use closeout_render::{
 };
 use closeout_report::build_closeout_report;
 use parsing::*;
+use plan_registry::{
+    find_offdesk_plan_registry_item, load_offdesk_plan_registry_detail,
+    load_offdesk_plan_registry_items, load_offdesk_plan_reviews, offdesk_plan_registry_dir,
+};
 use wiki_proposal_receipts::wiki_proposal_receipt;
 
 use anyhow::{bail, Context, Result};
@@ -7993,7 +7998,7 @@ async fn plan_show(profile: &str, args: PlanShowArgs) -> Result<()> {
     let Some(item) = find_offdesk_plan_registry_item(items, &args.plan_ref) else {
         bail!("Registered Offdesk plan not found: {}", args.plan_ref);
     };
-    let detail = offdesk_plan_registry_detail(item)?;
+    let detail = load_offdesk_plan_registry_detail(item)?;
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&detail)?);
@@ -8124,7 +8129,7 @@ async fn remote_operator_show(profile: &str, args: RemoteOperatorShowArgs) -> Re
     let Some(item) = find_offdesk_plan_registry_item(items, &args.plan_ref) else {
         bail!("Registered Offdesk plan not found: {}", args.plan_ref);
     };
-    let detail = offdesk_plan_registry_detail(item)?;
+    let detail = load_offdesk_plan_registry_detail(item)?;
     let plan = remote_operator_plan_summary_from_detail(&detail)?;
     let reviews = detail
         .reviews
@@ -8321,140 +8326,6 @@ fn write_offdesk_plan_launch_prep_packet(packet: &OffdeskPlanLaunchPrepPacket) -
     Ok(())
 }
 
-fn load_offdesk_plan_registry_items(profile: &str) -> Result<Vec<OffdeskPlanRegistryItem>> {
-    let registry_dir = read_only_profile_dir(profile)?.join("offdesk_plans");
-    if !registry_dir.exists() {
-        return Ok(Vec::new());
-    }
-
-    let mut items = Vec::new();
-    for entry in fs::read_dir(&registry_dir)
-        .with_context(|| format!("read Offdesk plan registry {}", registry_dir.display()))?
-    {
-        let entry = entry.with_context(|| {
-            format!(
-                "read Offdesk plan registry entry {}",
-                registry_dir.display()
-            )
-        })?;
-        let file_type = entry.file_type().with_context(|| {
-            format!(
-                "read Offdesk plan registry entry type {}",
-                entry.path().display()
-            )
-        })?;
-        if !file_type.is_dir() {
-            continue;
-        }
-        let registration_path = entry.path().join("registration.json");
-        if !registration_path.exists() {
-            continue;
-        }
-        let registration_bytes = fs::read(&registration_path).with_context(|| {
-            format!(
-                "read Offdesk plan registration {}",
-                registration_path.display()
-            )
-        })?;
-        let registration: OffdeskPlanRegistration = serde_json::from_slice(&registration_bytes)
-            .with_context(|| {
-                format!(
-                    "parse Offdesk plan registration {}",
-                    registration_path.display()
-                )
-            })?;
-        let plan_id = entry.file_name().to_string_lossy().to_string();
-        let reviews = load_offdesk_plan_reviews(&entry.path())?;
-        let launch_preps = load_offdesk_plan_launch_preps(&entry.path())?;
-        items.push(crate::offdesk::build_offdesk_plan_registry_item(
-            plan_id,
-            registration_path.display().to_string(),
-            registration,
-            &reviews,
-            &launch_preps,
-        ));
-    }
-
-    Ok(items)
-}
-
-fn offdesk_plan_registry_detail(
-    item: OffdeskPlanRegistryItem,
-) -> Result<OffdeskPlanRegistryDetail> {
-    let registry_dir = offdesk_plan_registry_dir(&item)?;
-    let reviews = load_offdesk_plan_reviews(&registry_dir)?;
-    let launch_preps = load_offdesk_plan_launch_preps(&registry_dir)?;
-    Ok(crate::offdesk::build_offdesk_plan_registry_detail(
-        item,
-        reviews,
-        launch_preps,
-    ))
-}
-
-fn load_offdesk_plan_reviews(registry_dir: &Path) -> Result<Vec<OffdeskPlanReviewRecord>> {
-    let mut reviews = Vec::new();
-    if !registry_dir.exists() {
-        return Ok(reviews);
-    }
-    for entry in fs::read_dir(registry_dir)
-        .with_context(|| format!("read Offdesk plan registry {}", registry_dir.display()))?
-    {
-        let entry = entry?;
-        if !entry.file_type()?.is_file() {
-            continue;
-        }
-        let filename = entry.file_name().to_string_lossy().to_string();
-        if !filename.starts_with("plan_review_") || !filename.ends_with(".json") {
-            continue;
-        }
-        let path = entry.path();
-        let review_bytes = fs::read(&path)
-            .with_context(|| format!("read Offdesk plan review {}", path.display()))?;
-        let review: OffdeskPlanReviewRecord = serde_json::from_slice(&review_bytes)
-            .with_context(|| format!("parse Offdesk plan review {}", path.display()))?;
-        reviews.push(review);
-    }
-    reviews.sort_by_key(|review| review.reviewed_at);
-    Ok(reviews)
-}
-
-fn load_offdesk_plan_launch_preps(registry_dir: &Path) -> Result<Vec<OffdeskPlanLaunchPrepPacket>> {
-    let mut packets = Vec::new();
-    if !registry_dir.exists() {
-        return Ok(packets);
-    }
-    for entry in fs::read_dir(registry_dir)
-        .with_context(|| format!("read Offdesk plan registry {}", registry_dir.display()))?
-    {
-        let entry = entry?;
-        if !entry.file_type()?.is_file() {
-            continue;
-        }
-        let filename = entry.file_name().to_string_lossy().to_string();
-        if !filename.starts_with("launch_prep_") || !filename.ends_with(".json") {
-            continue;
-        }
-        let path = entry.path();
-        let packet_bytes = fs::read(&path)
-            .with_context(|| format!("read Offdesk plan launch-prep {}", path.display()))?;
-        let packet: OffdeskPlanLaunchPrepPacket = serde_json::from_slice(&packet_bytes)
-            .with_context(|| format!("parse Offdesk plan launch-prep {}", path.display()))?;
-        packets.push(packet);
-    }
-    packets.sort_by_key(|packet| packet.prepared_at);
-    Ok(packets)
-}
-
-fn offdesk_plan_registry_dir(item: &OffdeskPlanRegistryItem) -> Result<PathBuf> {
-    if let Some(registry_dir) = item.registration.artifacts.registry_dir.as_deref() {
-        return Ok(PathBuf::from(registry_dir));
-    }
-    Path::new(&item.registration_path)
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| anyhow::anyhow!("registered Offdesk plan is missing registry directory"))
-}
-
 fn offdesk_plan_matches_filter(item: &OffdeskPlanRegistryItem, args: &PlansArgs) -> bool {
     if let Some(project_key) = args.project_key.as_deref() {
         if item.registration.project_key.as_deref() != Some(project_key) {
@@ -8477,45 +8348,6 @@ fn offdesk_plan_matches_filter(item: &OffdeskPlanRegistryItem, args: &PlansArgs)
         }
     }
     true
-}
-
-fn find_offdesk_plan_registry_item(
-    items: Vec<OffdeskPlanRegistryItem>,
-    plan_ref: &str,
-) -> Option<OffdeskPlanRegistryItem> {
-    let normalized_ref = normalize_offdesk_plan_ref_path(plan_ref);
-    items.into_iter().find(|item| {
-        if item.plan_id == plan_ref {
-            return true;
-        }
-        if normalize_offdesk_plan_ref_path(&item.registration_path) == normalized_ref {
-            return true;
-        }
-        for path in [
-            item.registration.artifacts.registry_dir.as_deref(),
-            item.registration.artifacts.registration_json.as_deref(),
-            item.registration.artifacts.copied_source_json.as_deref(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if normalize_offdesk_plan_ref_path(path) == normalized_ref {
-                return true;
-            }
-        }
-        false
-    })
-}
-
-fn normalize_offdesk_plan_ref_path(path: &str) -> String {
-    #[cfg(target_os = "macos")]
-    {
-        path.strip_prefix("/private").unwrap_or(path).to_owned()
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        path.to_owned()
-    }
 }
 
 fn allocate_offdesk_plan_review_record_path(
