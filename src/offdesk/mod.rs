@@ -154,10 +154,12 @@ pub use task_queue::{
 };
 pub use tick_lock::{OffdeskTickLockGuard, OffdeskTickLockMetadata};
 pub use workflow::{
-    build_adaptive_wiki_proposal_receipt, build_closeout_decision_record, build_closeout_receipt,
-    build_closeout_retirement_record, build_closeout_review_record,
-    closeout_receipt_decisions_from_value, closeout_receipt_evidence_status,
-    closeout_receipt_next_safe_action, closeout_receipt_string_list, closeout_receipt_wiki_state,
+    assess_implementation_packet_detail, assess_implementation_packet_goal,
+    assess_work_slice_receipt, build_adaptive_wiki_proposal_receipt,
+    build_closeout_decision_record, build_closeout_receipt, build_closeout_retirement_record,
+    build_closeout_review_record, closeout_receipt_decisions_from_value,
+    closeout_receipt_evidence_status, closeout_receipt_next_safe_action,
+    closeout_receipt_string_list, closeout_receipt_wiki_state,
     closeout_retention_status_after_preserve_in_place, normalize_decision_choice,
     receipt_decision_record, resolve_decision_record, AdaptiveWikiProposalReceipt,
     AdaptiveWikiProposalReceiptCheck, AdaptiveWikiProposalReceiptInput,
@@ -167,5 +169,7 @@ pub use workflow::{
     CloseoutReceiptDecision, CloseoutReceiptTaskRef, CloseoutResolvedDecision,
     CloseoutRetirementRecord, CloseoutRetirementRecordBuildInput, CloseoutReviewArtifactPaths,
     CloseoutReviewRecord, CloseoutReviewRecordBuildInput, CloseoutVerdict, DecisionReceiptInput,
-    DecisionResolutionInput,
+    DecisionResolutionInput, ImplementationPacketCoverageStatus,
+    ImplementationPacketDetailCoverage, ImplementationPacketExecutionEvidence,
+    ImplementationPacketGoalCoverage, WorkSliceReceiptCoverage, WorkSliceReceiptTrustTier,
 };
