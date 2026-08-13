@@ -26,9 +26,12 @@ pub use decision::{
 };
 pub use implementation_packet_coverage::{
     assess_implementation_packet_detail, assess_implementation_packet_goal,
-    assess_work_slice_receipt, ImplementationPacketCoverageStatus,
-    ImplementationPacketDetailCoverage, ImplementationPacketExecutionEvidence,
-    ImplementationPacketGoalCoverage, WorkSliceReceiptCoverage, WorkSliceReceiptTrustTier,
+    assess_work_slice_receipt, build_closeout_implementation_packet_coverage,
+    CloseoutImplementationPacketCoverage, CloseoutImplementationPacketCoverageInput,
+    CloseoutImplementationPacketCoverageItem, CloseoutPacketCoverageDetail,
+    ImplementationPacketCoverageStatus, ImplementationPacketDetailCoverage,
+    ImplementationPacketExecutionEvidence, ImplementationPacketGoalCoverage,
+    WorkSliceReceiptCoverage, WorkSliceReceiptTrustTier,
 };
 pub use wiki_proposal_receipt::{
     build_adaptive_wiki_proposal_receipt, AdaptiveWikiProposalReceipt,
