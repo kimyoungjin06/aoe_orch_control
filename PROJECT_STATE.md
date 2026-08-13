@@ -212,14 +212,17 @@ direction is defined in `docs/project-direction.md`.
   in the bounded `src/cli/offdesk/plan_commands.rs` adapter. It composes the
   workflow policy and registry storage adapters while the main CLI retains
   output presentation only.
+  Read-only plan list/detail query coordination now lives in
+  `src/cli/offdesk/plan_queries.rs`. The regular CLI and Remote Operator share
+  exact-match filtering, timestamp ordering, latest selection, and plan
+  reference resolution through that adapter.
   Plan registry list/detail read models and review-state calculation now live
   in `src/offdesk/workflow/plan_registry.rs`; directory traversal, fail-closed
   JSON loading, history ordering, and plan-reference path resolution now live
   in `src/cli/offdesk/plan_registry.rs`, together with append-only allocation
-  and completed-record persistence. The next staged extraction is read-only
-  plan list/show query coordination and filtering from the main Offdesk CLI,
-  while retaining read-model policy in the workflow layer and storage I/O in
-  the registry adapter.
+  and completed-record persistence. The next staged extraction is plan output
+  presentation and Remote Operator plan projection assembly from the main
+  Offdesk CLI, while retaining query, read-model, and storage boundaries.
 - The 2026-06-26 refactor baseline is captured in
   `docs/refactor-baseline-20260626.md`. The mutation-freeze has been lifted by
   product decision to widen the Telegram operator surface, but new remote
@@ -551,7 +554,7 @@ direction is defined in `docs/project-direction.md`.
 
 ## Next Work Candidates
 
-0. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~14.5k
+0. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~14.4k
    lines). Value parsing and the first typed decision, adaptive-wiki, and
    closeout receipt workflows are separated. Implementation-packet coverage
    policy and record construction are separated, as are plan-review validation
@@ -562,9 +565,10 @@ direction is defined in `docs/project-direction.md`.
    are registry loading, append-only allocation, and completed-record
    persistence in the CLI storage adapter. Plan source ingestion, hashing, and
    exact-byte copying are also separated. Registration, review, and launch-prep
-   coordination now shares a bounded plan command adapter. Next move read-only
-   plan list/show query coordination and filtering into a bounded adapter while
-   retaining read-model policy and storage boundaries.
+   coordination now shares a bounded plan command adapter. The regular CLI and
+   Remote Operator also share a bounded read-only plan query adapter. Next move
+   plan output presentation and Remote Operator plan projection assembly into a
+   bounded adapter while retaining query, read-model, and storage boundaries.
 1. Add the deferred actionable TUI attention panel using the existing shared
    operator-state and next-safe-action contracts.
 2. Apply the deferred council verdicts with the new `wiki edit --kind

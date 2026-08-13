@@ -9673,6 +9673,13 @@ fn offdesk_plans_list_and_plan_show_registered_artifact() -> Result<()> {
         .expect("denials array")
         .iter()
         .any(|item| item == "launch"));
+
+    let missing_output = forager_command(temp.path())
+        .args(["offdesk", "plan-show", "plan_missing", "--json"])
+        .output()?;
+    assert!(!missing_output.status.success());
+    assert!(String::from_utf8_lossy(&missing_output.stderr)
+        .contains("Registered Offdesk plan not found: plan_missing"));
     Ok(())
 }
 

@@ -5,6 +5,7 @@ mod closeout_render;
 mod closeout_report;
 mod parsing;
 mod plan_commands;
+mod plan_queries;
 mod plan_registry;
 mod wiki_proposal_receipts;
 
@@ -19,10 +20,7 @@ use parsing::*;
 use plan_commands::{
     prepare_offdesk_plan_launch, record_offdesk_plan_review, register_offdesk_plan,
 };
-use plan_registry::{
-    find_offdesk_plan_registry_item, load_offdesk_plan_registry_detail,
-    load_offdesk_plan_registry_items,
-};
+use plan_queries::{query_offdesk_plan_detail, query_offdesk_plans, OffdeskPlanListQuery};
 use wiki_proposal_receipts::wiki_proposal_receipt;
 
 use anyhow::{bail, Context, Result};
@@ -7973,14 +7971,7 @@ async fn plan(profile: &str, args: PlanArgs) -> Result<()> {
 }
 
 async fn plans(profile: &str, args: PlansArgs) -> Result<()> {
-    let mut items = load_offdesk_plan_registry_items(profile)?;
-    items.retain(|item| offdesk_plan_matches_filter(item, &args));
-    items.sort_by_key(|item| item.registration.registered_at);
-    if args.latest {
-        if let Some(latest) = items.pop() {
-            items = vec![latest];
-        }
-    }
+    let items = query_offdesk_plans(profile, &OffdeskPlanListQuery::from_plans_args(&args))?;
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&items)?);
@@ -7997,11 +7988,7 @@ async fn plans(profile: &str, args: PlansArgs) -> Result<()> {
 }
 
 async fn plan_show(profile: &str, args: PlanShowArgs) -> Result<()> {
-    let items = load_offdesk_plan_registry_items(profile)?;
-    let Some(item) = find_offdesk_plan_registry_item(items, &args.plan_ref) else {
-        bail!("Registered Offdesk plan not found: {}", args.plan_ref);
-    };
-    let detail = load_offdesk_plan_registry_detail(item)?;
+    let detail = query_offdesk_plan_detail(profile, &args.plan_ref)?;
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&detail)?);
@@ -8094,14 +8081,10 @@ async fn remote_operator_plans(profile: &str, args: RemoteOperatorPlansArgs) -> 
             .map(|value| operator_safe_text(&value)),
         latest: args.latest,
     };
-    let mut items = load_offdesk_plan_registry_items(profile)?;
-    items.retain(|item| remote_operator_plan_matches_filter(item, &args));
-    items.sort_by_key(|item| item.registration.registered_at);
-    if args.latest {
-        if let Some(latest) = items.pop() {
-            items = vec![latest];
-        }
-    }
+    let items = query_offdesk_plans(
+        profile,
+        &OffdeskPlanListQuery::from_remote_operator_args(&args),
+    )?;
     let plans = items
         .iter()
         .map(remote_operator_plan_summary_from_item)
@@ -8118,11 +8101,7 @@ async fn remote_operator_plans(profile: &str, args: RemoteOperatorPlansArgs) -> 
 }
 
 async fn remote_operator_show(profile: &str, args: RemoteOperatorShowArgs) -> Result<()> {
-    let items = load_offdesk_plan_registry_items(profile)?;
-    let Some(item) = find_offdesk_plan_registry_item(items, &args.plan_ref) else {
-        bail!("Registered Offdesk plan not found: {}", args.plan_ref);
-    };
-    let detail = load_offdesk_plan_registry_detail(item)?;
+    let detail = query_offdesk_plan_detail(profile, &args.plan_ref)?;
     let plan = remote_operator_plan_summary_from_detail(&detail)?;
     let reviews = detail
         .reviews
@@ -8149,30 +8128,6 @@ async fn remote_operator_show(profile: &str, args: RemoteOperatorShowArgs) -> Re
     let card = remote_operator_show_card(&payload, observed_hash);
     let projection = remote_operator_projection(profile, &args.transport, "show", card, payload);
     print_remote_operator_projection(&projection, args.json)
-}
-
-fn offdesk_plan_matches_filter(item: &OffdeskPlanRegistryItem, args: &PlansArgs) -> bool {
-    if let Some(project_key) = args.project_key.as_deref() {
-        if item.registration.project_key.as_deref() != Some(project_key) {
-            return false;
-        }
-    }
-    if let Some(task_id) = args.task_id.as_deref() {
-        if item.registration.task_id.as_deref() != Some(task_id) {
-            return false;
-        }
-    }
-    if let Some(profile_key) = args.profile_key.as_deref() {
-        if item.registration.profile_key.as_deref() != Some(profile_key) {
-            return false;
-        }
-    }
-    if let Some(artifact_kind) = args.artifact_kind.as_deref() {
-        if item.registration.artifact_kind != artifact_kind {
-            return false;
-        }
-    }
-    true
 }
 
 fn remote_operator_projection<T>(
@@ -8307,26 +8262,6 @@ fn remote_operator_next_safe_action_from_offdesk(
         detail: operator_safe_text(&action.detail),
         requires_operator_review: action.requires_operator_review,
     }
-}
-
-fn remote_operator_plan_matches_filter(
-    item: &OffdeskPlanRegistryItem,
-    args: &RemoteOperatorPlansArgs,
-) -> bool {
-    args.project_key
-        .as_ref()
-        .is_none_or(|expected| item.registration.project_key.as_deref() == Some(expected.as_str()))
-        && args
-            .task_id
-            .as_ref()
-            .is_none_or(|expected| item.registration.task_id.as_deref() == Some(expected.as_str()))
-        && args.profile_key.as_ref().is_none_or(|expected| {
-            item.registration.profile_key.as_deref() == Some(expected.as_str())
-        })
-        && args
-            .artifact_kind
-            .as_ref()
-            .is_none_or(|expected| item.registration.artifact_kind == *expected)
 }
 
 fn remote_operator_plan_summary_from_item(
