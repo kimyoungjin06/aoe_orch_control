@@ -38,10 +38,10 @@ use crate::offdesk::{
     build_graph_export_files, build_usage_records_with_policy, default_capability_registry,
     implementation_packet_from_path, implementation_packet_record_from_path,
     latest_implementation_packet_for_project, launch_background_command, launch_background_run,
-    normalize_decision_choice, offdesk_plan_launch_prep_denials, offdesk_plan_registration_denials,
-    operator_safe_report, operator_safe_text, pending_approval_operator_views,
-    poll_background_runs, receipt_decision_record as transition_receipt_decision_record,
-    recommend_provider_fallback, reconcile_tasks_with_background_outcomes,
+    normalize_decision_choice, offdesk_plan_registration_denials, operator_safe_report,
+    operator_safe_text, pending_approval_operator_views, poll_background_runs,
+    receipt_decision_record as transition_receipt_decision_record, recommend_provider_fallback,
+    reconcile_tasks_with_background_outcomes,
     resolve_decision_record as transition_resolve_decision_record, run_offdesk_tick,
     scan_and_emit_learning_signals, work_slice_execution_receipts_from_path, ActionApprovalRequest,
     AdaptiveWikiActivationMode, AdaptiveWikiAgentMode, AdaptiveWikiAgentModeFilter,
@@ -75,14 +75,15 @@ use crate::offdesk::{
     JudgmentRoute, LatestImplementationPacket, LearningScanReport, LocalCommandLaunchSpec,
     MutationRestoreOperation, MutationRestorePlan, MutationSnapshot, MutationSnapshotStore,
     MutationSnapshotVerification, OffdeskModeAssessment, OffdeskModeLifecycle,
-    OffdeskNextSafeAction, OffdeskPendingApprovalView, OffdeskPlanReviewBuildInput,
-    OffdeskPlanReviewDecision, OffdeskPlanReviewRecord, OffdeskTask, OffdeskTaskInput,
-    OffdeskTaskLifecycleReport, OffdeskTaskStatus, OffdeskTaskStore, OffdeskTaskView,
-    OffdeskTickOptions, OperatorPauseState, OperatorPauseStore, PendingActionApproval,
-    ProviderCapacityState, ProviderCapacityStore, ProviderFallbackRecommendation, ResumeStatus,
-    RiskLevel, SchedulerGate, SchedulerGateRequest, SchedulerGateStatus, TaskResumeState,
-    TaskResumeStore, WorkSliceExecutionReceipt, WorkSliceExecutionStatus, DECISION_RECORD_SCHEMA,
-    JUDGMENT_ROUTE_SCHEMA, OFFDESK_PLAN_REQUIRED_DENIALS, WORK_SLICE_EXECUTION_RECEIPTS_FILE,
+    OffdeskNextSafeAction, OffdeskPendingApprovalView, OffdeskPlanLaunchPrepBuildInput,
+    OffdeskPlanLaunchPrepPacket, OffdeskPlanReviewBuildInput, OffdeskPlanReviewDecision,
+    OffdeskPlanReviewRecord, OffdeskTask, OffdeskTaskInput, OffdeskTaskLifecycleReport,
+    OffdeskTaskStatus, OffdeskTaskStore, OffdeskTaskView, OffdeskTickOptions, OperatorPauseState,
+    OperatorPauseStore, PendingActionApproval, ProviderCapacityState, ProviderCapacityStore,
+    ProviderFallbackRecommendation, ResumeStatus, RiskLevel, SchedulerGate, SchedulerGateRequest,
+    SchedulerGateStatus, TaskResumeState, TaskResumeStore, WorkSliceExecutionReceipt,
+    WorkSliceExecutionStatus, DECISION_RECORD_SCHEMA, JUDGMENT_ROUTE_SCHEMA,
+    OFFDESK_PLAN_REQUIRED_DENIALS, WORK_SLICE_EXECUTION_RECEIPTS_FILE,
 };
 use crate::session::{get_profile_dir, resolved_app_dir_path, DEFAULT_PROFILE};
 
@@ -1087,48 +1088,6 @@ struct OffdeskPlanReviewState {
     ready_for_launch_preparation_candidate: bool,
     next_safe_action: String,
     latest_review_id: Option<String>,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-struct OffdeskPlanLaunchPrepPacket {
-    schema: String,
-    prepared_at: DateTime<Utc>,
-    prep_id: String,
-    plan_id: String,
-    forager_profile: String,
-    prepared_by: String,
-    registration_path: String,
-    source_path: String,
-    source_sha256: String,
-    review_id: String,
-    review_decision: OffdeskPlanReviewDecision,
-    review_record_json: String,
-    artifact_kind: String,
-    plan_schema: String,
-    profile_key: Option<String>,
-    project_key: Option<String>,
-    request_id: Option<String>,
-    task_id: Option<String>,
-    selected_plan_path: Option<String>,
-    required_first_reads: Vec<String>,
-    launch_preparation_candidate: bool,
-    ready_for_launch: bool,
-    ready_for_enqueue: bool,
-    next_safe_action: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    notes: Option<String>,
-    read_only_project_state: bool,
-    applies_file_operations: bool,
-    artifacts: OffdeskPlanLaunchPrepArtifacts,
-    does_not_authorize: Vec<String>,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-struct OffdeskPlanLaunchPrepArtifacts {
-    registration_json: String,
-    copied_source_json: Option<String>,
-    review_record_json: String,
-    launch_prep_json: String,
 }
 
 #[derive(Serialize)]
@@ -8408,85 +8367,39 @@ fn build_offdesk_plan_launch_prep_packet(
 ) -> Result<OffdeskPlanLaunchPrepPacket> {
     let registry_dir = offdesk_plan_registry_dir(item)?;
     let reviews = load_offdesk_plan_reviews(&registry_dir)?;
-    let review = select_offdesk_plan_review(&reviews, args.review_id.as_deref())?;
-    if review.decision != OffdeskPlanReviewDecision::Approved {
-        bail!(
-            "Offdesk plan launch-prep requires an approved review; latest review {} is {}",
-            review.review_id,
-            review.decision.as_str()
-        );
-    }
-    if !review.ready_for_launch_preparation_candidate {
-        bail!(
-            "Offdesk plan review {} is not a launch-preparation candidate",
-            review.review_id
-        );
-    }
-    if review.source_sha256 != item.registration.source_sha256 {
-        bail!(
-            "Offdesk plan review {} source hash does not match registration",
-            review.review_id
-        );
-    }
+    let review = crate::offdesk::select_offdesk_plan_review(&reviews, args.review_id.as_deref())?;
+    crate::offdesk::validate_offdesk_plan_launch_prep(review, &item.registration.source_sha256)?;
 
     let prepared_at = Utc::now();
     let launch_prep_path = allocate_offdesk_plan_launch_prep_path(&registry_dir, prepared_at)?;
-    let mut required_first_reads = vec![
-        item.registration_path.clone(),
-        review.artifacts.review_record_json.clone(),
-    ];
-    if let Some(path) = item.registration.artifacts.copied_source_json.as_ref() {
-        required_first_reads.push(path.clone());
-    }
-    if let Some(path) = item.registration.selected_plan_path.as_ref() {
-        if !required_first_reads.contains(path) {
-            required_first_reads.push(path.clone());
-        }
-    }
     let profile_name = if profile.is_empty() {
         DEFAULT_PROFILE
     } else {
         profile
     };
+    let prep_id = format!("plan_launch_prep_{}", short_uuid());
+    let launch_prep_json = launch_prep_path.display().to_string();
 
-    Ok(OffdeskPlanLaunchPrepPacket {
-        schema: "offdesk_plan_launch_prep.v1".to_string(),
+    crate::offdesk::build_offdesk_plan_launch_prep_packet(OffdeskPlanLaunchPrepBuildInput {
         prepared_at,
-        prep_id: format!("plan_launch_prep_{}", short_uuid()),
-        plan_id: item.plan_id.clone(),
-        forager_profile: crate::offdesk::operator_safe_text(profile_name),
-        prepared_by: crate::offdesk::operator_safe_text(args.prepared_by.trim()),
-        registration_path: item.registration_path.clone(),
-        source_path: item.registration.source_path.clone(),
-        source_sha256: item.registration.source_sha256.clone(),
-        review_id: review.review_id.clone(),
-        review_decision: review.decision,
-        review_record_json: review.artifacts.review_record_json.clone(),
-        artifact_kind: item.registration.artifact_kind.clone(),
-        plan_schema: item.registration.plan_schema.clone(),
-        profile_key: item.registration.profile_key.clone(),
-        project_key: item.registration.project_key.clone(),
-        request_id: item.registration.request_id.clone(),
-        task_id: item.registration.task_id.clone(),
-        selected_plan_path: item.registration.selected_plan_path.clone(),
-        required_first_reads,
-        launch_preparation_candidate: true,
-        ready_for_launch: false,
-        ready_for_enqueue: false,
-        next_safe_action: "build_execution_brief_then_use_existing_offdesk_gate".to_string(),
-        notes: args
-            .notes
-            .as_deref()
-            .map(|value| truncate_closeout_text(&crate::offdesk::operator_safe_text(value), 2000)),
-        read_only_project_state: true,
-        applies_file_operations: false,
-        artifacts: OffdeskPlanLaunchPrepArtifacts {
-            registration_json: item.registration_path.clone(),
-            copied_source_json: item.registration.artifacts.copied_source_json.clone(),
-            review_record_json: review.artifacts.review_record_json.clone(),
-            launch_prep_json: launch_prep_path.display().to_string(),
-        },
-        does_not_authorize: offdesk_plan_launch_prep_denials(),
+        prep_id: &prep_id,
+        plan_id: &item.plan_id,
+        forager_profile: profile_name,
+        prepared_by: &args.prepared_by,
+        registration_path: &item.registration_path,
+        source_path: &item.registration.source_path,
+        source_sha256: &item.registration.source_sha256,
+        review,
+        artifact_kind: &item.registration.artifact_kind,
+        plan_schema: &item.registration.plan_schema,
+        profile_key: item.registration.profile_key.as_deref(),
+        project_key: item.registration.project_key.as_deref(),
+        request_id: item.registration.request_id.as_deref(),
+        task_id: item.registration.task_id.as_deref(),
+        selected_plan_path: item.registration.selected_plan_path.as_deref(),
+        copied_source_json: item.registration.artifacts.copied_source_json.as_deref(),
+        notes: args.notes.as_deref(),
+        launch_prep_json: &launch_prep_json,
     })
 }
 
@@ -8635,21 +8548,6 @@ fn load_offdesk_plan_launch_preps(registry_dir: &Path) -> Result<Vec<OffdeskPlan
     }
     packets.sort_by_key(|packet| packet.prepared_at);
     Ok(packets)
-}
-
-fn select_offdesk_plan_review<'a>(
-    reviews: &'a [OffdeskPlanReviewRecord],
-    review_id: Option<&str>,
-) -> Result<&'a OffdeskPlanReviewRecord> {
-    if let Some(review_id) = review_id {
-        return reviews
-            .iter()
-            .find(|review| review.review_id == review_id)
-            .ok_or_else(|| anyhow::anyhow!("Offdesk plan review not found: {}", review_id));
-    }
-    reviews
-        .last()
-        .ok_or_else(|| anyhow::anyhow!("Offdesk plan launch-prep requires an approved review"))
 }
 
 fn offdesk_plan_registry_dir(item: &OffdeskPlanRegistryItem) -> Result<PathBuf> {

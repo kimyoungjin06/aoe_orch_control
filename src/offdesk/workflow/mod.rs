@@ -4,6 +4,7 @@ mod closeout_receipt;
 mod closeout_records;
 mod decision;
 mod implementation_packet_coverage;
+mod plan_launch_prep;
 mod plan_review;
 mod wiki_proposal_receipt;
 
@@ -34,12 +35,16 @@ pub use implementation_packet_coverage::{
     ImplementationPacketExecutionEvidence, ImplementationPacketGoalCoverage,
     WorkSliceReceiptCoverage, WorkSliceReceiptTrustTier,
 };
+pub use plan_launch_prep::{
+    build_offdesk_plan_launch_prep_packet, offdesk_plan_launch_prep_denials,
+    select_offdesk_plan_review, validate_offdesk_plan_launch_prep, OffdeskPlanLaunchPrepArtifacts,
+    OffdeskPlanLaunchPrepBuildInput, OffdeskPlanLaunchPrepPacket, OFFDESK_PLAN_LAUNCH_PREP_SCHEMA,
+};
 pub use plan_review::{
-    build_offdesk_plan_review_record, offdesk_plan_launch_prep_denials,
-    offdesk_plan_registration_denials, offdesk_plan_review_denials,
-    validate_offdesk_plan_review_input, OffdeskPlanReviewArtifacts, OffdeskPlanReviewBuildInput,
-    OffdeskPlanReviewDecision, OffdeskPlanReviewRecord, OFFDESK_PLAN_REQUIRED_DENIALS,
-    OFFDESK_PLAN_REVIEW_SCHEMA,
+    build_offdesk_plan_review_record, offdesk_plan_registration_denials,
+    offdesk_plan_review_denials, validate_offdesk_plan_review_input, OffdeskPlanReviewArtifacts,
+    OffdeskPlanReviewBuildInput, OffdeskPlanReviewDecision, OffdeskPlanReviewRecord,
+    OFFDESK_PLAN_REQUIRED_DENIALS, OFFDESK_PLAN_REVIEW_SCHEMA,
 };
 pub use wiki_proposal_receipt::{
     build_adaptive_wiki_proposal_receipt, AdaptiveWikiProposalReceipt,

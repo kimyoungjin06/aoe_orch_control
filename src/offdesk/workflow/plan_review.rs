@@ -164,12 +164,6 @@ pub fn offdesk_plan_review_denials() -> Vec<String> {
     denials
 }
 
-pub fn offdesk_plan_launch_prep_denials() -> Vec<String> {
-    let mut denials = offdesk_plan_review_denials();
-    denials.push("dispatch".to_string());
-    denials
-}
-
 fn safe_text_list(values: &[String]) -> Vec<String> {
     values
         .iter()
