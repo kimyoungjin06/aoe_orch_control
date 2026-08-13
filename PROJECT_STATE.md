@@ -192,9 +192,12 @@ direction is defined in `docs/project-direction.md`.
   evidence limits, and aggregate counters now live in
   `src/offdesk/workflow/implementation_packet_coverage.rs`; the CLI retains
   packet and receipt discovery, evidence/detail observation assembly,
-  rendering, and human output. The next staged extraction is Offdesk plan
-  review validation and record construction while registry lookup, path
-  allocation, and persistence remain in the CLI adapter.
+  rendering, and human output. Offdesk plan review decision parsing, input
+  validation, normalization, readiness calculation, record construction, and
+  authorization denials now live in `src/offdesk/workflow/plan_review.rs`.
+  Registry lookup, append-only path allocation, and persistence remain in the
+  CLI adapter. The next staged extraction is approved-review selection and
+  launch-preparation packet construction under the same I/O boundary.
 - The 2026-06-26 refactor baseline is captured in
   `docs/refactor-baseline-20260626.md`. The mutation-freeze has been lifted by
   product decision to widen the Telegram operator surface, but new remote
@@ -526,12 +529,14 @@ direction is defined in `docs/project-direction.md`.
 
 ## Next Work Candidates
 
-0. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~15.6k
+0. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~15.3k
    lines). Value parsing and the first typed decision, adaptive-wiki, and
-   closeout receipt workflows are separated. Implementation-packet goal,
-   detail, and work-slice trust policy is also separated. Move the remaining
-   coverage record construction through typed boundaries while keeping packet
-   and receipt I/O in CLI adapters.
+   closeout receipt workflows are separated. Implementation-packet coverage
+   policy and record construction are separated, as are plan-review validation
+   and record construction. Next move approved-review selection and
+   launch-preparation packet construction through a typed workflow while
+   keeping registry discovery, append-only path allocation, and persistence in
+   the CLI adapter.
 1. Add the deferred actionable TUI attention panel using the existing shared
    operator-state and next-safe-action contracts.
 2. Apply the deferred council verdicts with the new `wiki edit --kind
