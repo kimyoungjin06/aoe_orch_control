@@ -9,6 +9,7 @@
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 // The dispatcher resolves a session by the "_<8-char id>" suffix on the tmux
@@ -45,6 +46,42 @@ fn start_session(name: &str, command: &str) {
         .output()
         .expect("failed to spawn tmux session");
     assert!(created.status.success(), "could not create {name}");
+}
+
+fn wait_for_quiet_sleep_pane(name: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut previous_capture = None;
+
+    loop {
+        let command = Command::new("tmux")
+            .args([
+                "display-message",
+                "-p",
+                "-t",
+                name,
+                "#{pane_current_command}",
+            ])
+            .output()
+            .expect("failed to inspect tmux pane command");
+        let is_sleeping =
+            command.status.success() && String::from_utf8_lossy(&command.stdout).trim() == "sleep";
+        if is_sleeping {
+            let capture = Command::new("tmux")
+                .args(["capture-pane", "-p", "-t", name])
+                .output()
+                .expect("failed to capture quiet tmux pane");
+            assert!(capture.status.success(), "could not capture {name}");
+            if previous_capture.as_ref() == Some(&capture.stdout) {
+                return;
+            }
+            previous_capture = Some(capture.stdout);
+        } else {
+            previous_capture = None;
+        }
+
+        assert!(Instant::now() < deadline, "{name} did not become quiet");
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 /// Drive the Python dispatcher the way the Telegram poll loop does.
@@ -446,7 +483,7 @@ fn session_text_input_reports_queued_without_claiming_agent_acknowledgement() {
     )
     .expect("write status");
     start_session(QUIET_TEXT_SESSION, "stty -echo; sleep 300");
-    std::thread::sleep(std::time::Duration::from_millis(250));
+    wait_for_quiet_sleep_pane(QUIET_TEXT_SESSION);
 
     let result = apply_session_text_input(&status_file, "f00d5678", "continue", "");
     kill_session(QUIET_TEXT_SESSION);
