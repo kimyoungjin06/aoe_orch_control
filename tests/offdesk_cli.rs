@@ -9915,11 +9915,40 @@ fn offdesk_plan_launch_prep_requires_approved_review_and_stays_read_only() -> Re
     );
     let review: serde_json::Value = serde_json::from_slice(&review_output.stdout)?;
 
+    let revision_output = forager_command(temp.path())
+        .args([
+            "offdesk",
+            "plan-review",
+            &plan_id,
+            "--decision",
+            "revision-required",
+            "--reason",
+            "The latest review requests a revision.",
+            "--blocker",
+            "Clarify the execution boundary.",
+            "--json",
+        ])
+        .output()?;
+    assert!(
+        revision_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&revision_output.stderr)
+    );
+
+    let latest_blocked_output = forager_command(temp.path())
+        .args(["offdesk", "plan-launch-prep", &plan_id, "--json"])
+        .output()?;
+    assert!(!latest_blocked_output.status.success());
+    assert!(String::from_utf8_lossy(&latest_blocked_output.stderr)
+        .contains("launch-prep requires an approved review"));
+
     let prep_output = forager_command(temp.path())
         .args([
             "offdesk",
             "plan-launch-prep",
             &plan_id,
+            "--review-id",
+            review["review_id"].as_str().expect("approved review id"),
             "--prepared-by",
             "operator",
             "--notes",
