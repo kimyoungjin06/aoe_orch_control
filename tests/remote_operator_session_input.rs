@@ -482,7 +482,7 @@ fn session_text_input_reports_queued_without_claiming_agent_acknowledgement() {
         r#"{"sessions":[{"id":"f00d567800000000","title":"quiet","tool":"codex","project":"t","status":"running"}]}"#,
     )
     .expect("write status");
-    start_session(QUIET_TEXT_SESSION, "stty -echo; sleep 300");
+    start_session(QUIET_TEXT_SESSION, "stty -echo; exec sleep 300");
     wait_for_quiet_sleep_pane(QUIET_TEXT_SESSION);
 
     let result = apply_session_text_input(&status_file, "f00d5678", "continue", "");
