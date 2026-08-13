@@ -77,8 +77,9 @@ use crate::offdesk::{
     MutationSnapshotVerification, OffdeskModeAssessment, OffdeskModeLifecycle,
     OffdeskNextSafeAction, OffdeskPendingApprovalView, OffdeskPlanLaunchPrepBuildInput,
     OffdeskPlanLaunchPrepPacket, OffdeskPlanRegistration, OffdeskPlanRegistrationArtifacts,
-    OffdeskPlanRegistrationBuildInput, OffdeskPlanReviewBuildInput, OffdeskPlanReviewDecision,
-    OffdeskPlanReviewRecord, OffdeskTask, OffdeskTaskInput, OffdeskTaskLifecycleReport,
+    OffdeskPlanRegistrationBuildInput, OffdeskPlanRegistryDetail, OffdeskPlanRegistryItem,
+    OffdeskPlanReviewBuildInput, OffdeskPlanReviewDecision, OffdeskPlanReviewRecord,
+    OffdeskPlanReviewState, OffdeskTask, OffdeskTaskInput, OffdeskTaskLifecycleReport,
     OffdeskTaskStatus, OffdeskTaskStore, OffdeskTaskView, OffdeskTickOptions, OperatorPauseState,
     OperatorPauseStore, PendingActionApproval, ProviderCapacityState, ProviderCapacityStore,
     ProviderFallbackRecommendation, ResumeStatus, RiskLevel, SchedulerGate, SchedulerGateRequest,
@@ -1022,40 +1023,6 @@ struct HostedHarnessFirstRead {
     present: bool,
     size_bytes: Option<u64>,
     over_file_budget: bool,
-}
-
-#[derive(Serialize)]
-struct OffdeskPlanRegistryItem {
-    plan_id: String,
-    registration_path: String,
-    registration: OffdeskPlanRegistration,
-    review_state: OffdeskPlanReviewState,
-    review_count: usize,
-    latest_review: Option<OffdeskPlanReviewRecord>,
-    launch_prep_count: usize,
-    latest_launch_prep: Option<OffdeskPlanLaunchPrepPacket>,
-}
-
-#[derive(Serialize)]
-struct OffdeskPlanRegistryDetail {
-    plan_id: String,
-    registration_path: String,
-    registration: OffdeskPlanRegistration,
-    review_state: OffdeskPlanReviewState,
-    review_count: usize,
-    latest_review: Option<OffdeskPlanReviewRecord>,
-    reviews: Vec<OffdeskPlanReviewRecord>,
-    launch_prep_count: usize,
-    latest_launch_prep: Option<OffdeskPlanLaunchPrepPacket>,
-    launch_preps: Vec<OffdeskPlanLaunchPrepPacket>,
-}
-
-#[derive(Clone, Serialize)]
-struct OffdeskPlanReviewState {
-    status: String,
-    ready_for_launch_preparation_candidate: bool,
-    next_safe_action: String,
-    latest_review_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -8398,20 +8365,14 @@ fn load_offdesk_plan_registry_items(profile: &str) -> Result<Vec<OffdeskPlanRegi
             })?;
         let plan_id = entry.file_name().to_string_lossy().to_string();
         let reviews = load_offdesk_plan_reviews(&entry.path())?;
-        let latest_review = reviews.last().cloned();
-        let review_state = offdesk_plan_review_state(latest_review.as_ref());
         let launch_preps = load_offdesk_plan_launch_preps(&entry.path())?;
-        let latest_launch_prep = launch_preps.last().cloned();
-        items.push(OffdeskPlanRegistryItem {
+        items.push(crate::offdesk::build_offdesk_plan_registry_item(
             plan_id,
-            registration_path: registration_path.display().to_string(),
+            registration_path.display().to_string(),
             registration,
-            review_state,
-            review_count: reviews.len(),
-            latest_review,
-            launch_prep_count: launch_preps.len(),
-            latest_launch_prep,
-        });
+            &reviews,
+            &launch_preps,
+        ));
     }
 
     Ok(items)
@@ -8422,22 +8383,12 @@ fn offdesk_plan_registry_detail(
 ) -> Result<OffdeskPlanRegistryDetail> {
     let registry_dir = offdesk_plan_registry_dir(&item)?;
     let reviews = load_offdesk_plan_reviews(&registry_dir)?;
-    let latest_review = reviews.last().cloned();
-    let review_state = offdesk_plan_review_state(latest_review.as_ref());
     let launch_preps = load_offdesk_plan_launch_preps(&registry_dir)?;
-    let latest_launch_prep = launch_preps.last().cloned();
-    Ok(OffdeskPlanRegistryDetail {
-        plan_id: item.plan_id,
-        registration_path: item.registration_path,
-        registration: item.registration,
-        review_state,
-        review_count: reviews.len(),
-        latest_review,
+    Ok(crate::offdesk::build_offdesk_plan_registry_detail(
+        item,
         reviews,
-        launch_prep_count: launch_preps.len(),
-        latest_launch_prep,
         launch_preps,
-    })
+    ))
 }
 
 fn load_offdesk_plan_reviews(registry_dir: &Path) -> Result<Vec<OffdeskPlanReviewRecord>> {
@@ -8502,37 +8453,6 @@ fn offdesk_plan_registry_dir(item: &OffdeskPlanRegistryItem) -> Result<PathBuf> 
         .parent()
         .map(Path::to_path_buf)
         .ok_or_else(|| anyhow::anyhow!("registered Offdesk plan is missing registry directory"))
-}
-
-fn offdesk_plan_review_state(
-    latest_review: Option<&OffdeskPlanReviewRecord>,
-) -> OffdeskPlanReviewState {
-    let Some(review) = latest_review else {
-        return OffdeskPlanReviewState {
-            status: "unreviewed".to_string(),
-            ready_for_launch_preparation_candidate: false,
-            next_safe_action: "record_operator_review".to_string(),
-            latest_review_id: None,
-        };
-    };
-    let (status, next_safe_action) = match review.decision {
-        OffdeskPlanReviewDecision::Approved => (
-            "approved",
-            if review.ready_for_launch_preparation_candidate {
-                "prepare_launch_packet"
-            } else {
-                "inspect_review_blockers"
-            },
-        ),
-        OffdeskPlanReviewDecision::RevisionRequired => ("revision_required", "revise_plan"),
-        OffdeskPlanReviewDecision::Rejected => ("rejected", "discard_or_replace_plan"),
-    };
-    OffdeskPlanReviewState {
-        status: status.to_string(),
-        ready_for_launch_preparation_candidate: review.ready_for_launch_preparation_candidate,
-        next_safe_action: next_safe_action.to_string(),
-        latest_review_id: Some(review.review_id.clone()),
-    }
 }
 
 fn offdesk_plan_matches_filter(item: &OffdeskPlanRegistryItem, args: &PlansArgs) -> bool {
