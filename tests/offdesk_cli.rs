@@ -1928,6 +1928,8 @@ fn offdesk_wiki_read_only_commands_expose_candidates_entries_projection_and_lint
             ]
         }))?,
     )?;
+    let catalog_entries_before = fs::read(profile_dir.join("adaptive_wiki_entries.json"))?;
+    let catalog_candidates_before = fs::read(profile_dir.join("adaptive_wiki_candidates.json"))?;
 
     let candidates_output = forager_command(temp.path())
         .args([
@@ -1988,6 +1990,18 @@ fn offdesk_wiki_read_only_commands_expose_candidates_entries_projection_and_lint
     assert!(entry_ids.contains(&"wiki_project_entry"));
     assert!(entry_ids.contains(&"wiki_needs_review"));
     assert!(!entry_ids.contains(&"wiki_other_project"));
+
+    let entries_human_output = forager_command(temp.path())
+        .args(["offdesk", "wiki", "entries", "--project-key", "project"])
+        .output()?;
+    assert!(entries_human_output.status.success());
+    let entries_stdout = String::from_utf8_lossy(&entries_human_output.stdout);
+    assert!(entries_stdout.contains("AGENT_MODES"));
+    assert!(entries_stdout.contains("wiki_project_entry"));
+    assert!(entries_stdout.contains("wiki_needs_review"));
+    assert!(!entries_stdout.contains("wiki_other_project"));
+    assert!(entries_stdout.contains("summary: Human project note"));
+    assert!(entries_stdout.contains("evidence: task:project"));
 
     let projection_output = forager_command(temp.path())
         .args([
@@ -2163,6 +2177,40 @@ fn offdesk_wiki_read_only_commands_expose_candidates_entries_projection_and_lint
     let show: serde_json::Value = serde_json::from_slice(&show_output.stdout)?;
     assert_eq!(show["kind"], "candidate");
     assert_eq!(show["candidate"]["id"], "wiki_candidate_denial");
+
+    let show_candidate_human_output = forager_command(temp.path())
+        .args(["offdesk", "wiki", "show", "wiki_candidate_denial"])
+        .output()?;
+    assert!(show_candidate_human_output.status.success());
+    let show_candidate_stdout = String::from_utf8_lossy(&show_candidate_human_output.stdout);
+    assert!(show_candidate_stdout.contains("Adaptive wiki candidate wiki_candidate_denial"));
+    assert!(show_candidate_stdout.contains("origin:     OperatorExplicit"));
+    assert!(show_candidate_stdout.contains("sources:"));
+    assert!(!show_candidate_stdout.contains(secret));
+
+    let show_entry_human_output = forager_command(temp.path())
+        .args(["offdesk", "wiki", "show", "wiki_project_entry"])
+        .output()?;
+    assert!(show_entry_human_output.status.success());
+    let show_entry_stdout = String::from_utf8_lossy(&show_entry_human_output.stdout);
+    assert!(show_entry_stdout.contains("Adaptive wiki entry wiki_project_entry"));
+    assert!(show_entry_stdout.contains("scope:      project:project"));
+    assert!(show_entry_stdout.contains("claim:      Project entries are visible to operators"));
+
+    let missing_show_output = forager_command(temp.path())
+        .args(["offdesk", "wiki", "show", "wiki_missing"])
+        .output()?;
+    assert!(!missing_show_output.status.success());
+    assert!(String::from_utf8_lossy(&missing_show_output.stderr)
+        .contains("Adaptive wiki entry or candidate not found: wiki_missing"));
+    assert_eq!(
+        fs::read(profile_dir.join("adaptive_wiki_entries.json"))?,
+        catalog_entries_before
+    );
+    assert_eq!(
+        fs::read(profile_dir.join("adaptive_wiki_candidates.json"))?,
+        catalog_candidates_before
+    );
 
     let lint_output = forager_command(temp.path())
         .args(["offdesk", "wiki", "lint", "--json"])

@@ -557,7 +557,7 @@ direction is defined in `docs/project-direction.md`.
 
 ## Next Work Candidates
 
-0. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~10.8k
+0. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~10.6k
    lines). Value parsing and the first typed decision, adaptive-wiki, and
    closeout receipt workflows are separated. Implementation-packet coverage
    policy and record construction are separated, as are plan-review validation
@@ -586,9 +586,14 @@ direction is defined in `docs/project-direction.md`.
    construction, manual mutation contracts, and operator rendering now live in
    `src/cli/offdesk/wiki_proposal_handoff.rs`. The adapter remains read-only: it
    emits an exact governed command or a fail-closed manual/blocked result and
-   never executes a mutation. Next move adaptive-wiki entry/candidate list and
-   show query coordination plus their operator presentation into a bounded
-   read-only adapter.
+   never executes a mutation. Adaptive-wiki entry/candidate list and detail
+   argument parsing, human-projection query coordination, exact-id selection,
+   and JSON/terminal presentation now live in the bounded read-only
+   `src/cli/offdesk/wiki_catalog.rs` adapter. Catalog reads preserve canonical
+   entry and candidate bytes, and a missing detail id fails closed. Next move
+   adaptive-wiki mutation result envelopes and their JSON/terminal presentation
+   into a bounded adapter while mutation execution stays in the command
+   handlers.
 1. Add the deferred actionable TUI attention panel using the existing shared
    operator-state and next-safe-action contracts.
 2. Apply the deferred council verdicts with the new `wiki edit --kind

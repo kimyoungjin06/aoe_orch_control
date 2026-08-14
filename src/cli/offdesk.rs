@@ -12,6 +12,7 @@ mod plan_presentation;
 mod plan_queries;
 mod plan_registry;
 mod remote_operator_presentation;
+mod wiki_catalog;
 mod wiki_proposal_handoff;
 mod wiki_proposal_receipts;
 
@@ -44,6 +45,8 @@ use plan_queries::{query_offdesk_plan_detail, query_offdesk_plans, OffdeskPlanLi
 use remote_operator_presentation::{
     present_remote_operator_pending, present_remote_operator_status,
 };
+use wiki_catalog::{wiki_candidates, wiki_entries, wiki_show};
+pub use wiki_catalog::{WikiListArgs, WikiShowArgs};
 pub use wiki_proposal_handoff::WikiProposalHandoffArgs;
 use wiki_proposal_handoff::{renew_review_after_command_template, wiki_proposal_handoff};
 use wiki_proposal_receipts::wiki_proposal_receipt;
@@ -1619,29 +1622,6 @@ pub enum WikiCommands {
 }
 
 #[derive(Args)]
-pub struct WikiListArgs {
-    /// Session/request scope to match
-    #[arg(long)]
-    session_id: Option<String>,
-
-    /// Project key scope to match
-    #[arg(long)]
-    project_key: Option<String>,
-
-    /// Artifact kind scope to match
-    #[arg(long)]
-    artifact_kind: Option<String>,
-
-    /// Agent work mode scope to match
-    #[arg(long, value_parser = parse_adaptive_wiki_agent_mode)]
-    agent_mode: Option<AdaptiveWikiAgentMode>,
-
-    /// Output as JSON
-    #[arg(long)]
-    json: bool,
-}
-
-#[derive(Args)]
 pub struct WikiBriefArgs {
     /// Project key scope to match
     #[arg(long)]
@@ -1826,16 +1806,6 @@ pub struct WikiReviewAfterReportArgs {
     /// Mark entries needing review within this many hours
     #[arg(long, default_value_t = 168)]
     near_expiry_hours: i64,
-
-    /// Output as JSON
-    #[arg(long)]
-    json: bool,
-}
-
-#[derive(Args)]
-pub struct WikiShowArgs {
-    /// Adaptive wiki entry or candidate id
-    id: String,
 
     /// Output as JSON
     #[arg(long)]
@@ -2342,17 +2312,6 @@ struct MutationSnapshotListItem {
     created_at: DateTime<Utc>,
     rollback_available: bool,
     blockers: Vec<String>,
-}
-
-#[derive(Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum WikiShowResult {
-    Entry {
-        entry: AdaptiveWikiHumanEntry,
-    },
-    Candidate {
-        candidate: AdaptiveWikiHumanCandidate,
-    },
 }
 
 #[derive(Serialize)]
@@ -3496,78 +3455,6 @@ async fn wiki_corrections(profile: &str, args: JsonArgs) -> Result<()> {
             crate::offdesk::operator_safe_text(&correction.summary)
         );
     }
-    Ok(())
-}
-
-async fn wiki_candidates(profile: &str, args: WikiListArgs) -> Result<()> {
-    let projection = wiki_store(profile)?.human_projection(&wiki_query(
-        &args.session_id,
-        &args.project_key,
-        &args.artifact_kind,
-        args.agent_mode,
-    ))?;
-
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&projection.candidates)?);
-        return Ok(());
-    }
-
-    if projection.candidates.is_empty() {
-        println!("No adaptive wiki candidates found.");
-        return Ok(());
-    }
-
-    print_wiki_candidates(&projection.candidates);
-    Ok(())
-}
-
-async fn wiki_entries(profile: &str, args: WikiListArgs) -> Result<()> {
-    let projection = wiki_store(profile)?.human_projection(&wiki_query(
-        &args.session_id,
-        &args.project_key,
-        &args.artifact_kind,
-        args.agent_mode,
-    ))?;
-
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&projection.entries)?);
-        return Ok(());
-    }
-
-    if projection.entries.is_empty() {
-        println!("No adaptive wiki entries found.");
-        return Ok(());
-    }
-
-    print_wiki_entries(&projection.entries);
-    Ok(())
-}
-
-async fn wiki_show(profile: &str, args: WikiShowArgs) -> Result<()> {
-    let projection = wiki_store(profile)?.human_projection(&AdaptiveWikiQuery::default())?;
-    let result = projection
-        .entries
-        .into_iter()
-        .find(|entry| entry.id == args.id)
-        .map(|entry| WikiShowResult::Entry { entry })
-        .or_else(|| {
-            projection
-                .candidates
-                .into_iter()
-                .find(|candidate| candidate.id == args.id)
-                .map(|candidate| WikiShowResult::Candidate { candidate })
-        });
-
-    let Some(result) = result else {
-        bail!("Adaptive wiki entry or candidate not found: {}", args.id);
-    };
-
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&result)?);
-        return Ok(());
-    }
-
-    print_wiki_show(&result);
     Ok(())
 }
 
@@ -9130,127 +9017,6 @@ fn print_gate_outcome(outcome: &crate::offdesk::SchedulerGateOutcome) {
             "  adaptive_wiki_runtime_decision: {:?} ({})",
             decision.status, decision.reason
         );
-    }
-}
-
-fn print_wiki_entries(entries: &[AdaptiveWikiHumanEntry]) {
-    println!(
-        "{:<44} {:<12} {:<14} {:<16} {:<18} CLAIM",
-        "ID", "STATUS", "SCOPE", "ACTIVATION", "AGENT_MODES"
-    );
-    for entry in entries {
-        println!(
-            "{:<44} {:<12} {:<14} {:<16} {:<18} {}",
-            entry.id,
-            format!("{:?}", entry.status).to_lowercase(),
-            wiki_scope_label(entry.scope, &entry.scope_ref),
-            format!("{:?}", entry.activation_mode).to_lowercase(),
-            adaptive_wiki_agent_modes_label(&entry.agent_modes),
-            entry.claim
-        );
-        if !entry.human_summary.trim().is_empty() {
-            println!("  summary: {}", entry.human_summary);
-        }
-        if !entry.evidence_refs.is_empty() {
-            println!("  evidence: {}", entry.evidence_refs.join(", "));
-        }
-        if !entry.support_refs.is_empty() {
-            println!("  support: {}", entry.support_refs.join(", "));
-        }
-        if !entry.capability_ids.is_empty() {
-            println!("  capabilities: {}", entry.capability_ids.join(", "));
-        }
-        if !entry.required_artifact_kinds.is_empty() {
-            println!("  artifacts: {}", entry.required_artifact_kinds.join(", "));
-        }
-    }
-}
-
-fn print_wiki_candidates(candidates: &[AdaptiveWikiHumanCandidate]) {
-    println!(
-        "{:<44} {:<14} {:<18} {:<18} {:<8} CLAIM",
-        "ID", "SCOPE", "SIGNAL", "AGENT_MODES", "HITS"
-    );
-    for candidate in candidates {
-        println!(
-            "{:<44} {:<14} {:<18} {:<18} {:<8} {}",
-            candidate.id,
-            wiki_scope_label(candidate.scope, &candidate.scope_ref),
-            format!("{:?}", candidate.signal_kind).to_lowercase(),
-            adaptive_wiki_agent_modes_label(&candidate.agent_modes),
-            candidate.occurrence_count,
-            candidate.claim
-        );
-        if !candidate.review_reason.trim().is_empty() {
-            println!("  review: {}", candidate.review_reason);
-        }
-        if !candidate.source_refs.is_empty() {
-            println!("  sources: {}", candidate.source_refs.join(", "));
-        } else if !candidate.evidence_refs.is_empty() {
-            println!("  evidence: {}", candidate.evidence_refs.join(", "));
-        }
-    }
-}
-
-fn print_wiki_show(result: &WikiShowResult) {
-    match result {
-        WikiShowResult::Entry { entry } => {
-            println!("Adaptive wiki entry {}", entry.id);
-            println!("  status:     {:?}", entry.status);
-            println!("  kind:       {:?}", entry.kind);
-            println!(
-                "  scope:      {}",
-                wiki_scope_label(entry.scope, &entry.scope_ref)
-            );
-            println!("  activation: {:?}", entry.activation_mode);
-            println!(
-                "  agent_modes: {}",
-                adaptive_wiki_agent_modes_label(&entry.agent_modes)
-            );
-            println!("  confidence: {:?}", entry.confidence);
-            println!("  claim:      {}", entry.claim);
-            if !entry.human_summary.trim().is_empty() {
-                println!("  summary:    {}", entry.human_summary);
-            }
-            if !entry.evidence_refs.is_empty() {
-                println!("  evidence:   {}", entry.evidence_refs.join(", "));
-            }
-            if !entry.support_refs.is_empty() {
-                println!("  support:    {}", entry.support_refs.join(", "));
-            }
-            if !entry.capability_ids.is_empty() {
-                println!("  capabilities: {}", entry.capability_ids.join(", "));
-            }
-            if !entry.required_artifact_kinds.is_empty() {
-                println!("  artifacts:  {}", entry.required_artifact_kinds.join(", "));
-            }
-        }
-        WikiShowResult::Candidate { candidate } => {
-            println!("Adaptive wiki candidate {}", candidate.id);
-            println!("  kind:       {:?}", candidate.kind);
-            println!(
-                "  scope:      {}",
-                wiki_scope_label(candidate.scope, &candidate.scope_ref)
-            );
-            println!("  signal:     {:?}", candidate.signal_kind);
-            println!("  origin:     {:?}", candidate.origin);
-            println!(
-                "  agent_modes: {}",
-                adaptive_wiki_agent_modes_label(&candidate.agent_modes)
-            );
-            println!("  hits:       {}", candidate.occurrence_count);
-            println!("  confidence: {:?}", candidate.confidence);
-            println!("  claim:      {}", candidate.claim);
-            if !candidate.human_summary.trim().is_empty() {
-                println!("  summary:    {}", candidate.human_summary);
-            }
-            if !candidate.review_reason.trim().is_empty() {
-                println!("  review:     {}", candidate.review_reason);
-            }
-            if !candidate.source_refs.is_empty() {
-                println!("  sources:    {}", candidate.source_refs.join(", "));
-            }
-        }
     }
 }
 
