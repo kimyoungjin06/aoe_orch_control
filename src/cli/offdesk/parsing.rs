@@ -242,26 +242,6 @@ pub(super) fn parse_adaptive_wiki_review_action(
     }
 }
 
-pub(super) fn parse_wiki_proposal_handoff_mutation(
-    value: &str,
-) -> std::result::Result<WikiProposalHandoffMutation, String> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "rescope" => Ok(WikiProposalHandoffMutation::Rescope),
-        "deprecate" => Ok(WikiProposalHandoffMutation::Deprecate),
-        "add_counterexample" | "add-counterexample" => {
-            Ok(WikiProposalHandoffMutation::AddCounterexample)
-        }
-        "deprecate_duplicate" | "deprecate-duplicate" => {
-            Ok(WikiProposalHandoffMutation::DeprecateDuplicate)
-        }
-        "split" => Ok(WikiProposalHandoffMutation::Split),
-        _ => Err(
-            "mutation must be one of rescope, deprecate, add_counterexample, deprecate_duplicate, split"
-                .to_string(),
-        ),
-    }
-}
-
 pub(super) fn parse_adaptive_wiki_proposal_decision(
     value: &str,
 ) -> std::result::Result<AdaptiveWikiReviewProposalDecision, String> {
