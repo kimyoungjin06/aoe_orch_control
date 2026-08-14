@@ -2170,6 +2170,62 @@ fn offdesk_wiki_read_only_commands_expose_candidates_entries_projection_and_lint
         .iter()
         .any(|entry| entry["id"] == "wiki_needs_review"));
 
+    let projection_human_output = forager_command(temp.path())
+        .args(["offdesk", "wiki", "projection", "--project-key", "project"])
+        .output()?;
+    assert!(projection_human_output.status.success());
+    let projection_human_stdout = String::from_utf8_lossy(&projection_human_output.stdout);
+    assert!(projection_human_stdout.contains("INSTRUCTION"));
+    assert!(projection_human_stdout.contains("wiki_project_entry"));
+    assert!(projection_human_stdout.contains("wiki_needs_review"));
+    assert!(projection_human_stdout.contains("[REDACTED]"));
+    assert!(!projection_human_stdout.contains(secret));
+    assert!(!projection_human_stdout.contains("wiki_other_project"));
+
+    let projection_report_human_output = forager_command(temp.path())
+        .args([
+            "offdesk",
+            "wiki",
+            "projection",
+            "--project-key",
+            "project",
+            "--report",
+            "--max-entries",
+            "2",
+        ])
+        .output()?;
+    assert!(projection_report_human_output.status.success());
+    let projection_report_human_stdout =
+        String::from_utf8_lossy(&projection_report_human_output.stdout);
+    assert!(projection_report_human_stdout.contains("Adaptive wiki projection: 2 selected"));
+    assert!(projection_report_human_stdout.contains("policy: review_expired=Warn"));
+    assert!(projection_report_human_stdout.contains("selected:"));
+    assert!(projection_report_human_stdout.contains("review_expired:"));
+    assert!(projection_report_human_stdout.contains("wiki_needs_review"));
+    assert!(!projection_report_human_stdout.contains(secret));
+
+    let comparison_human_output = forager_command(temp.path())
+        .args([
+            "offdesk",
+            "wiki",
+            "projection",
+            "--project-key",
+            "project",
+            "--compare-review-expired-policy",
+            "--max-entries",
+            "2",
+        ])
+        .output()?;
+    assert!(comparison_human_output.status.success());
+    let comparison_human_stdout = String::from_utf8_lossy(&comparison_human_output.stdout);
+    assert!(comparison_human_stdout
+        .contains("Adaptive wiki projection review-expired policy comparison"));
+    assert!(comparison_human_stdout.contains("warn:"));
+    assert!(comparison_human_stdout.contains("strict:"));
+    assert!(comparison_human_stdout.contains("selected only in warn: wiki_needs_review"));
+    assert!(comparison_human_stdout.contains("review_expired_excluded: wiki_needs_review"));
+    assert!(!comparison_human_stdout.contains(secret));
+
     let show_output = forager_command(temp.path())
         .args(["offdesk", "wiki", "show", "wiki_candidate_denial", "--json"])
         .output()?;
