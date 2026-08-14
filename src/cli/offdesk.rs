@@ -13,6 +13,7 @@ mod plan_queries;
 mod plan_registry;
 mod remote_operator_presentation;
 mod wiki_catalog;
+mod wiki_mutation_presentation;
 mod wiki_proposal_handoff;
 mod wiki_proposal_receipts;
 
@@ -47,6 +48,7 @@ use remote_operator_presentation::{
 };
 use wiki_catalog::{wiki_candidates, wiki_entries, wiki_show};
 pub use wiki_catalog::{WikiListArgs, WikiShowArgs};
+use wiki_mutation_presentation::{present_wiki_mutation, WikiMutationResult};
 pub use wiki_proposal_handoff::WikiProposalHandoffArgs;
 use wiki_proposal_handoff::{renew_review_after_command_template, wiki_proposal_handoff};
 use wiki_proposal_receipts::wiki_proposal_receipt;
@@ -2312,50 +2314,6 @@ struct MutationSnapshotListItem {
     created_at: DateTime<Utc>,
     rollback_available: bool,
     blockers: Vec<String>,
-}
-
-#[derive(Serialize)]
-#[serde(tag = "action", rename_all = "snake_case")]
-enum WikiMutationResult {
-    Promote {
-        entry: AdaptiveWikiHumanEntry,
-        audit: AdaptiveWikiAuditRecord,
-        promotion_receipt: Box<AdaptiveWikiPromotionReceipt>,
-        promotion_receipt_path: String,
-    },
-    Reject {
-        candidate: AdaptiveWikiHumanCandidate,
-        audit: AdaptiveWikiAuditRecord,
-    },
-    Rescope {
-        entry: AdaptiveWikiHumanEntry,
-        audit: AdaptiveWikiAuditRecord,
-    },
-    Edit {
-        entry: AdaptiveWikiHumanEntry,
-        audit: AdaptiveWikiAuditRecord,
-    },
-    Retag {
-        entry: AdaptiveWikiHumanEntry,
-        audit: AdaptiveWikiAuditRecord,
-    },
-    Deprecate {
-        entry: AdaptiveWikiHumanEntry,
-        audit: AdaptiveWikiAuditRecord,
-    },
-    AddCounterexample {
-        entry: AdaptiveWikiHumanEntry,
-        audit: AdaptiveWikiAuditRecord,
-    },
-    UpdateRunbook {
-        entry: AdaptiveWikiHumanEntry,
-        audit: AdaptiveWikiAuditRecord,
-    },
-    RenewReviewAfter {
-        entry: AdaptiveWikiHumanEntry,
-        previous_review_after: Option<DateTime<Utc>>,
-        audit: AdaptiveWikiAuditRecord,
-    },
 }
 
 #[derive(Serialize)]
@@ -4649,7 +4607,7 @@ async fn wiki_promote(profile: &str, args: WikiPromoteArgs) -> Result<()> {
             promotion_receipt_path.to_string_lossy().as_ref(),
         ),
     };
-    print_wiki_mutation(&result, args.json)
+    present_wiki_mutation(&result, args.json)
 }
 
 async fn wiki_reject(profile: &str, args: WikiRejectArgs) -> Result<()> {
@@ -4679,7 +4637,7 @@ async fn wiki_reject(profile: &str, args: WikiRejectArgs) -> Result<()> {
         candidate: human_candidate(candidate),
         audit,
     };
-    print_wiki_mutation(&result, args.json)
+    present_wiki_mutation(&result, args.json)
 }
 
 async fn wiki_rescope(profile: &str, args: WikiRescopeArgs) -> Result<()> {
@@ -4711,7 +4669,7 @@ async fn wiki_rescope(profile: &str, args: WikiRescopeArgs) -> Result<()> {
         entry: human_entry(entry),
         audit,
     };
-    print_wiki_mutation(&result, args.json)
+    present_wiki_mutation(&result, args.json)
 }
 
 async fn wiki_edit(profile: &str, args: WikiEditArgs) -> Result<()> {
@@ -4772,7 +4730,7 @@ async fn wiki_edit(profile: &str, args: WikiEditArgs) -> Result<()> {
         entry: entry_snapshot,
         audit,
     };
-    print_wiki_mutation(&result, args.json)
+    present_wiki_mutation(&result, args.json)
 }
 
 async fn wiki_add_tag(profile: &str, args: WikiAddTagArgs) -> Result<()> {
@@ -4804,7 +4762,7 @@ async fn wiki_add_tag(profile: &str, args: WikiAddTagArgs) -> Result<()> {
         entry: human_entry(entry),
         audit,
     };
-    print_wiki_mutation(&result, args.json)
+    present_wiki_mutation(&result, args.json)
 }
 
 async fn wiki_deprecate(profile: &str, args: WikiDeprecateArgs) -> Result<()> {
@@ -4836,7 +4794,7 @@ async fn wiki_deprecate(profile: &str, args: WikiDeprecateArgs) -> Result<()> {
         entry: human_entry(entry),
         audit,
     };
-    print_wiki_mutation(&result, args.json)
+    present_wiki_mutation(&result, args.json)
 }
 
 async fn wiki_renew_review_after(profile: &str, args: WikiRenewReviewAfterArgs) -> Result<()> {
@@ -4874,7 +4832,7 @@ async fn wiki_renew_review_after(profile: &str, args: WikiRenewReviewAfterArgs) 
         previous_review_after,
         audit,
     };
-    print_wiki_mutation(&result, args.json)
+    present_wiki_mutation(&result, args.json)
 }
 
 async fn wiki_add_counterexample(profile: &str, args: WikiCounterexampleArgs) -> Result<()> {
@@ -4907,7 +4865,7 @@ async fn wiki_add_counterexample(profile: &str, args: WikiCounterexampleArgs) ->
         entry: human_entry(entry),
         audit,
     };
-    print_wiki_mutation(&result, args.json)
+    present_wiki_mutation(&result, args.json)
 }
 
 async fn wiki_update_runbook(profile: &str, args: WikiRunbookArgs) -> Result<()> {
@@ -4960,7 +4918,7 @@ async fn wiki_update_runbook(profile: &str, args: WikiRunbookArgs) -> Result<()>
         entry: human_entry(entry),
         audit,
     };
-    print_wiki_mutation(&result, args.json)
+    present_wiki_mutation(&result, args.json)
 }
 
 async fn cancel_task(profile: &str, args: CancelTaskArgs) -> Result<()> {
@@ -9018,121 +8976,6 @@ fn print_gate_outcome(outcome: &crate::offdesk::SchedulerGateOutcome) {
             decision.status, decision.reason
         );
     }
-}
-
-fn print_wiki_mutation(result: &WikiMutationResult, json: bool) -> Result<()> {
-    if json {
-        println!("{}", serde_json::to_string_pretty(result)?);
-        return Ok(());
-    }
-
-    match result {
-        WikiMutationResult::Promote {
-            entry,
-            audit,
-            promotion_receipt,
-            promotion_receipt_path,
-        } => {
-            println!("Promoted adaptive wiki candidate to entry {}", entry.id);
-            println!(
-                "  scope: {}",
-                wiki_scope_label(entry.scope, &entry.scope_ref)
-            );
-            println!("  activation:  {:?}", entry.activation_mode);
-            println!(
-                "  agent_modes: {}",
-                adaptive_wiki_agent_modes_label(&entry.agent_modes)
-            );
-            println!("  audit: {}", audit.id);
-            println!("  receipt: {}", promotion_receipt.receipt_id);
-            println!("  receipt_path: {promotion_receipt_path}");
-        }
-        WikiMutationResult::Reject { candidate, audit } => {
-            println!("Rejected adaptive wiki candidate {}", candidate.id);
-            println!("  reason: {}", audit.reason);
-            println!("  audit:  {}", audit.id);
-        }
-        WikiMutationResult::Rescope { entry, audit } => {
-            println!("Rescoped adaptive wiki entry {}", entry.id);
-            println!(
-                "  scope: {}",
-                wiki_scope_label(entry.scope, &entry.scope_ref)
-            );
-            println!("  audit: {}", audit.id);
-        }
-        WikiMutationResult::Edit { entry, audit } => {
-            println!("Edited adaptive wiki entry {}", entry.id);
-            println!("  kind: {:?}", entry.kind);
-            println!(
-                "  agent_modes: {}",
-                adaptive_wiki_agent_modes_label(&entry.agent_modes)
-            );
-            println!("  claim: {}", entry.claim);
-            if !entry.evidence_refs.is_empty() {
-                println!("  evidence: {}", entry.evidence_refs.join(", "));
-            }
-            println!("  audit: {}", audit.id);
-        }
-        WikiMutationResult::Retag { entry, audit } => {
-            println!("Retagged adaptive wiki entry {}", entry.id);
-            if !entry.core_tags.is_empty() {
-                println!("  core tags: {}", entry.core_tags.join(", "));
-            }
-            if !entry.proposed_tags.is_empty() {
-                println!("  proposed tags: {}", entry.proposed_tags.join(", "));
-            }
-            println!("  audit: {}", audit.id);
-        }
-        WikiMutationResult::Deprecate { entry, audit } => {
-            println!("Deprecated adaptive wiki entry {}", entry.id);
-            println!("  reason: {}", audit.reason);
-            println!("  audit:  {}", audit.id);
-        }
-        WikiMutationResult::AddCounterexample { entry, audit } => {
-            println!("Added adaptive wiki counterexample to {}", entry.id);
-            if let Some(evidence_ref) = audit.evidence_ref.as_deref() {
-                println!("  evidence: {evidence_ref}");
-            }
-            println!("  audit:    {}", audit.id);
-        }
-        WikiMutationResult::UpdateRunbook { entry, audit } => {
-            println!("Updated adaptive wiki runbook {}", entry.id);
-            if !entry.support_refs.is_empty() {
-                println!("  support: {}", entry.support_refs.join(", "));
-            }
-            if !entry.capability_ids.is_empty() {
-                println!("  capabilities: {}", entry.capability_ids.join(", "));
-            }
-            if !entry.required_artifact_kinds.is_empty() {
-                println!("  artifacts: {}", entry.required_artifact_kinds.join(", "));
-            }
-            println!("  audit:   {}", audit.id);
-        }
-        WikiMutationResult::RenewReviewAfter {
-            entry,
-            previous_review_after,
-            audit,
-        } => {
-            println!("Renewed adaptive wiki review_after {}", entry.id);
-            println!(
-                "  previous: {}",
-                previous_review_after
-                    .as_ref()
-                    .map(DateTime::<Utc>::to_rfc3339)
-                    .unwrap_or_else(|| "-".to_string())
-            );
-            println!(
-                "  review_after: {}",
-                entry
-                    .review_after
-                    .as_ref()
-                    .map(DateTime::<Utc>::to_rfc3339)
-                    .unwrap_or_else(|| "-".to_string())
-            );
-            println!("  audit: {}", audit.id);
-        }
-    }
-    Ok(())
 }
 
 fn print_wiki_lint(report: &AdaptiveWikiLintReport) {
