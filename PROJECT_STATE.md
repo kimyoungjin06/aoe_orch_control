@@ -557,7 +557,7 @@ direction is defined in `docs/project-direction.md`.
 
 ## Next Work Candidates
 
-0. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~13.2k
+0. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~12.6k
    lines). Value parsing and the first typed decision, adaptive-wiki, and
    closeout receipt workflows are separated. Implementation-packet coverage
    policy and record construction are separated, as are plan-review validation
@@ -576,9 +576,11 @@ direction is defined in `docs/project-direction.md`.
    separated while status and approval queries remain in the main handlers.
    Hosted-harness profile lookup, first-read prompt-packet assembly, budget
    assessment, and Markdown rendering now share a bounded adapter while the
-   main handler retains output and file-write side effects. Next move Offdesk
-   deck source classification, artifact path allocation, Marp rendering, and
-   deck-specific Markdown presentation into a bounded adapter.
+   main handler retains output and file-write side effects. Offdesk deck source
+   classification, artifact path allocation, Markdown presentation, Marp
+   execution, and terminal/JSON output now share a bounded adapter. Next move
+   Telegram decision-ingest request/result parsing, feedback classification,
+   handoff construction, and operator rendering into a bounded adapter.
 1. Add the deferred actionable TUI attention panel using the existing shared
    operator-state and next-safe-action contracts.
 2. Apply the deferred council verdicts with the new `wiki edit --kind
