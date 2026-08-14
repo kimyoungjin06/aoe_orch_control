@@ -557,7 +557,7 @@ direction is defined in `docs/project-direction.md`.
 
 ## Next Work Candidates
 
-0. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~10.4k
+0. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~10.0k
    lines). Value parsing and the first typed decision, adaptive-wiki, and
    closeout receipt workflows are separated. Implementation-packet coverage
    policy and record construction are separated, as are plan-review validation
@@ -595,10 +595,17 @@ direction is defined in `docs/project-direction.md`.
    live in `src/cli/offdesk/wiki_mutation_presentation.rs`; validation,
    canonical writes, audit appends, and promotion receipt creation remain in
    the command handlers. JSON mutation contracts remain covered, and the
-   human retag path now has an integration regression. Next move adaptive-wiki
-   runtime-policy acknowledgement report read models and terminal presentation
-   into a bounded adapter while acknowledgement persistence remains in the
-   handlers.
+   human retag path now has an integration regression. Adaptive-wiki runtime
+   policy acknowledgement report read models, suggested-action command
+   templates, and JSON/terminal presentation now live in
+   `src/cli/offdesk/wiki_runtime_policy_ack_presentation.rs`; store reads,
+   strict projection decision queries, and acknowledgement persistence remain
+   in the command handlers. Existing JSON near-expiry, expired, and stale
+   contracts remain covered, and human acknowledgement list, report, and
+   recorded-acknowledgement output now have integration regressions. Next move
+   adaptive-wiki review_after attention report read models and terminal
+   presentation into a bounded adapter while review renewal persistence remains
+   in the mutation handler.
 1. Add the deferred actionable TUI attention panel using the existing shared
    operator-state and next-safe-action contracts.
 2. Apply the deferred council verdicts with the new `wiki edit --kind
