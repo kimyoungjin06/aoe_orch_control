@@ -746,6 +746,78 @@ fn offdesk_decision_ingest_telegram_appends_profile_handoff_and_receipt() -> Res
 
 #[test]
 #[serial]
+fn offdesk_decision_ingest_telegram_renders_fail_closed_status() -> Result<()> {
+    let temp = tempdir()?;
+    let profile_dir = profile_dir(temp.path());
+    fs::create_dir_all(&profile_dir)?;
+    let artifact_dir = temp.path().join("relay");
+    fs::create_dir_all(&artifact_dir)?;
+    let now = Utc::now();
+    let request_path = artifact_dir.join("request.json");
+    fs::write(
+        &request_path,
+        serde_json::to_string_pretty(&json!({
+            "decision_record": {
+                "schema": "decision_record.v1",
+                "decision_id": "decision-telegram-expired",
+                "project_key": "project",
+                "request_id": "request",
+                "task_id": "task",
+                "raised_by": "operator",
+                "source_surface": "offdesk.remote_operator",
+                "materiality": "medium",
+                "status": "user_pending",
+                "created_at": now,
+                "updated_at": now,
+                "decision_request": {
+                    "kind": "operator_choice",
+                    "summary": "Operator choice expired.",
+                    "decision_needed": "Choose the next direction.",
+                    "current_scope": "Review only.",
+                    "non_authorized_scope": ["runtime mutation"]
+                }
+            }
+        }))?,
+    )?;
+    let result_path = artifact_dir.join("telegram_decision.json");
+    fs::write(
+        &result_path,
+        serde_json::to_string_pretty(&json!({
+            "status": "expired",
+            "decision": "revise"
+        }))?,
+    )?;
+
+    let output = forager_command(temp.path())
+        .args([
+            "offdesk",
+            "decision",
+            "ingest-telegram",
+            "--request",
+            request_path.to_str().expect("utf8 request path"),
+            "--result",
+            result_path.to_str().expect("utf8 result path"),
+        ])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(stdout.contains("Decision: decision-telegram-expired"));
+    assert!(stdout.contains("Telegram status: expired"));
+    assert!(stdout.contains("Appended: user_pending"));
+    assert!(stdout.contains("Skipped: telegram_result_status_expired"));
+
+    let ledger = fs::read_to_string(profile_dir.join("offdesk_decisions.jsonl"))?;
+    assert_eq!(ledger.lines().count(), 1);
+    assert!(!ledger.contains("\"status\":\"handoff_ready\""));
+    Ok(())
+}
+
+#[test]
+#[serial]
 fn offdesk_decision_ingest_telegram_feedback_creates_reviewable_inbox_item() -> Result<()> {
     let temp = tempdir()?;
     let profile_dir = profile_dir(temp.path());
