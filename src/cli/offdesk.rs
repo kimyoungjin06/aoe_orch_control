@@ -16,6 +16,7 @@ mod wiki_catalog;
 mod wiki_mutation_presentation;
 mod wiki_proposal_handoff;
 mod wiki_proposal_receipts;
+mod wiki_review_after_presentation;
 mod wiki_runtime_policy_ack_presentation;
 
 use closeout_records::{
@@ -50,9 +51,12 @@ use remote_operator_presentation::{
 use wiki_catalog::{wiki_candidates, wiki_entries, wiki_show};
 pub use wiki_catalog::{WikiListArgs, WikiShowArgs};
 use wiki_mutation_presentation::{present_wiki_mutation, WikiMutationResult};
+use wiki_proposal_handoff::wiki_proposal_handoff;
 pub use wiki_proposal_handoff::WikiProposalHandoffArgs;
-use wiki_proposal_handoff::{renew_review_after_command_template, wiki_proposal_handoff};
 use wiki_proposal_receipts::wiki_proposal_receipt;
+use wiki_review_after_presentation::{
+    build_review_after_report, present_review_after_report, WikiReviewAfterReportSummary,
+};
 use wiki_runtime_policy_ack_presentation::{
     build_runtime_policy_ack_report, present_runtime_policy_ack_report,
     present_runtime_policy_acknowledgement, present_runtime_policy_acknowledgements,
@@ -2320,37 +2324,6 @@ struct MutationSnapshotListItem {
     blockers: Vec<String>,
 }
 
-#[derive(Serialize)]
-struct WikiReviewAfterReport {
-    generated_at: DateTime<Utc>,
-    query: AdaptiveWikiQuery,
-    near_expiry_hours: i64,
-    summary: WikiReviewAfterReportSummary,
-    entries: Vec<WikiReviewAfterReportItem>,
-}
-
-#[derive(Default, Serialize)]
-struct WikiReviewAfterReportSummary {
-    scoped_promoted: usize,
-    with_review_after: usize,
-    missing_review_after: usize,
-    expired: usize,
-    near_expiry: usize,
-    attention: usize,
-}
-
-#[derive(Serialize)]
-struct WikiReviewAfterReportItem {
-    id: String,
-    kind: AdaptiveWikiKind,
-    scope: AdaptiveWikiScope,
-    scope_ref: String,
-    review_after: DateTime<Utc>,
-    hours_until_review: i64,
-    status: String,
-    renew_command_template: String,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 struct DebugBundleRedactionSummary {
     text_fields_checked: usize,
@@ -3663,7 +3636,6 @@ async fn wiki_runtime_policy_ack_report(
 async fn wiki_review_after_report(profile: &str, args: WikiReviewAfterReportArgs) -> Result<()> {
     let now = Utc::now();
     let near_expiry_hours = args.near_expiry_hours.max(1);
-    let near_expiry_window = Duration::hours(near_expiry_hours);
     let query = wiki_query(
         &args.session_id,
         &args.project_key,
@@ -3671,22 +3643,9 @@ async fn wiki_review_after_report(profile: &str, args: WikiReviewAfterReportArgs
         args.agent_mode,
     );
     let projection = wiki_store(profile)?.human_projection(&query)?;
-    let report = build_review_after_report(
-        projection.entries,
-        query,
-        near_expiry_hours,
-        near_expiry_window,
-        now,
-    );
+    let report = build_review_after_report(projection.entries, query, near_expiry_hours, now);
 
-    if args.json {
-        let value = operator_safe_json_value(serde_json::to_value(&report)?);
-        println!("{}", serde_json::to_string_pretty(&value)?);
-        return Ok(());
-    }
-
-    print_wiki_review_after_report(&report);
-    Ok(())
+    present_review_after_report(&report, args.json)
 }
 
 async fn wiki_ack_runtime_policy(profile: &str, args: WikiRuntimePolicyAckArgs) -> Result<()> {
@@ -3732,80 +3691,6 @@ async fn wiki_ack_runtime_policy(profile: &str, args: WikiRuntimePolicyAckArgs) 
     )?;
 
     present_runtime_policy_acknowledgement(&acknowledgement, args.json)
-}
-
-fn build_review_after_report(
-    entries: Vec<AdaptiveWikiHumanEntry>,
-    query: AdaptiveWikiQuery,
-    near_expiry_hours: i64,
-    near_expiry_window: Duration,
-    now: DateTime<Utc>,
-) -> WikiReviewAfterReport {
-    let mut summary = WikiReviewAfterReportSummary::default();
-    let mut attention = Vec::new();
-    for entry in entries
-        .into_iter()
-        .filter(|entry| entry.status == crate::offdesk::AdaptiveWikiStatus::Promoted)
-    {
-        summary.scoped_promoted += 1;
-        let Some(review_after) = entry.review_after else {
-            summary.missing_review_after += 1;
-            continue;
-        };
-        summary.with_review_after += 1;
-        if review_after <= now {
-            summary.expired += 1;
-            attention.push(review_after_report_item(
-                entry,
-                review_after,
-                "expired",
-                now,
-            ));
-        } else if review_after <= now + near_expiry_window {
-            summary.near_expiry += 1;
-            attention.push(review_after_report_item(
-                entry,
-                review_after,
-                "near_expiry",
-                now,
-            ));
-        }
-    }
-    summary.attention = attention.len();
-    attention.sort_by_key(|entry| (review_after_status_order(&entry.status), entry.review_after));
-    WikiReviewAfterReport {
-        generated_at: now,
-        query,
-        near_expiry_hours,
-        summary,
-        entries: attention,
-    }
-}
-
-fn review_after_report_item(
-    entry: AdaptiveWikiHumanEntry,
-    review_after: DateTime<Utc>,
-    status: &str,
-    now: DateTime<Utc>,
-) -> WikiReviewAfterReportItem {
-    WikiReviewAfterReportItem {
-        renew_command_template: renew_review_after_command_template(&entry.id),
-        id: entry.id,
-        kind: entry.kind,
-        scope: entry.scope,
-        scope_ref: entry.scope_ref,
-        review_after,
-        hours_until_review: review_after.signed_duration_since(now).num_hours(),
-        status: status.to_string(),
-    }
-}
-
-fn review_after_status_order(status: &str) -> u8 {
-    match status {
-        "expired" => 0,
-        "near_expiry" => 1,
-        _ => 2,
-    }
 }
 
 fn wiki_runtime_policy_ack_budget(args: &WikiRuntimePolicyAckArgs) -> AdaptiveWikiProjectionBudget {
@@ -5548,7 +5433,6 @@ fn build_debug_bundle(profile: &str) -> Result<OffdeskDebugBundle> {
         wiki_projection.entries.clone(),
         all_wiki_query,
         168,
-        Duration::hours(168),
         generated_at,
     )
     .summary;
@@ -7855,7 +7739,6 @@ fn build_maintenance_report(
         wiki_projection.entries,
         all_wiki_query,
         wiki_review_near_expiry_hours,
-        Duration::hours(wiki_review_near_expiry_hours),
         generated_at,
     )
     .summary;
@@ -8744,38 +8627,6 @@ fn print_wiki_projection_comparison_report(report: &AdaptiveWikiProjectionCompar
         println!(
             "  review_expired_excluded: {}",
             report.summary.review_expired_excluded.join(", ")
-        );
-    }
-}
-
-fn print_wiki_review_after_report(report: &WikiReviewAfterReport) {
-    println!("Adaptive wiki review_after attention report");
-    println!(
-        "  scoped_promoted: {}  with_review_after: {}  missing_review_after: {}",
-        report.summary.scoped_promoted,
-        report.summary.with_review_after,
-        report.summary.missing_review_after
-    );
-    println!(
-        "  expired: {}  near_expiry: {}  attention: {}",
-        report.summary.expired, report.summary.near_expiry, report.summary.attention
-    );
-    if report.entries.is_empty() {
-        println!("No promoted adaptive wiki entries need review_after attention.");
-        return;
-    }
-    println!(
-        "{:<40} {:<12} {:<28} {:<14} SCOPE",
-        "ID", "STATUS", "REVIEW_AFTER", "HOURS_LEFT"
-    );
-    for entry in &report.entries {
-        println!(
-            "{:<40} {:<12} {:<28} {:<14} {}",
-            entry.id,
-            entry.status,
-            entry.review_after,
-            entry.hours_until_review,
-            wiki_scope_label(entry.scope, &entry.scope_ref)
         );
     }
 }

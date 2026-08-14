@@ -7483,6 +7483,29 @@ fn offdesk_wiki_review_after_report_flags_expired_and_near_expiry_entries() -> R
     assert!(!report_json.contains("wiki_review_fresh"));
     assert!(!report_json.contains("wiki_review_deprecated"));
     assert!(!report_json.contains("wiki_review_other_artifact"));
+
+    let human_output = forager_command(temp.path())
+        .args([
+            "offdesk",
+            "wiki",
+            "review-after-report",
+            "--artifact-kind",
+            "report",
+            "--near-expiry-hours",
+            "24",
+        ])
+        .output()?;
+    assert!(human_output.status.success());
+    let human = String::from_utf8(human_output.stdout)?;
+    assert!(human.contains("Adaptive wiki review_after attention report"));
+    assert!(human.contains("wiki_review_expired"));
+    assert!(human.contains("wiki_review_near"));
+    assert!(human.contains("artifactkind:report"));
+    assert!(human.contains(
+        "renew: forager offdesk wiki renew-review-after 'wiki_review_expired' --review-after <rfc3339> --reason <reason>"
+    ));
+    assert!(!human.contains("Expired instruction should not be in attention report"));
+    assert!(!human.contains("wiki_review_fresh"));
     Ok(())
 }
 
