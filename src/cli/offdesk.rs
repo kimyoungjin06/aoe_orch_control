@@ -14,6 +14,7 @@ mod plan_registry;
 mod remote_operator_presentation;
 mod wiki_catalog;
 mod wiki_mutation_presentation;
+mod wiki_projection_presentation;
 mod wiki_proposal_handoff;
 mod wiki_proposal_receipts;
 mod wiki_review_after_presentation;
@@ -51,6 +52,7 @@ use remote_operator_presentation::{
 use wiki_catalog::{wiki_candidates, wiki_entries, wiki_show};
 pub use wiki_catalog::{WikiListArgs, WikiShowArgs};
 use wiki_mutation_presentation::{present_wiki_mutation, WikiMutationResult};
+use wiki_projection_presentation::{present_wiki_projection, present_wiki_projection_comparison};
 use wiki_proposal_handoff::wiki_proposal_handoff;
 pub use wiki_proposal_handoff::WikiProposalHandoffArgs;
 use wiki_proposal_receipts::wiki_proposal_receipt;
@@ -96,8 +98,7 @@ use crate::offdesk::{
     AdaptiveWikiGraphReport, AdaptiveWikiHumanCandidate, AdaptiveWikiHumanEntry, AdaptiveWikiKind,
     AdaptiveWikiLintReport, AdaptiveWikiLiveEpisodeFilter, AdaptiveWikiLiveEpisodeTraceReport,
     AdaptiveWikiMarkdownExportReport, AdaptiveWikiOrigin, AdaptiveWikiProjectionBudget,
-    AdaptiveWikiProjectionComparisonReport, AdaptiveWikiProjectionPolicy,
-    AdaptiveWikiProjectionReport, AdaptiveWikiProjectionReviewExpiredPolicy,
+    AdaptiveWikiProjectionPolicy, AdaptiveWikiProjectionReviewExpiredPolicy,
     AdaptiveWikiPromotionEvidenceChainReport, AdaptiveWikiPromotionReceipt,
     AdaptiveWikiPromotionReceiptAuthority, AdaptiveWikiQuery, AdaptiveWikiReviewProposal,
     AdaptiveWikiReviewProposalAction, AdaptiveWikiReviewProposalDecision,
@@ -3508,50 +3509,12 @@ async fn wiki_projection(profile: &str, args: WikiProjectionArgs) -> Result<()> 
         }
         let comparison =
             wiki_store(profile)?.ai_projection_review_expired_policy_comparison(&query, budget)?;
-        if args.json {
-            println!("{}", serde_json::to_string_pretty(&comparison)?);
-            return Ok(());
-        }
-        print_wiki_projection_comparison_report(&comparison);
-        return Ok(());
+        return present_wiki_projection_comparison(&comparison, args.json);
     }
     let policy = wiki_projection_policy(&args);
     let report = wiki_store(profile)?.ai_projection_report_with_policy(&query, budget, policy)?;
 
-    if args.json {
-        if args.report {
-            println!("{}", serde_json::to_string_pretty(&report)?);
-        } else {
-            println!("{}", serde_json::to_string_pretty(&report.selected)?);
-        }
-        return Ok(());
-    }
-
-    if args.report {
-        print_wiki_projection_report(&report);
-        return Ok(());
-    }
-
-    if report.selected.is_empty() {
-        println!("No adaptive wiki projection entries found.");
-        return Ok(());
-    }
-
-    println!(
-        "{:<44} {:<16} {:<16} {:<18} INSTRUCTION",
-        "ID", "SCOPE", "ACTIVATION", "AGENT_MODES"
-    );
-    for entry in report.selected {
-        println!(
-            "{:<44} {:<16} {:<16} {:<18} {}",
-            entry.id,
-            format!("{:?}", entry.scope).to_lowercase(),
-            format!("{:?}", entry.activation_mode).to_lowercase(),
-            adaptive_wiki_agent_modes_label(&entry.agent_modes),
-            entry.instruction
-        );
-    }
-    Ok(())
+    present_wiki_projection(&report, args.report, args.json)
 }
 
 fn wiki_projection_budget(args: &WikiProjectionArgs) -> AdaptiveWikiProjectionBudget {
@@ -8509,124 +8472,6 @@ fn print_wiki_lint(report: &AdaptiveWikiLintReport) {
         println!(
             "  - {:?} {} {}: {}",
             issue.severity, issue.subject_kind, issue.subject_id, issue.message
-        );
-    }
-}
-
-fn print_wiki_projection_report(report: &AdaptiveWikiProjectionReport) {
-    println!(
-        "Adaptive wiki projection: {} selected, {} rejected, {} conflicts, {} review-expired ({} matching promoted entries)",
-        report.summary.selected,
-        report.summary.rejected,
-        report.summary.conflicts,
-        report.summary.review_expired_projected,
-        report.summary.promoted_scope_matches
-    );
-    println!(
-        "  budget: entries={} context_chars={} instruction_chars={}",
-        report.budget.max_entries,
-        report.budget.max_context_chars,
-        report.budget.max_instruction_chars
-    );
-    println!(
-        "  policy: review_expired={:?}",
-        report.policy.review_expired
-    );
-    println!(
-        "  estimated_context_chars: {}",
-        report.summary.estimated_context_chars
-    );
-    if report.summary.instructions_truncated > 0 {
-        println!(
-            "  instructions_truncated: {}",
-            report.summary.instructions_truncated
-        );
-    }
-    if !report.selected.is_empty() {
-        println!("  selected:");
-        for entry in &report.selected {
-            println!(
-                "    {} {:?} {:?}:{} {:?} agent_modes={} evidence={}",
-                entry.id,
-                entry.kind,
-                entry.scope,
-                entry.scope_ref,
-                entry.confidence,
-                adaptive_wiki_agent_modes_label(&entry.agent_modes),
-                entry.evidence_count
-            );
-        }
-    }
-    if !report.rejected.is_empty() {
-        println!("  rejected:");
-        for rejection in &report.rejected {
-            println!(
-                "    {} {:?}: {}",
-                rejection.entry_id, rejection.reason, rejection.detail
-            );
-        }
-    }
-    if !report.conflicts.is_empty() {
-        println!("  conflicts:");
-        for conflict in &report.conflicts {
-            println!(
-                "    {} <-> {} {}: {}",
-                conflict.entry_id,
-                conflict.conflicting_entry_id,
-                conflict.signature,
-                conflict.detail
-            );
-        }
-    }
-    if !report.review_expired.is_empty() {
-        println!("  review_expired:");
-        for warning in &report.review_expired {
-            println!(
-                "    {} {:?}: review_after={} {}",
-                warning.entry_id, warning.scope, warning.review_after, warning.detail
-            );
-        }
-    }
-}
-
-fn print_wiki_projection_comparison_report(report: &AdaptiveWikiProjectionComparisonReport) {
-    println!("Adaptive wiki projection review-expired policy comparison");
-    println!(
-        "  budget: entries={} context_chars={} instruction_chars={}",
-        report.budget.max_entries,
-        report.budget.max_context_chars,
-        report.budget.max_instruction_chars
-    );
-    println!(
-        "  warn:   selected={} rejected={} review_expired_projected={} context_chars={}",
-        report.summary.warn_selected,
-        report.summary.warn_rejected,
-        report.warn.summary.review_expired_projected,
-        report.summary.warn_estimated_context_chars
-    );
-    println!(
-        "  strict: selected={} rejected={} review_expired_projected={} context_chars={}",
-        report.summary.strict_selected,
-        report.summary.strict_rejected,
-        report.strict.summary.review_expired_projected,
-        report.summary.strict_estimated_context_chars
-    );
-    if !report.summary.selected_only_in_warn.is_empty() {
-        println!(
-            "  selected only in warn: {}",
-            report.summary.selected_only_in_warn.join(", ")
-        );
-    }
-    if !report.summary.selected_only_in_strict.is_empty() {
-        println!(
-            "  selected only in strict: {}",
-            report.summary.selected_only_in_strict.join(", ")
-        );
-    }
-    if !report.summary.review_expired_excluded.is_empty() {
-        println!(
-            "  review_expired_excluded: {}",
-            report.summary.review_expired_excluded.join(", ")
         );
     }
 }
