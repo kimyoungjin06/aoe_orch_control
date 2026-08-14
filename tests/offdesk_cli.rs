@@ -3570,6 +3570,17 @@ fn offdesk_wiki_proposal_handoff_previews_ready_manual_and_blocked() -> Result<(
         .iter()
         .any(|option| option["mutation"] == "add_counterexample"));
 
+    let human_output = forager_command(temp.path())
+        .args(["offdesk", "wiki", "proposal-handoff", renew_proposal_id])
+        .output()?;
+    assert!(human_output.status.success());
+    let human_stdout = String::from_utf8_lossy(&human_output.stdout);
+    assert!(human_stdout.contains("Adaptive wiki proposal handoff"));
+    assert!(human_stdout.contains("manual_required"));
+    assert!(human_stdout.contains("required inputs:"));
+    assert!(human_stdout.contains("mutation options:"));
+    assert!(human_stdout.contains("rescope: forager offdesk wiki rescope"));
+
     let conflict_manual_output = forager_command(temp.path())
         .args([
             "offdesk",
