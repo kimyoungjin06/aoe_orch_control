@@ -7723,6 +7723,16 @@ fn offdesk_runtime_policy_ack_report_flags_near_expiry_and_session_block() -> Re
         .output()?;
     assert!(ack_output.status.success());
     let ack: serde_json::Value = serde_json::from_slice(&ack_output.stdout)?;
+    let ack_id = ack["id"].as_str().expect("ack id");
+
+    let ack_list_output = forager_command(temp.path())
+        .args(["offdesk", "wiki", "runtime-policy-acks"])
+        .output()?;
+    assert!(ack_list_output.status.success());
+    let ack_list_stdout = String::from_utf8(ack_list_output.stdout)?;
+    assert!(ack_list_stdout.contains("SCOPE_MODE"));
+    assert!(ack_list_stdout.contains(ack_id));
+    assert!(ack_list_stdout.contains("project_artifact"));
 
     entries.push(json!({
         "id": "wiki_report_session",
@@ -7793,6 +7803,51 @@ fn offdesk_runtime_policy_ack_report_flags_near_expiry_and_session_block() -> Re
     assert!(suggested_ack.contains("ack-runtime-policy"));
     assert!(suggested_ack.contains("--session-id 'request-two'"));
     assert!(!suggested_ack.contains("--scope-mode"));
+
+    let human_report_output = forager_command(temp.path())
+        .args([
+            "offdesk",
+            "wiki",
+            "runtime-policy-ack-report",
+            "--session-id",
+            "request-two",
+            "--project-key",
+            "project",
+            "--artifact-kind",
+            "report",
+            "--near-expiry-hours",
+            "2",
+        ])
+        .output()?;
+    assert!(human_report_output.status.success());
+    let human_report_stdout = String::from_utf8(human_report_output.stdout)?;
+    assert!(human_report_stdout.contains("Adaptive wiki runtime policy acknowledgement report"));
+    assert!(human_report_stdout.contains(ack_id));
+    assert!(human_report_stdout.contains("project_artifact"));
+    assert!(human_report_stdout.contains("query_blocked_by_session_scope"));
+    assert!(human_report_stdout.contains("suggested_action: record_exact_query_acknowledgement"));
+    assert!(human_report_stdout.contains("--session-id 'request-two'"));
+
+    let human_ack_output = forager_command(temp.path())
+        .args([
+            "offdesk",
+            "wiki",
+            "ack-runtime-policy",
+            "--scope-mode",
+            "project-artifact",
+            "--project-key",
+            "project",
+            "--artifact-kind",
+            "report",
+            "--reason",
+            "human presentation regression",
+        ])
+        .output()?;
+    assert!(human_ack_output.status.success());
+    let human_ack_stdout = String::from_utf8(human_ack_output.stdout)?;
+    assert!(human_ack_stdout.contains("Recorded adaptive wiki runtime policy acknowledgement"));
+    assert!(human_ack_stdout.contains("scope_mode: project_artifact"));
+    assert!(human_ack_stdout.contains("reason: human presentation regression"));
     Ok(())
 }
 
