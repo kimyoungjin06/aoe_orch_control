@@ -557,7 +557,7 @@ direction is defined in `docs/project-direction.md`.
 
 ## Next Work Candidates
 
-0. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~10.6k
+0. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~10.4k
    lines). Value parsing and the first typed decision, adaptive-wiki, and
    closeout receipt workflows are separated. Implementation-packet coverage
    policy and record construction are separated, as are plan-review validation
@@ -590,9 +590,14 @@ direction is defined in `docs/project-direction.md`.
    argument parsing, human-projection query coordination, exact-id selection,
    and JSON/terminal presentation now live in the bounded read-only
    `src/cli/offdesk/wiki_catalog.rs` adapter. Catalog reads preserve canonical
-   entry and candidate bytes, and a missing detail id fails closed. Next move
-   adaptive-wiki mutation result envelopes and their JSON/terminal presentation
-   into a bounded adapter while mutation execution stays in the command
+   entry and candidate bytes, and a missing detail id fails closed.
+   Adaptive-wiki mutation result envelopes and JSON/terminal presentation now
+   live in `src/cli/offdesk/wiki_mutation_presentation.rs`; validation,
+   canonical writes, audit appends, and promotion receipt creation remain in
+   the command handlers. JSON mutation contracts remain covered, and the
+   human retag path now has an integration regression. Next move adaptive-wiki
+   runtime-policy acknowledgement report read models and terminal presentation
+   into a bounded adapter while acknowledgement persistence remains in the
    handlers.
 1. Add the deferred actionable TUI attention panel using the existing shared
    operator-state and next-safe-action contracts.

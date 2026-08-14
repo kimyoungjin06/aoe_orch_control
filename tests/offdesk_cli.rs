@@ -4546,6 +4546,27 @@ fn offdesk_wiki_review_commands_mutate_entries_and_append_audit() -> Result<()> 
         json!(["planning", "review"])
     );
 
+    let retag_output = forager_command(temp.path())
+        .args([
+            "offdesk",
+            "wiki",
+            "add-tag",
+            &entry_id,
+            "--core-tag",
+            "reviewed",
+            "--proposed-tag",
+            "operations",
+            "--reason",
+            "classify reviewed guidance",
+        ])
+        .output()?;
+    assert!(retag_output.status.success());
+    let retag_stdout = String::from_utf8_lossy(&retag_output.stdout);
+    assert!(retag_stdout.contains(&format!("Retagged adaptive wiki entry {entry_id}")));
+    assert!(retag_stdout.contains("core tags: reviewed"));
+    assert!(retag_stdout.contains("proposed tags: operations"));
+    assert!(retag_stdout.contains("audit: wiki_audit_"));
+
     let counterexample_output = forager_command(temp.path())
         .args([
             "offdesk",
@@ -4605,7 +4626,7 @@ fn offdesk_wiki_review_commands_mutate_entries_and_append_audit() -> Result<()> 
 
     let audit = fs::read_to_string(profile_dir.join("adaptive_wiki_audit.jsonl"))?;
     assert!(!audit.contains(secret));
-    assert_eq!(audit.lines().count(), 7);
+    assert_eq!(audit.lines().count(), 8);
     assert!(audit.contains("\"action\":\"promote\""));
     assert!(audit.contains("\"candidate_snapshot\""));
     assert!(audit.contains("\"entry_snapshot\""));
@@ -4613,6 +4634,7 @@ fn offdesk_wiki_review_commands_mutate_entries_and_append_audit() -> Result<()> 
     assert!(audit.contains("\"action\":\"rescope\""));
     assert!(audit.contains("\"action\":\"update_runbook\""));
     assert!(audit.contains("\"action\":\"edit\""));
+    assert!(audit.contains("\"action\":\"retag\""));
     assert!(audit.contains("\"action\":\"add_counterexample\""));
     assert!(audit.contains("\"action\":\"deprecate\""));
     Ok(())
