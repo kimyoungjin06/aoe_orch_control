@@ -8,6 +8,7 @@ use chrono::Utc;
 use clap::Args;
 use serde::Serialize;
 
+use super::wiki_review_after_presentation::renew_review_after_command_template;
 use super::{
     operator_safe_json_value, parse_adaptive_wiki_scope, proposal_has_non_stale_decision,
     require_non_empty_arg, shell_quote_arg, wiki_store,
@@ -834,13 +835,6 @@ fn deprecate_command_template(entry_id: &str) -> String {
 fn counterexample_command_template(entry_id: &str) -> String {
     format!(
         "forager offdesk wiki add-counterexample {} --evidence-ref <evidence-ref> --reason <reason>",
-        handoff_subject_arg(entry_id)
-    )
-}
-
-pub(super) fn renew_review_after_command_template(entry_id: &str) -> String {
-    format!(
-        "forager offdesk wiki renew-review-after {} --review-after <rfc3339> --reason <reason>",
         handoff_subject_arg(entry_id)
     )
 }
