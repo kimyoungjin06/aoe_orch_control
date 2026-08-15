@@ -2399,6 +2399,28 @@ fn offdesk_wiki_read_only_commands_expose_candidates_entries_projection_and_lint
         candidates_before_episode
     );
 
+    let episode_human_output = forager_command(temp.path())
+        .args([
+            "offdesk",
+            "wiki",
+            "evaluate-episode",
+            "wiki_project_entry",
+            "--project-key",
+            "project",
+            "--out-project-key",
+            "other-project",
+            "--dry-run",
+        ])
+        .output()?;
+    assert!(episode_human_output.status.success());
+    let episode_human_stdout = String::from_utf8_lossy(&episode_human_output.stdout);
+    assert!(episode_human_stdout.contains("Adaptive wiki episode evaluation planned"));
+    assert!(episode_human_stdout.contains("target: wiki_project_entry"));
+    assert!(episode_human_stdout.contains("review-expired entries were projected"));
+    assert!(episode_human_stdout.contains("in-scope ids:"));
+    assert!(!episode_human_stdout.contains(secret));
+    assert!(!profile_dir.join("adaptive_wiki_episode_reports").exists());
+
     let episode_output = forager_command(temp.path())
         .args([
             "offdesk",
@@ -2901,6 +2923,26 @@ fn offdesk_wiki_episode_trace_links_task_usage_candidate_and_audit_evidence() ->
         candidates_before
     );
 
+    let human_output = forager_command(temp.path())
+        .args([
+            "offdesk",
+            "wiki",
+            "episode-trace",
+            "--request-id",
+            "request_episode",
+            "--project-key",
+            "project",
+            "--dry-run",
+        ])
+        .output()?;
+    assert!(human_output.status.success());
+    let human_stdout = String::from_utf8_lossy(&human_output.stdout);
+    assert!(human_stdout.contains("Adaptive wiki live episode trace planned"));
+    assert!(human_stdout.contains("runtime usage: 1"));
+    assert!(human_stdout.contains("wiki_trace_entry"));
+    assert!(!human_stdout.contains(secret));
+    assert!(!profile_dir.join("adaptive_wiki_episode_traces").exists());
+
     let output = forager_command(temp.path())
         .args([
             "offdesk",
@@ -3149,6 +3191,26 @@ fn offdesk_wiki_evaluate_recurrence_counts_pre_and_post_promotion_corrections() 
         fs::read_to_string(profile_dir.join("adaptive_wiki_candidates.json"))?,
         candidates_before
     );
+
+    let human_output = forager_command(temp.path())
+        .args([
+            "offdesk",
+            "wiki",
+            "evaluate-recurrence",
+            "wiki_recur_entry",
+            "--dry-run",
+        ])
+        .output()?;
+    assert!(human_output.status.success());
+    let human_stdout = String::from_utf8_lossy(&human_output.stdout);
+    assert!(human_stdout.contains("Adaptive wiki correction recurrence planned"));
+    assert!(human_stdout.contains("entry: wiki_recur_entry"));
+    assert!(human_stdout.contains("corrections: pre=1 post=1 delta=0"));
+    assert!(human_stdout.contains("post usage=1"));
+    assert!(!human_stdout.contains(secret));
+    assert!(!profile_dir
+        .join("adaptive_wiki_recurrence_reports")
+        .exists());
 
     let output = forager_command(temp.path())
         .args([
@@ -4304,6 +4366,26 @@ fn offdesk_wiki_promotion_chain_reports_snapshots_and_usage_without_mutation() -
         fs::read_to_string(profile_dir.join("adaptive_wiki_audit.jsonl"))?,
         audit_before
     );
+
+    let human_output = forager_command(temp.path())
+        .args([
+            "offdesk",
+            "wiki",
+            "promotion-chain",
+            "wiki_chain_entry",
+            "--dry-run",
+        ])
+        .output()?;
+    assert!(human_output.status.success());
+    let human_stdout = String::from_utf8_lossy(&human_output.stdout);
+    assert!(human_stdout.contains("Adaptive wiki promotion evidence chain planned"));
+    assert!(human_stdout.contains("entry: wiki_chain_entry"));
+    assert!(human_stdout.contains(
+        "promotion audit=true candidate snapshot=true entry snapshot=true current entry=true"
+    ));
+    assert!(human_stdout.contains("usage records=1 related audits=1 failures=0"));
+    assert!(!human_stdout.contains(secret));
+    assert!(!profile_dir.join("adaptive_wiki_promotion_chains").exists());
 
     let output = forager_command(temp.path())
         .args([
