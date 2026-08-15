@@ -557,7 +557,7 @@ direction is defined in `docs/project-direction.md`.
 
 ## Next Work Candidates
 
-0. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~9.6k
+0. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~9.5k
    lines). Value parsing and the first typed decision, adaptive-wiki, and
    closeout receipt workflows are separated. Implementation-packet coverage
    policy and record construction are separated, as are plan-review validation
@@ -624,10 +624,17 @@ direction is defined in `docs/project-direction.md`.
    construction, and graph file writes remain in the command handlers.
    Existing JSON contracts remain covered, and human lint, markdown dry-run,
    and graph dry-run output now have integration regressions that also verify
-   secret exclusion and no dry-run directory creation. Next move adaptive-wiki
-   review report terminal/JSON presentation into a bounded adapter while queue
-   filtering, report generation, and report-file writes remain in the command
-   handler and store.
+   secret exclusion and no dry-run directory creation. Adaptive-wiki curator
+   review report terminal/JSON presentation now lives in
+   `src/cli/offdesk/wiki_review_presentation.rs`; queue-filter validation,
+   read-only versus writable store selection, report generation, and report-file
+   writes remain in the command handler and store. Existing JSON and write
+   contracts remain covered, and human dry-run output now has an integration
+   regression that also verifies secret exclusion and no report-directory
+   creation. Next move adaptive-wiki episode evaluation, live trace,
+   correction-recurrence, and promotion-chain terminal/JSON presentation into
+   a bounded report adapter while query construction, report generation, and
+   artifact writes remain in the command handlers and store.
 1. Add the deferred actionable TUI attention panel using the existing shared
    operator-state and next-safe-action contracts.
 2. Apply the deferred council verdicts with the new `wiki edit --kind
