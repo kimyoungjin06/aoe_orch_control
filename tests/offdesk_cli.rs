@@ -2284,6 +2284,16 @@ fn offdesk_wiki_read_only_commands_expose_candidates_entries_projection_and_lint
     assert!(lint_codes.contains(&"promoted_without_evidence"));
     assert!(lint_codes.contains(&"review_expired"));
 
+    let lint_human_output = forager_command(temp.path())
+        .args(["offdesk", "wiki", "lint"])
+        .output()?;
+    assert!(lint_human_output.status.success());
+    let lint_human_stdout = String::from_utf8_lossy(&lint_human_output.stdout);
+    assert!(lint_human_stdout.contains("Adaptive wiki lint:"));
+    assert!(lint_human_stdout.contains("3 entries, 1 candidates"));
+    assert!(lint_human_stdout.contains("wiki_needs_review"));
+    assert!(!lint_human_stdout.contains(secret));
+
     let graph_dir = temp.path().join("adaptive-wiki-graph");
     let graph_output = forager_command(temp.path())
         .args([
@@ -2319,6 +2329,26 @@ fn offdesk_wiki_read_only_commands_expose_candidates_entries_projection_and_lint
     assert!(graph_dir.join("graph.md").is_file());
     assert!(!String::from_utf8_lossy(&graph_output.stdout).contains(secret));
     assert!(!fs::read_to_string(graph_dir.join("graph.md"))?.contains(secret));
+
+    let graph_human_dir = temp.path().join("adaptive-wiki-graph-human");
+    let graph_human_output = forager_command(temp.path())
+        .args([
+            "offdesk",
+            "wiki",
+            "graph",
+            "--output",
+            graph_human_dir.to_str().expect("human graph dir"),
+            "--dry-run",
+        ])
+        .output()?;
+    assert!(graph_human_output.status.success());
+    let graph_human_stdout = String::from_utf8_lossy(&graph_human_output.stdout);
+    assert!(graph_human_stdout.contains("Adaptive wiki tag graph:"));
+    assert!(graph_human_stdout.contains("entries: 3  candidates: 1"));
+    assert!(graph_human_stdout.contains("export: planned 2 files to"));
+    assert!(graph_human_stdout.contains("proposed_tag_matches_core_prefix"));
+    assert!(!graph_human_stdout.contains(secret));
+    assert!(!graph_human_dir.exists());
 
     let entries_before_episode =
         fs::read_to_string(profile_dir.join("adaptive_wiki_entries.json"))?;
@@ -2429,6 +2459,26 @@ fn offdesk_wiki_read_only_commands_expose_candidates_entries_projection_and_lint
         .any(|file| file["path"] == "entries/procedure/wiki-project-entry.md"));
     assert!(!vault_dir.exists());
     assert!(!String::from_utf8_lossy(&dry_run_output.stdout).contains(secret));
+
+    let human_vault_dir = temp.path().join("adaptive-wiki-vault-human");
+    let export_human_output = forager_command(temp.path())
+        .args([
+            "offdesk",
+            "wiki",
+            "export-markdown",
+            "--output",
+            human_vault_dir.to_str().expect("human vault dir"),
+            "--dry-run",
+        ])
+        .output()?;
+    assert!(export_human_output.status.success());
+    let export_human_stdout = String::from_utf8_lossy(&export_human_output.stdout);
+    assert!(export_human_stdout.contains("Adaptive wiki markdown export planned"));
+    assert!(export_human_stdout.contains("status: Missing  reexport_recommended=true"));
+    assert!(export_human_stdout.contains("entries: 3  candidates: 1"));
+    assert!(export_human_stdout.contains("entries/procedure/wiki-project-entry.md"));
+    assert!(!export_human_stdout.contains(secret));
+    assert!(!human_vault_dir.exists());
 
     let export_output = forager_command(temp.path())
         .args([
