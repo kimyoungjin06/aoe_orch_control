@@ -1,6 +1,6 @@
 # Project State
 
-Updated: 2026-08-14
+Updated: 2026-08-15
 
 This is the small current surface for Forager development work. It is separate
 from the public product README and from the mdBook user guides.
@@ -557,7 +557,7 @@ direction is defined in `docs/project-direction.md`.
 
 ## Next Work Candidates
 
-0. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~9.7k
+0. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~9.6k
    lines). Value parsing and the first typed decision, adaptive-wiki, and
    closeout receipt workflows are separated. Implementation-packet coverage
    policy and record construction are separated, as are plan-review validation
@@ -617,10 +617,17 @@ direction is defined in `docs/project-direction.md`.
    runtime-policy acknowledgement lookup remains adjacent handler authority.
    Existing JSON contracts remain covered, and human projection list, report,
    and policy comparison output now have integration regressions that also
-   exclude raw secret values. Next move adaptive-wiki lint, markdown-export,
-   and graph terminal/JSON presentation into a bounded read-only adapter while
-   lint and projection queries, export path selection and writes, and graph
-   artifact writes remain in the command handlers.
+   exclude raw secret values. Adaptive-wiki lint, markdown-export, and graph
+   terminal/JSON presentation now live in the bounded read-only
+   `src/cli/offdesk/wiki_audit_presentation.rs` adapter; canonical store
+   queries, export path selection, markdown-vault writes, graph artifact
+   construction, and graph file writes remain in the command handlers.
+   Existing JSON contracts remain covered, and human lint, markdown dry-run,
+   and graph dry-run output now have integration regressions that also verify
+   secret exclusion and no dry-run directory creation. Next move adaptive-wiki
+   review report terminal/JSON presentation into a bounded adapter while queue
+   filtering, report generation, and report-file writes remain in the command
+   handler and store.
 1. Add the deferred actionable TUI attention panel using the existing shared
    operator-state and next-safe-action contracts.
 2. Apply the deferred council verdicts with the new `wiki edit --kind

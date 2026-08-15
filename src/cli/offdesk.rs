@@ -12,6 +12,7 @@ mod plan_presentation;
 mod plan_queries;
 mod plan_registry;
 mod remote_operator_presentation;
+mod wiki_audit_presentation;
 mod wiki_catalog;
 mod wiki_mutation_presentation;
 mod wiki_projection_presentation;
@@ -48,6 +49,9 @@ use plan_presentation::{
 use plan_queries::{query_offdesk_plan_detail, query_offdesk_plans, OffdeskPlanListQuery};
 use remote_operator_presentation::{
     present_remote_operator_pending, present_remote_operator_status,
+};
+use wiki_audit_presentation::{
+    present_wiki_graph, present_wiki_lint, present_wiki_markdown_export,
 };
 use wiki_catalog::{wiki_candidates, wiki_entries, wiki_show};
 pub use wiki_catalog::{WikiListArgs, WikiShowArgs};
@@ -95,19 +99,19 @@ use crate::offdesk::{
     AdaptiveWikiAuditAction, AdaptiveWikiAuditRecord, AdaptiveWikiCandidate,
     AdaptiveWikiCandidateInput, AdaptiveWikiConfidence, AdaptiveWikiCorrectionRecurrenceReport,
     AdaptiveWikiEntry, AdaptiveWikiEntryEdit, AdaptiveWikiEpisodeEvaluationReport,
-    AdaptiveWikiGraphReport, AdaptiveWikiHumanCandidate, AdaptiveWikiHumanEntry, AdaptiveWikiKind,
-    AdaptiveWikiLintReport, AdaptiveWikiLiveEpisodeFilter, AdaptiveWikiLiveEpisodeTraceReport,
-    AdaptiveWikiMarkdownExportReport, AdaptiveWikiOrigin, AdaptiveWikiProjectionBudget,
-    AdaptiveWikiProjectionPolicy, AdaptiveWikiProjectionReviewExpiredPolicy,
-    AdaptiveWikiPromotionEvidenceChainReport, AdaptiveWikiPromotionReceipt,
-    AdaptiveWikiPromotionReceiptAuthority, AdaptiveWikiQuery, AdaptiveWikiReviewProposal,
-    AdaptiveWikiReviewProposalAction, AdaptiveWikiReviewProposalDecision,
-    AdaptiveWikiReviewProposalEventRecord, AdaptiveWikiReviewQueueFilter, AdaptiveWikiReviewReport,
-    AdaptiveWikiRuntimePolicyAckScopeMode, AdaptiveWikiScope, AdaptiveWikiScopeSuggestion,
-    AdaptiveWikiSignalKind, AdaptiveWikiStore, AdaptiveWikiUsageContext, ApprovalLedger,
-    ApprovalStatus, BackgroundLaunchOutcome, BackgroundLaunchRequest, BackgroundProbe,
-    BackgroundRecoveryAcknowledgement, BackgroundRecoveryDecision, BackgroundRunStore,
-    BackgroundRunnerKind, BackgroundRunnerPhase, CapabilityArtifactRef, CapabilityDescriptor,
+    AdaptiveWikiHumanCandidate, AdaptiveWikiHumanEntry, AdaptiveWikiKind,
+    AdaptiveWikiLiveEpisodeFilter, AdaptiveWikiLiveEpisodeTraceReport, AdaptiveWikiOrigin,
+    AdaptiveWikiProjectionBudget, AdaptiveWikiProjectionPolicy,
+    AdaptiveWikiProjectionReviewExpiredPolicy, AdaptiveWikiPromotionEvidenceChainReport,
+    AdaptiveWikiPromotionReceipt, AdaptiveWikiPromotionReceiptAuthority, AdaptiveWikiQuery,
+    AdaptiveWikiReviewProposal, AdaptiveWikiReviewProposalAction,
+    AdaptiveWikiReviewProposalDecision, AdaptiveWikiReviewProposalEventRecord,
+    AdaptiveWikiReviewQueueFilter, AdaptiveWikiReviewReport, AdaptiveWikiRuntimePolicyAckScopeMode,
+    AdaptiveWikiScope, AdaptiveWikiScopeSuggestion, AdaptiveWikiSignalKind, AdaptiveWikiStore,
+    AdaptiveWikiUsageContext, ApprovalLedger, ApprovalStatus, BackgroundLaunchOutcome,
+    BackgroundLaunchRequest, BackgroundProbe, BackgroundRecoveryAcknowledgement,
+    BackgroundRecoveryDecision, BackgroundRunStore, BackgroundRunnerKind, BackgroundRunnerPhase,
+    CapabilityArtifactRef, CapabilityDescriptor,
     CloseoutDecisionResolution as WorkflowCloseoutDecisionResolution,
     CloseoutImplementationPacketCoverage, CloseoutImplementationPacketCoverageInput,
     CloseoutPacketCoverageDetail, CloseoutReviewRecord, CloseoutVerdict, DecisionLedger,
@@ -3717,14 +3721,7 @@ fn adaptive_wiki_agent_modes_label(modes: &[AdaptiveWikiAgentMode]) -> String {
 
 async fn wiki_lint(profile: &str, args: JsonArgs) -> Result<()> {
     let report = wiki_store(profile)?.lint(Utc::now())?;
-
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-        return Ok(());
-    }
-
-    print_wiki_lint(&report);
-    Ok(())
+    present_wiki_lint(&report, args.json)
 }
 
 async fn wiki_export_markdown(profile: &str, args: WikiExportMarkdownArgs) -> Result<()> {
@@ -3733,14 +3730,7 @@ async fn wiki_export_markdown(profile: &str, args: WikiExportMarkdownArgs) -> Re
         .output
         .unwrap_or_else(|| store.default_markdown_vault_dir());
     let report = store.export_markdown(&output, args.dry_run, Utc::now())?;
-
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-        return Ok(());
-    }
-
-    print_wiki_markdown_export(&report);
-    Ok(())
+    present_wiki_markdown_export(&report, args.json)
 }
 
 async fn wiki_graph(profile: &str, args: WikiGraphArgs) -> Result<()> {
@@ -3756,13 +3746,13 @@ async fn wiki_graph(profile: &str, args: WikiGraphArgs) -> Result<()> {
         }
     }
 
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-        return Ok(());
-    }
-
-    print_wiki_graph_report(&report, args.output.as_deref(), args.dry_run, files.len());
-    Ok(())
+    present_wiki_graph(
+        &report,
+        args.output.as_deref(),
+        args.dry_run,
+        files.len(),
+        args.json,
+    )
 }
 
 fn write_wiki_graph_export(output: &Path, files: &[(String, String)]) -> Result<()> {
@@ -8455,84 +8445,6 @@ fn print_gate_outcome(outcome: &crate::offdesk::SchedulerGateOutcome) {
         println!(
             "  adaptive_wiki_runtime_decision: {:?} ({})",
             decision.status, decision.reason
-        );
-    }
-}
-
-fn print_wiki_lint(report: &AdaptiveWikiLintReport) {
-    println!(
-        "Adaptive wiki lint: {} errors, {} warnings, {} info ({} entries, {} candidates)",
-        report.summary.errors,
-        report.summary.warnings,
-        report.summary.info,
-        report.summary.entries_checked,
-        report.summary.candidates_checked
-    );
-    for issue in &report.issues {
-        println!(
-            "  - {:?} {} {}: {}",
-            issue.severity, issue.subject_kind, issue.subject_id, issue.message
-        );
-    }
-}
-
-fn print_wiki_markdown_export(report: &AdaptiveWikiMarkdownExportReport) {
-    let action = if report.dry_run { "planned" } else { "wrote" };
-    println!(
-        "Adaptive wiki markdown export {} {} files to {}",
-        action, report.summary.files_planned, report.output_dir
-    );
-    println!(
-        "  status: {:?}  reexport_recommended={}",
-        report.projection_status.state, report.projection_status.reexport_recommended
-    );
-    println!(
-        "  entries: {}  candidates: {}",
-        report.summary.entries_exported, report.summary.candidates_exported
-    );
-    for file in &report.files {
-        println!(
-            "  - {} ({} bytes, sha256:{})",
-            file.path, file.bytes, file.sha256
-        );
-    }
-}
-
-fn print_wiki_graph_report(
-    report: &AdaptiveWikiGraphReport,
-    output: Option<&Path>,
-    dry_run: bool,
-    files: usize,
-) {
-    println!(
-        "Adaptive wiki tag graph: {} nodes, {} edges, {} review issues",
-        report.nodes.len(),
-        report.edges.len(),
-        report.review_issues.len()
-    );
-    println!(
-        "  entries: {}  candidates: {}  tag_nodes: {}",
-        report.summary.entries, report.summary.candidates, report.summary.tag_nodes
-    );
-    println!(
-        "  tag_edges: derived_core={} core={} proposed={}",
-        report.summary.derived_core_tag_edges,
-        report.summary.core_tag_edges,
-        report.summary.proposed_tag_edges
-    );
-    if let Some(output) = output {
-        let action = if dry_run { "planned" } else { "wrote" };
-        println!(
-            "  export: {} {} files to {}",
-            action,
-            files,
-            output.display()
-        );
-    }
-    for issue in report.review_issues.iter().take(8) {
-        println!(
-            "  - {:?} {}:{} #{} {}",
-            issue.severity, issue.subject_kind, issue.subject_id, issue.tag, issue.code
         );
     }
 }
