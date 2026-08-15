@@ -2550,6 +2550,19 @@ fn offdesk_wiki_read_only_commands_expose_candidates_entries_projection_and_lint
         candidates_before_review
     );
 
+    let review_human_output = forager_command(temp.path())
+        .args(["offdesk", "wiki", "review", "--dry-run"])
+        .output()?;
+    assert!(review_human_output.status.success());
+    let review_human_stdout = String::from_utf8_lossy(&review_human_output.stdout);
+    assert!(review_human_stdout.contains("Adaptive wiki review report planned"));
+    assert!(review_human_stdout.contains("checked: 3 entries, 1 candidates"));
+    assert!(review_human_stdout.contains("lifecycle:"));
+    assert!(review_human_stdout.contains("promotion receipts:"));
+    assert!(review_human_stdout.contains("wiki_candidate_denial"));
+    assert!(!review_human_stdout.contains(secret));
+    assert!(!profile_dir.join("adaptive_wiki_review_reports").exists());
+
     let review_output = forager_command(temp.path())
         .args(["offdesk", "wiki", "review", "--json"])
         .output()?;

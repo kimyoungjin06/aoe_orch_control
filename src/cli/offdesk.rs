@@ -19,6 +19,7 @@ mod wiki_projection_presentation;
 mod wiki_proposal_handoff;
 mod wiki_proposal_receipts;
 mod wiki_review_after_presentation;
+mod wiki_review_presentation;
 mod wiki_runtime_policy_ack_presentation;
 
 use closeout_records::{
@@ -63,6 +64,7 @@ use wiki_proposal_receipts::wiki_proposal_receipt;
 use wiki_review_after_presentation::{
     build_review_after_report, present_review_after_report, WikiReviewAfterReportSummary,
 };
+use wiki_review_presentation::present_wiki_review_report;
 use wiki_runtime_policy_ack_presentation::{
     build_runtime_policy_ack_report, present_runtime_policy_ack_report,
     present_runtime_policy_acknowledgement, present_runtime_policy_acknowledgements,
@@ -106,8 +108,8 @@ use crate::offdesk::{
     AdaptiveWikiPromotionReceipt, AdaptiveWikiPromotionReceiptAuthority, AdaptiveWikiQuery,
     AdaptiveWikiReviewProposal, AdaptiveWikiReviewProposalAction,
     AdaptiveWikiReviewProposalDecision, AdaptiveWikiReviewProposalEventRecord,
-    AdaptiveWikiReviewQueueFilter, AdaptiveWikiReviewReport, AdaptiveWikiRuntimePolicyAckScopeMode,
-    AdaptiveWikiScope, AdaptiveWikiScopeSuggestion, AdaptiveWikiSignalKind, AdaptiveWikiStore,
+    AdaptiveWikiReviewQueueFilter, AdaptiveWikiRuntimePolicyAckScopeMode, AdaptiveWikiScope,
+    AdaptiveWikiScopeSuggestion, AdaptiveWikiSignalKind, AdaptiveWikiStore,
     AdaptiveWikiUsageContext, ApprovalLedger, ApprovalStatus, BackgroundLaunchOutcome,
     BackgroundLaunchRequest, BackgroundProbe, BackgroundRecoveryAcknowledgement,
     BackgroundRecoveryDecision, BackgroundRunStore, BackgroundRunnerKind, BackgroundRunnerPhase,
@@ -3782,14 +3784,7 @@ async fn wiki_review(profile: &str, args: WikiReviewArgs) -> Result<()> {
     };
     let queue_filter = wiki_review_queue_filter(&args)?;
     let report = store.generate_review_report_filtered(args.dry_run, Utc::now(), queue_filter)?;
-
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-        return Ok(());
-    }
-
-    print_wiki_review_report(&report);
-    Ok(())
+    present_wiki_review_report(&report, args.json)
 }
 
 fn wiki_review_queue_filter(args: &WikiReviewArgs) -> Result<AdaptiveWikiReviewQueueFilter> {
@@ -8446,93 +8441,6 @@ fn print_gate_outcome(outcome: &crate::offdesk::SchedulerGateOutcome) {
             "  adaptive_wiki_runtime_decision: {:?} ({})",
             decision.status, decision.reason
         );
-    }
-}
-
-fn print_wiki_review_report(report: &AdaptiveWikiReviewReport) {
-    let action = if report.dry_run { "planned" } else { "wrote" };
-    println!(
-        "Adaptive wiki review report {} {} proposals ({} open, {} filtered out) at {}",
-        action,
-        report.summary.proposals,
-        report.summary.open_proposals,
-        report.summary.filtered_out_proposals,
-        report.report_dir
-    );
-    println!(
-        "  checked: {} entries, {} candidates, {} usage records, {} audit records, {} correction records, {} review events",
-        report.summary.entries_checked,
-        report.summary.candidates_checked,
-        report.summary.usage_records_checked,
-        report.summary.audit_records_checked,
-        report.summary.correction_records_checked,
-        report.summary.review_events_checked
-    );
-    println!(
-        "  lint: {} errors, {} warnings, {} info",
-        report.summary.lint_errors, report.summary.lint_warnings, report.summary.lint_info
-    );
-    println!(
-        "  lifecycle: {} with events, {} accepted, {} rejected, {} superseded",
-        report.summary.proposals_with_events,
-        report.summary.accepted_proposals,
-        report.summary.rejected_proposals,
-        report.summary.superseded_proposals
-    );
-    println!(
-        "  promotion receipts: {} checked, {} invalid files, {} promoted entries covered, {} missing receipts",
-        report.summary.promotion_receipts_checked,
-        report.summary.promotion_receipt_files_invalid,
-        report.summary.promoted_entries_with_promotion_receipt,
-        report.summary.promoted_entries_missing_promotion_receipt
-    );
-    if report.summary.stale_decision_proposals > 0 {
-        println!(
-            "  stale decisions: {} need renewed review",
-            report.summary.stale_decision_proposals
-        );
-    }
-    for proposal in &report.proposals {
-        let lifecycle = proposal
-            .lifecycle
-            .as_ref()
-            .map(|lifecycle| {
-                let stale = if lifecycle.stale { ", stale" } else { "" };
-                format!(
-                    "{:?} by {}{}",
-                    lifecycle.decision,
-                    empty_dash(&lifecycle.actor),
-                    stale
-                )
-            })
-            .unwrap_or_else(|| "Open".to_string());
-        println!(
-            "  - {:?} {} {} ({:?}, {}): {}",
-            proposal.action,
-            proposal.subject_kind,
-            proposal.subject_id,
-            proposal.risk,
-            lifecycle,
-            proposal.title
-        );
-        if let Some(lifecycle) = proposal.lifecycle.as_ref() {
-            println!(
-                "    lifecycle: event={} at={} reason={}",
-                lifecycle.latest_event_id,
-                lifecycle.decided_at.to_rfc3339(),
-                empty_dash(&lifecycle.reason)
-            );
-            if !lifecycle.stale_evidence_refs.is_empty() {
-                println!(
-                    "    stale evidence: {}",
-                    lifecycle.stale_evidence_refs.join(", ")
-                );
-            }
-        }
-        if let Some(command) = proposal.suggested_command.as_deref() {
-            println!("    command: {command}");
-        }
-        println!("    evidence: {}", proposal.evidence_refs.join(", "));
     }
 }
 
