@@ -2226,6 +2226,133 @@ fn offdesk_wiki_read_only_commands_expose_candidates_entries_projection_and_lint
     assert!(comparison_human_stdout.contains("review_expired_excluded: wiki_needs_review"));
     assert!(!comparison_human_stdout.contains(secret));
 
+    let brief_output = forager_command(temp.path())
+        .args([
+            "offdesk",
+            "wiki",
+            "brief",
+            "--project-key",
+            "project",
+            "--max-entries",
+            "2",
+            "--json",
+        ])
+        .output()?;
+    assert!(brief_output.status.success());
+    let brief_stdout = String::from_utf8_lossy(&brief_output.stdout);
+    assert!(!brief_stdout.contains(secret));
+    let brief: serde_json::Value = serde_json::from_slice(&brief_output.stdout)?;
+    assert_eq!(brief["schema"], "wiki_brief.v1");
+    assert_eq!(brief["profile"], "default");
+    assert_eq!(brief["scope"], "project");
+    assert_eq!(brief["entries"].as_array().expect("brief entries").len(), 2);
+    let needs_review = brief["entries"]
+        .as_array()
+        .expect("brief entries")
+        .iter()
+        .find(|entry| entry["id"] == "wiki_needs_review")
+        .expect("review-expired brief entry");
+    assert_eq!(needs_review["kind"], "PolicyRule");
+    assert_eq!(needs_review["text"], "Review this entry.");
+    assert_eq!(needs_review["stale"], true);
+    let project_entry = brief["entries"]
+        .as_array()
+        .expect("brief entries")
+        .iter()
+        .find(|entry| entry["id"] == "wiki_project_entry")
+        .expect("project brief entry");
+    assert_eq!(project_entry["kind"], "Procedure");
+    assert!(project_entry["text"]
+        .as_str()
+        .expect("project brief text")
+        .contains("[REDACTED]"));
+    assert!(!brief["entries"]
+        .as_array()
+        .expect("brief entries")
+        .iter()
+        .any(|entry| entry["id"] == "wiki_other_project"));
+
+    let brief_human_output = forager_command(temp.path())
+        .args([
+            "offdesk",
+            "wiki",
+            "brief",
+            "--project-key",
+            "project",
+            "--max-entries",
+            "2",
+        ])
+        .output()?;
+    assert!(brief_human_output.status.success());
+    let brief_human_stdout = String::from_utf8_lossy(&brief_human_output.stdout);
+    assert!(brief_human_stdout.contains("# Wiki Brief: default / project"));
+    assert!(brief_human_stdout.contains("## Policy rules"));
+    assert!(brief_human_stdout.contains("## Procedures"));
+    assert!(brief_human_stdout.contains("Review this entry. **STALE**"));
+    assert!(brief_human_stdout.contains("wiki_project_entry"));
+    assert!(brief_human_stdout.contains("[REDACTED]"));
+    assert!(!brief_human_stdout.contains("wiki_other_project"));
+    assert!(!brief_human_stdout.contains(secret));
+
+    let brief_path = temp.path().join("generated/wiki/.wiki-brief.md");
+    let brief_file_output = forager_command(temp.path())
+        .args([
+            "offdesk",
+            "wiki",
+            "brief",
+            "--project-key",
+            "project",
+            "--max-entries",
+            "2",
+            "--out",
+            brief_path.to_str().expect("utf-8 brief path"),
+        ])
+        .output()?;
+    assert!(brief_file_output.status.success());
+    let brief_file_stdout = String::from_utf8_lossy(&brief_file_output.stdout);
+    assert!(brief_file_stdout.contains("Wrote wiki brief (2 entries) to"));
+    assert!(brief_file_stdout.contains(&brief_path.display().to_string()));
+    let brief_file = fs::read_to_string(&brief_path)?;
+    assert!(brief_file.contains("# Wiki Brief: default / project"));
+    assert!(brief_file.contains("Review this entry. **STALE**"));
+    assert!(brief_file.contains("[REDACTED]"));
+    assert!(!brief_file.contains("wiki_other_project"));
+    assert!(!brief_file.contains(secret));
+
+    let empty_brief_output = forager_command(temp.path())
+        .args([
+            "offdesk",
+            "wiki",
+            "brief",
+            "--project-key",
+            "missing-project",
+            "--json",
+        ])
+        .output()?;
+    assert!(empty_brief_output.status.success());
+    let empty_brief: serde_json::Value = serde_json::from_slice(&empty_brief_output.stdout)?;
+    assert_eq!(empty_brief["schema"], "wiki_brief.v1");
+    assert_eq!(empty_brief["scope"], "missing-project");
+    assert!(empty_brief["entries"]
+        .as_array()
+        .expect("empty brief entries")
+        .is_empty());
+
+    let empty_brief_human_output = forager_command(temp.path())
+        .args([
+            "offdesk",
+            "wiki",
+            "brief",
+            "--project-key",
+            "missing-project",
+        ])
+        .output()?;
+    assert!(empty_brief_human_output.status.success());
+    let empty_brief_human_stdout = String::from_utf8_lossy(&empty_brief_human_output.stdout);
+    assert!(empty_brief_human_stdout.contains("# Wiki Brief: default / missing-project"));
+    assert!(empty_brief_human_stdout.contains("(no promoted in-scope entries yet)"));
+    assert!(!empty_brief_human_stdout.contains(secret));
+
     let show_output = forager_command(temp.path())
         .args(["offdesk", "wiki", "show", "wiki_candidate_denial", "--json"])
         .output()?;

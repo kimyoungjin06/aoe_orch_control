@@ -1,6 +1,6 @@
 # Project State
 
-Updated: 2026-08-15
+Updated: 2026-08-17
 
 This is the small current surface for Forager development work. It is separate
 from the public product README and from the mdBook user guides.
@@ -557,7 +557,7 @@ direction is defined in `docs/project-direction.md`.
 
 ## Next Work Candidates
 
-0. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~9.2k
+0. Continue splitting the large Offdesk CLI (`src/cli/offdesk.rs`, ~9.1k
    lines). Value parsing and the first typed decision, adaptive-wiki, and
    closeout receipt workflows are separated. Implementation-packet coverage
    policy and record construction are separated, as are plan-review validation
@@ -645,23 +645,27 @@ direction is defined in `docs/project-direction.md`.
    remain in the command handlers and store. Existing operator-safe JSON
    contracts remain covered, and human proposal list, recorded-event, and
    correction list output now have integration regressions that verify secret
-   exclusion. Next move adaptive-wiki brief read-model construction and
-   terminal/JSON presentation into a bounded adapter while canonical store
-   reads and optional output-file writes remain in the command handler.
-1. Add the deferred actionable TUI attention panel using the existing shared
+   exclusion. Adaptive-wiki session brief read-model construction and
+   terminal/JSON/Markdown presentation now live in
+   `src/cli/offdesk/wiki_brief_presentation.rs`; projection query and budget
+   construction, canonical store reads, time selection, directory creation,
+   and optional output-file writes remain in the command handler. JSON, human,
+   nested output-file, empty-scope, project filtering, STALE, and secret
+   redaction contracts now have integration regressions. Next move add the
+   deferred actionable TUI attention panel using the existing shared
    operator-state and next-safe-action contracts.
-2. Apply the deferred council verdicts with the new `wiki edit --kind
+1. Apply the deferred council verdicts with the new `wiki edit --kind
    --agent-mode/--clear-agent-modes` primitive, then curate the live candidate
    portfolio through the project-ranked queue.
    Spot-check prereview-supported items for quote-claim mismatch before any
    promotion. The measured pointer-quote, quote-truncation, and per-quote
    fan-out defects are already fixed in the harvest pipeline.
-3. Extend learning signals to the remaining lifecycle events (pre-compression
+2. Extend learning signals to the remaining lifecycle events (pre-compression
    extraction, wiki projection usage) and add a curator-style staleness report
    (Hermes patterns #9 follow-up and #10).
-4. Optionally split `scripts/telegram_operator/receipts.py` (~1,960 lines) by
+3. Optionally split `scripts/telegram_operator/receipts.py` (~1,960 lines) by
    stage family if it keeps growing; it is cohesive today.
-5. Optionally add parameterized `/run` templates (constrained argument
+4. Optionally add parameterized `/run` templates (constrained argument
    substitution) if fixed commands prove too rigid; keep injection surface in
    mind.
 
