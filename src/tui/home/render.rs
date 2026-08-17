@@ -48,6 +48,12 @@ impl HomeView {
             return;
         }
 
+        // Attention view takes over the whole screen
+        if let Some(ref mut attention) = self.attention_view {
+            attention.render(frame, area, theme);
+            return;
+        }
+
         // Projects view takes over the whole screen
         if let Some(ref mut projects) = self.projects_view {
             projects.render(frame, area, theme);

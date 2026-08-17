@@ -65,6 +65,7 @@ In the TUI, select the tool from the dropdown in the new session dialog.
 | Key | Action |
 |-----|--------|
 | `n` | New session |
+| `a` | Open the read-only operator attention queue |
 | `Enter` | Attach to session |
 | `d` | Delete session |
 | `t` | Toggle Agent/Terminal view |

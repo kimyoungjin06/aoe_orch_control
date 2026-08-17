@@ -1,6 +1,6 @@
 # Project State
 
-Updated: 2026-08-17
+Updated: 2026-08-18
 
 This is the small current surface for Forager development work. It is separate
 from the public product README and from the mdBook user guides.
@@ -553,7 +553,11 @@ direction is defined in `docs/project-direction.md`.
   running/waiting/total session counts and wiki plane, active projects
   first; Enter jumps to the project's first session or shows the
   `forager go` onboarding hint for session-less projects. Remaining TUI
-  improvement slice deferred: an actionable attention panel.
+  improvement slice is now live as a full-screen actionable attention panel
+  (`a` from home, `src/tui/home/attention.rs`). It projects the existing
+  prioritized next-safe-action contract into review/monitor/recovery rows,
+  preserves the exact command and authorization boundary in a scrollable
+  read-only detail view, and has explicit clear-state and 80-column coverage.
 
 ## Next Work Candidates
 
@@ -651,9 +655,11 @@ direction is defined in `docs/project-direction.md`.
    construction, canonical store reads, time selection, directory creation,
    and optional output-file writes remain in the command handler. JSON, human,
    nested output-file, empty-scope, project filtering, STALE, and secret
-   redaction contracts now have integration regressions. Next move add the
-   deferred actionable TUI attention panel using the existing shared
-   operator-state and next-safe-action contracts.
+   redaction contracts now have integration regressions. The deferred TUI
+   attention panel now consumes the existing operator summary and prioritized
+   next-safe-action contracts without adding execution authority. Next move
+   continue the bounded Offdesk CLI presentation extraction after the panel is
+   proven in daily operation.
 1. Apply the deferred council verdicts with the new `wiki edit --kind
    --agent-mode/--clear-agent-modes` primitive, then curate the live candidate
    portfolio through the project-ranked queue.

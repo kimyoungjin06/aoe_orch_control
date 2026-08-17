@@ -6,7 +6,7 @@ use ratatui::widgets::*;
 use crate::tui::styles::Theme;
 
 const DIALOG_WIDTH: u16 = 64;
-const DIALOG_HEIGHT: u16 = 36;
+const DIALOG_HEIGHT: u16 = 37;
 #[cfg(test)]
 const BORDER_HEIGHT: u16 = 2;
 #[cfg(test)]
@@ -60,6 +60,7 @@ fn shortcuts() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
         (
             "Offdesk",
             vec![
+                ("a", "Attention panel (read-only)"),
                 ("approval", "pending operator approval count"),
                 ("active/failed", "running and failed offdesk work counts"),
                 ("Action", "status bar shows the next safe offdesk command"),
@@ -152,6 +153,11 @@ mod tests {
         let offdesk_section = all.iter().find(|(name, _)| *name == "Offdesk");
         assert!(offdesk_section.is_some(), "Offdesk section should exist");
         let (_, keys) = offdesk_section.unwrap();
+        assert!(
+            keys.iter()
+                .any(|(key, desc)| *key == "a" && desc.contains("read-only")),
+            "Offdesk section should expose the attention panel shortcut"
+        );
         assert!(
             keys.iter()
                 .any(|(k, desc)| { *k == "active/failed" && desc.contains("failed offdesk work") }),

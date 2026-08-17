@@ -37,6 +37,10 @@ Completed in the first UI pass:
 - Added a fixture-backed read-only WebUI review route at `/review/`.
 - Added a semantic TUI preview summary for error, decision, Offdesk, closeout,
   and next-action signals before raw output.
+- Added a full-screen read-only TUI attention queue on `a`, backed by the
+  existing prioritized next-safe-action contract. It keeps approval, recovery,
+  review, monitoring, and dispatch semantics explicit and shows commands as
+  not executed with their authorization boundary.
 - Fixed preview path shortening so paths that only share the home-directory
   string prefix no longer render as home-relative.
 - Added a landing-page path to the new `/review/` surface so public product copy
@@ -161,6 +165,10 @@ Done when:
   JSON first.
 
 Status: implemented and covered by 80-column render tests.
+
+The follow-up actionable attention panel is also implemented with keyboard
+navigation, a scrollable detail state, and an explicit empty state. It remains
+read-only and does not approve or execute the displayed commands.
 
 ## P1 - WebUI Review Route
 

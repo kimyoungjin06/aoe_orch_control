@@ -1,5 +1,6 @@
 //! Home view - main session list and navigation
 
+pub(super) mod attention;
 mod input;
 mod operations;
 pub(super) mod projects;
@@ -358,6 +359,7 @@ pub struct HomeView {
 
     // Settings view
     pub(super) settings_view: Option<SettingsView>,
+    pub(super) attention_view: Option<attention::AttentionView>,
     pub(super) projects_view: Option<projects::ProjectsView>,
     /// Flag to indicate we're confirming settings close (unsaved changes)
     pub(super) settings_close_confirm: bool,
@@ -456,6 +458,7 @@ impl HomeView {
             effective_config: resolved,
             instance_configs,
             settings_view: None,
+            attention_view: None,
             projects_view: None,
             settings_close_confirm: false,
             diff_view: None,
@@ -847,6 +850,7 @@ impl HomeView {
             || self.changelog_dialog.is_some()
             || self.info_dialog.is_some()
             || self.settings_view.is_some()
+            || self.attention_view.is_some()
             || self.diff_view.is_some()
     }
 
