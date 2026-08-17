@@ -41,6 +41,18 @@ impl HomeView {
             }
         }
 
+        // Handle attention view (full-screen takeover)
+        if let Some(ref mut attention) = self.attention_view {
+            use crate::tui::home::attention::AttentionAction;
+            match attention.handle_key(key) {
+                AttentionAction::Continue => return None,
+                AttentionAction::Close => {
+                    self.attention_view = None;
+                    return None;
+                }
+            }
+        }
+
         // Handle projects view (full-screen takeover)
         if let Some(ref mut projects) = self.projects_view {
             use crate::tui::home::projects::ProjectsAction;
@@ -420,6 +432,11 @@ impl HomeView {
                     existing_titles,
                     existing_groups,
                     self.storage.profile(),
+                ));
+            }
+            KeyCode::Char('a') => {
+                self.attention_view = Some(crate::tui::home::attention::AttentionView::new(
+                    &self.offdesk_resume,
                 ));
             }
             KeyCode::Char('p') => {

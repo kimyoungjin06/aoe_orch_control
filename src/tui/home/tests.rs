@@ -1762,6 +1762,125 @@ fn test_has_dialog_includes_settings_view() {
 
 #[test]
 #[serial]
+fn test_a_opens_and_closes_attention_view() {
+    let mut env = create_test_env_empty();
+
+    assert!(env.view.attention_view.is_none());
+    env.view.handle_key(key(KeyCode::Char('a')));
+    assert!(env.view.attention_view.is_some());
+    assert!(env.view.has_dialog());
+
+    env.view.handle_key(key(KeyCode::Char('a')));
+    assert!(env.view.attention_view.is_none());
+}
+
+#[test]
+#[serial]
+fn attention_view_renders_shared_actions_at_80_columns() {
+    let mut env = create_test_env_empty();
+    env.view.offdesk_resume = OffdeskResumeSummary {
+        pending_approvals: 1,
+        failed_tasks: 1,
+        next_safe_actions: vec![
+            OffdeskNextSafeAction::new(
+                "approval_pending",
+                "Approval is waiting for a bounded operator decision.",
+                vec!["forager offdesk pending".to_string()],
+                true,
+            ),
+            OffdeskNextSafeAction::new(
+                "recovery_required",
+                "Failed work needs recovery review before retry.",
+                vec!["forager offdesk resume".to_string()],
+                true,
+            ),
+        ],
+        ..OffdeskResumeSummary::default()
+    };
+
+    env.view.handle_key(key(KeyCode::Char('a')));
+    let rendered = render_home_text(&mut env.view, 80, 24);
+
+    assert!(
+        rendered.contains("Attention (2 actions · 2 need review)"),
+        "attention title should summarize the queue:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("operator review required")
+            && rendered.contains("APPROVAL")
+            && rendered.contains("forager offdesk pending"),
+        "attention panel should expose semantic state and the first safe command:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("Boundary: this panel is read-only."),
+        "attention panel should state its authorization boundary:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("Enter: details · j/k: move · a/Esc: close · read-only"),
+        "attention panel should keep navigation discoverable at 80 columns:\n{rendered}"
+    );
+}
+
+#[test]
+#[serial]
+fn attention_view_enter_opens_selected_read_only_detail() {
+    let mut env = create_test_env_empty();
+    env.view.offdesk_resume = OffdeskResumeSummary {
+        pending_approvals: 1,
+        failed_tasks: 1,
+        next_safe_actions: vec![
+            OffdeskNextSafeAction::new(
+                "approval_pending",
+                "Approval is waiting.",
+                vec!["forager offdesk pending".to_string()],
+                true,
+            ),
+            OffdeskNextSafeAction::new(
+                "recovery_required",
+                "Recovery review is waiting.",
+                vec!["forager offdesk resume".to_string()],
+                true,
+            ),
+        ],
+        ..OffdeskResumeSummary::default()
+    };
+
+    env.view.handle_key(key(KeyCode::Char('a')));
+    env.view.handle_key(key(KeyCode::Down));
+    env.view.handle_key(key(KeyCode::Enter));
+
+    assert!(env.view.attention_view.is_some());
+    assert!(env.view.info_dialog.is_none());
+    let rendered = render_home_text(&mut env.view, 100, 30);
+    assert!(
+        rendered.contains("Action: RECOVERY")
+            && rendered.contains("Commands (not executed):")
+            && rendered.contains("forager offdesk resume")
+            && rendered.contains("Boundary: this panel is read-only."),
+        "selected detail should remain read-only and preserve the exact safe command:\n{rendered}"
+    );
+
+    env.view.handle_key(key(KeyCode::Esc));
+    let queue = render_home_text(&mut env.view, 100, 30);
+    assert!(queue.contains("Queue") && queue.contains("RECOVERY"));
+}
+
+#[test]
+#[serial]
+fn attention_view_has_clear_empty_state() {
+    let mut env = create_test_env_empty();
+    env.view.handle_key(key(KeyCode::Char('a')));
+
+    let rendered = render_home_text(&mut env.view, 80, 16);
+    assert!(
+        rendered.contains("clear; no work pending")
+            && rendered.contains("No operator action is currently queued."),
+        "empty attention panel should render a clear shared state:\n{rendered}"
+    );
+}
+
+#[test]
+#[serial]
 fn test_s_opens_settings_view() {
     let mut env = create_test_env_empty();
     assert!(env.view.settings_view.is_none());
