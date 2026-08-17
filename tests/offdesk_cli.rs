@@ -3295,6 +3295,18 @@ fn offdesk_wiki_corrections_json_and_debug_bundle_redact_records() -> Result<()>
         .expect("summary")
         .contains("[REDACTED]"));
 
+    let corrections_human_output = forager_command(temp.path())
+        .args(["offdesk", "wiki", "corrections"])
+        .output()?;
+    assert!(corrections_human_output.status.success());
+    let corrections_human_stdout = String::from_utf8_lossy(&corrections_human_output.stdout);
+    assert!(corrections_human_stdout.contains("wiki_corr_cli OperatorCorrection"));
+    assert!(corrections_human_stdout.contains("task=task_cli"));
+    assert!(corrections_human_stdout.contains("request=request_cli"));
+    assert!(corrections_human_stdout.contains("entry=wiki_entry_cli"));
+    assert!(corrections_human_stdout.contains("[REDACTED]"));
+    assert!(!corrections_human_stdout.contains(secret));
+
     let bundle_output = forager_command(temp.path())
         .args(["offdesk", "debug-bundle", "--json"])
         .output()?;
@@ -3403,6 +3415,25 @@ fn offdesk_wiki_proposal_events_record_list_and_debug_bundle_are_redacted() -> R
     let events: serde_json::Value = serde_json::from_slice(&list_output.stdout)?;
     assert_eq!(events.as_array().expect("proposal events").len(), 1);
     assert_eq!(events[0]["proposal_id"], proposal_id);
+
+    let list_human_output = forager_command(temp.path())
+        .args([
+            "offdesk",
+            "wiki",
+            "proposal-events",
+            "--proposal-id",
+            proposal_id,
+        ])
+        .output()?;
+    assert!(list_human_output.status.success());
+    let list_human_stdout = String::from_utf8_lossy(&list_human_output.stdout);
+    assert!(list_human_stdout.contains("Accepted"));
+    assert!(list_human_stdout.contains(&format!("proposal={proposal_id}")));
+    assert!(list_human_stdout.contains("action=Promote"));
+    assert!(list_human_stdout.contains("subject=candidate:wiki_candidate"));
+    assert!(list_human_stdout.contains("by=cli"));
+    assert!(list_human_stdout.contains("[REDACTED]"));
+    assert!(!list_human_stdout.contains(secret));
 
     let review_output = forager_command(temp.path())
         .args(["offdesk", "wiki", "review", "--dry-run", "--json"])
@@ -3624,11 +3655,29 @@ fn offdesk_wiki_proposal_closure_helpers_copy_metadata_and_block_duplicates() ->
     assert_eq!(superseded["proposal_action"], "promote");
     assert_eq!(superseded["supersedes"], "wiki_review_old");
 
+    let reject_human_output = forager_command(temp.path())
+        .args([
+            "offdesk",
+            "wiki",
+            "reject-proposal",
+            proposal_id,
+            "--reason",
+            &format!("rejected by follow-up token={secret}"),
+            "--allow-decided",
+        ])
+        .output()?;
+    assert!(reject_human_output.status.success());
+    let reject_human_stdout = String::from_utf8_lossy(&reject_human_output.stdout);
+    assert!(reject_human_stdout.contains("Recorded adaptive wiki proposal event"));
+    assert!(reject_human_stdout.contains(&format!("for {proposal_id} (Rejected)")));
+    assert!(!reject_human_stdout.contains(secret));
+
     let stored = fs::read_to_string(profile_dir.join("adaptive_wiki_review_events.jsonl"))?;
     assert!(!stored.contains(secret));
     assert!(stored.contains("[REDACTED]"));
     assert!(stored.contains("\"accepted\""));
     assert!(stored.contains("\"superseded\""));
+    assert!(stored.contains("\"rejected\""));
     Ok(())
 }
 

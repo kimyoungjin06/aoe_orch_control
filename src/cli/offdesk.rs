@@ -14,6 +14,7 @@ mod plan_registry;
 mod remote_operator_presentation;
 mod wiki_audit_presentation;
 mod wiki_catalog;
+mod wiki_event_presentation;
 mod wiki_evidence_presentation;
 mod wiki_mutation_presentation;
 mod wiki_projection_presentation;
@@ -57,6 +58,9 @@ use wiki_audit_presentation::{
 };
 use wiki_catalog::{wiki_candidates, wiki_entries, wiki_show};
 pub use wiki_catalog::{WikiListArgs, WikiShowArgs};
+use wiki_event_presentation::{
+    present_wiki_corrections, present_wiki_proposal_event, present_wiki_proposal_events,
+};
 use wiki_evidence_presentation::{
     present_wiki_correction_recurrence_report, present_wiki_episode_evaluation_report,
     present_wiki_live_episode_trace_report, present_wiki_promotion_chain_report,
@@ -3171,33 +3175,7 @@ async fn wiki_proposal_events(profile: &str, args: WikiProposalEventsArgs) -> Re
         events.retain(|event| event.proposal_id == proposal_id);
     }
 
-    if args.json {
-        let value = operator_safe_json_value(serde_json::to_value(&events)?);
-        println!("{}", serde_json::to_string_pretty(&value)?);
-        return Ok(());
-    }
-
-    if events.is_empty() {
-        println!("No adaptive wiki proposal lifecycle events found.");
-        return Ok(());
-    }
-    for event in events {
-        println!(
-            "{} {:?} proposal={} action={} subject={}:{} by={} {}",
-            event.id,
-            event.decision,
-            event.proposal_id,
-            event
-                .proposal_action
-                .map(|action| format!("{action:?}"))
-                .unwrap_or_else(|| "-".to_string()),
-            empty_dash(&event.subject_kind),
-            empty_dash(&event.subject_id),
-            empty_dash(&event.actor),
-            crate::offdesk::operator_safe_text(&event.reason)
-        );
-    }
-    Ok(())
+    present_wiki_proposal_events(&events, args.json)
 }
 
 async fn wiki_record_proposal_event(
@@ -3232,17 +3210,7 @@ async fn wiki_record_proposal_event(
     };
     writable_wiki_store(profile)?.append_review_proposal_event(&event)?;
 
-    if args.json {
-        let value = operator_safe_json_value(serde_json::to_value(&event)?);
-        println!("{}", serde_json::to_string_pretty(&value)?);
-        return Ok(());
-    }
-
-    println!(
-        "Recorded adaptive wiki proposal event {} for {} ({:?})",
-        event.id, event.proposal_id, event.decision
-    );
-    Ok(())
+    present_wiki_proposal_event(&event, args.json)
 }
 
 async fn wiki_close_proposal(
@@ -3293,17 +3261,7 @@ async fn wiki_close_proposal(
     };
     store.append_review_proposal_event(&event)?;
 
-    if args.json {
-        let value = operator_safe_json_value(serde_json::to_value(&event)?);
-        println!("{}", serde_json::to_string_pretty(&value)?);
-        return Ok(());
-    }
-
-    println!(
-        "Recorded adaptive wiki proposal event {} for {} ({:?})",
-        event.id, event.proposal_id, event.decision
-    );
-    Ok(())
+    present_wiki_proposal_event(&event, args.json)
 }
 
 fn proposal_has_non_stale_decision(proposal: &AdaptiveWikiReviewProposal) -> bool {
@@ -3329,28 +3287,7 @@ fn proposal_decision_evidence_refs(
 async fn wiki_corrections(profile: &str, args: JsonArgs) -> Result<()> {
     let corrections = wiki_store(profile)?.load_correction_records()?;
 
-    if args.json {
-        let value = operator_safe_json_value(serde_json::to_value(&corrections)?);
-        println!("{}", serde_json::to_string_pretty(&value)?);
-        return Ok(());
-    }
-
-    if corrections.is_empty() {
-        println!("No adaptive wiki correction records found.");
-        return Ok(());
-    }
-    for correction in corrections {
-        println!(
-            "{} {:?} task={} request={} entry={} {}",
-            correction.id,
-            correction.correction_kind,
-            correction.task_id.as_deref().unwrap_or("-"),
-            correction.request_id.as_deref().unwrap_or("-"),
-            correction.entry_id.as_deref().unwrap_or("-"),
-            crate::offdesk::operator_safe_text(&correction.summary)
-        );
-    }
-    Ok(())
+    present_wiki_corrections(&corrections, args.json)
 }
 
 impl WikiBriefArgs {
@@ -8330,14 +8267,6 @@ fn load_execution_brief(path: Option<&PathBuf>) -> Result<Option<ExecutionBrief>
     };
     let content = std::fs::read_to_string(path)?;
     Ok(Some(serde_json::from_str::<ExecutionBrief>(&content)?))
-}
-
-fn empty_dash(value: &str) -> &str {
-    if value.trim().is_empty() {
-        "-"
-    } else {
-        value
-    }
 }
 
 fn shell_quote_arg(value: &str) -> String {
