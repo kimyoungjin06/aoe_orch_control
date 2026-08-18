@@ -9631,6 +9631,94 @@ fn offdesk_cancel_task_updates_task_json_and_redacts_output() -> Result<()> {
 
 #[test]
 #[serial]
+fn offdesk_task_lifecycle_presentation_redacts_legacy_json_and_human_reports() -> Result<()> {
+    let temp = tempdir()?;
+    let profile_dir = profile_dir(temp.path());
+    fs::create_dir_all(&profile_dir)?;
+    let now = Utc::now();
+    let secret = "sk-secretsecretsecretsecret";
+    let task_id = format!("task-token={secret}");
+    let mut running_task = durable_task_with(
+        &task_id,
+        "inspect.status",
+        "running",
+        now,
+        "true",
+        temp.path(),
+    );
+    running_task["project_key"] = json!(format!("project-token={secret}"));
+    running_task["background_ticket_id"] = json!(format!("ticket-token={secret}"));
+    fs::write(
+        profile_dir.join("offdesk_tasks.json"),
+        serde_json::to_string_pretty(&json!([running_task]))?,
+    )?;
+
+    let cancel_json_output = forager_command(temp.path())
+        .args(["offdesk", "cancel-task", &task_id, "--json"])
+        .output()?;
+    assert!(cancel_json_output.status.success());
+    let cancel_json_stdout = String::from_utf8_lossy(&cancel_json_output.stdout);
+    assert!(!cancel_json_stdout.contains(secret));
+    let cancel_report: serde_json::Value = serde_json::from_slice(&cancel_json_output.stdout)?;
+    assert_eq!(cancel_report["status"], "cancelled");
+    assert!(cancel_report["task"]["task_id"]
+        .as_str()
+        .expect("task id")
+        .contains("[REDACTED]"));
+
+    let cancel_human_output = forager_command(temp.path())
+        .args(["offdesk", "cancel-task", &task_id])
+        .output()?;
+    assert!(cancel_human_output.status.success());
+    let cancel_human_stdout = String::from_utf8_lossy(&cancel_human_output.stdout);
+    assert!(cancel_human_stdout.contains("Unchanged offdesk task task-token=[REDACTED]"));
+    assert!(cancel_human_stdout.contains("ticket: ticket-token=[REDACTED]"));
+    assert!(!cancel_human_stdout.contains(secret));
+
+    let mut failed_task = durable_task_with(
+        &task_id,
+        "dispatch.runtime",
+        "failed",
+        now,
+        "true",
+        temp.path(),
+    );
+    failed_task["project_key"] = json!(format!("project-token={secret}"));
+    failed_task["background_ticket_id"] = json!(format!("ticket-token={secret}"));
+    fs::write(
+        profile_dir.join("offdesk_tasks.json"),
+        serde_json::to_string_pretty(&json!([failed_task]))?,
+    )?;
+
+    let retry_json_output = forager_command(temp.path())
+        .args([
+            "offdesk",
+            "retry-task",
+            &task_id,
+            "--new-approval",
+            "--json",
+        ])
+        .output()?;
+    assert!(retry_json_output.status.success());
+    let retry_json_stdout = String::from_utf8_lossy(&retry_json_output.stdout);
+    assert!(!retry_json_stdout.contains(secret));
+    let retry_report: serde_json::Value = serde_json::from_slice(&retry_json_output.stdout)?;
+    assert_eq!(retry_report["status"], "queued");
+    assert_eq!(retry_report["superseded_denied_approvals"], 0);
+
+    let retry_human_output = forager_command(temp.path())
+        .args(["offdesk", "retry-task", &task_id, "--new-approval"])
+        .output()?;
+    assert!(retry_human_output.status.success());
+    let retry_human_stdout = String::from_utf8_lossy(&retry_human_output.stdout);
+    assert!(retry_human_stdout.contains("task-token=[REDACTED]"));
+    assert!(retry_human_stdout.contains("superseded denied approvals: 0"));
+    assert!(!retry_human_stdout.contains(secret));
+    Ok(())
+}
+
+#[test]
+#[serial]
 fn offdesk_retry_task_requeues_failed_task_and_tick_launches() -> Result<()> {
     let temp = tempdir()?;
     let profile_dir = profile_dir(temp.path());

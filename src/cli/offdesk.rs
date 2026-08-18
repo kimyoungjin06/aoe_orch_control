@@ -14,6 +14,7 @@ mod plan_queries;
 mod plan_registry;
 mod remote_operator_presentation;
 mod runtime_recovery_presentation;
+mod task_lifecycle_presentation;
 mod wiki_audit_presentation;
 mod wiki_brief_presentation;
 mod wiki_catalog;
@@ -60,6 +61,9 @@ use remote_operator_presentation::{
 use runtime_recovery_presentation::{
     present_background_ack_report, present_background_poll_outcomes, present_background_statuses,
     present_resume_states,
+};
+use task_lifecycle_presentation::{
+    present_retry_task_lifecycle_report, present_task_lifecycle_report, task_status_label,
 };
 use wiki_audit_presentation::{
     present_wiki_graph, present_wiki_lint, present_wiki_markdown_export,
@@ -143,11 +147,11 @@ use crate::offdesk::{
     MutationRestoreOperation, MutationRestorePlan, MutationSnapshot, MutationSnapshotStore,
     MutationSnapshotVerification, OffdeskModeAssessment, OffdeskModeLifecycle,
     OffdeskNextSafeAction, OffdeskPendingApprovalView, OffdeskPlanReviewDecision, OffdeskTask,
-    OffdeskTaskInput, OffdeskTaskLifecycleReport, OffdeskTaskStatus, OffdeskTaskStore,
-    OffdeskTaskView, OffdeskTickOptions, OperatorPauseStore, PendingActionApproval,
-    ProviderCapacityState, ProviderCapacityStore, ProviderFallbackRecommendation, RiskLevel,
-    SchedulerGate, SchedulerGateRequest, SchedulerGateStatus, TaskResumeState, TaskResumeStore,
-    WorkSliceExecutionReceipt, WorkSliceExecutionStatus, WORK_SLICE_EXECUTION_RECEIPTS_FILE,
+    OffdeskTaskInput, OffdeskTaskStatus, OffdeskTaskStore, OffdeskTaskView, OffdeskTickOptions,
+    OperatorPauseStore, PendingActionApproval, ProviderCapacityState, ProviderCapacityStore,
+    ProviderFallbackRecommendation, RiskLevel, SchedulerGate, SchedulerGateRequest,
+    SchedulerGateStatus, TaskResumeState, TaskResumeStore, WorkSliceExecutionReceipt,
+    WorkSliceExecutionStatus, WORK_SLICE_EXECUTION_RECEIPTS_FILE,
 };
 use crate::session::{get_profile_dir, resolved_app_dir_path, DEFAULT_PROFILE};
 
@@ -2333,13 +2337,6 @@ struct BackgroundAckReport {
 }
 
 #[derive(Serialize)]
-struct RetryTaskLifecycleReport<'a> {
-    #[serde(flatten)]
-    report: &'a OffdeskTaskLifecycleReport,
-    superseded_denied_approvals: usize,
-}
-
-#[derive(Serialize)]
 struct MutationSnapshotListItem {
     mutation_id: String,
     target_path: String,
@@ -4228,7 +4225,7 @@ async fn wiki_update_runbook(profile: &str, args: WikiRunbookArgs) -> Result<()>
 async fn cancel_task(profile: &str, args: CancelTaskArgs) -> Result<()> {
     let report =
         task_store(profile)?.cancel_task(&args.task_id, args.reason.as_deref(), Utc::now())?;
-    print_lifecycle_report(&report, args.json)
+    present_task_lifecycle_report(&report, args.json)
 }
 
 async fn pause_dispatch(profile: &str, args: PauseArgs) -> Result<()> {
@@ -4273,7 +4270,7 @@ async fn retry_task(profile: &str, args: RetryTaskArgs) -> Result<()> {
     } else {
         0
     };
-    print_retry_lifecycle_report(
+    present_retry_task_lifecycle_report(
         &report,
         superseded_denied_approvals,
         args.json,
@@ -4283,12 +4280,12 @@ async fn retry_task(profile: &str, args: RetryTaskArgs) -> Result<()> {
 
 async fn resume_task(profile: &str, args: TaskLifecycleArgs) -> Result<()> {
     let report = task_store(profile)?.resume_task(&args.task_id, Utc::now())?;
-    print_lifecycle_report(&report, args.json)
+    present_task_lifecycle_report(&report, args.json)
 }
 
 async fn abandon_task(profile: &str, args: TaskLifecycleArgs) -> Result<()> {
     let report = task_store(profile)?.abandon_task(&args.task_id, Utc::now())?;
-    print_lifecycle_report(&report, args.json)
+    present_task_lifecycle_report(&report, args.json)
 }
 
 async fn gate(profile: &str, args: GateArgs) -> Result<()> {
@@ -8222,63 +8219,6 @@ fn print_approval_views(approvals: &[OffdeskPendingApprovalView]) {
     }
 }
 
-fn print_lifecycle_report(report: &OffdeskTaskLifecycleReport, json: bool) -> Result<()> {
-    if json {
-        println!("{}", serde_json::to_string_pretty(report)?);
-        return Ok(());
-    }
-
-    println!(
-        "{} offdesk task {}: {} -> {} ({})",
-        if report.changed {
-            "Updated"
-        } else {
-            "Unchanged"
-        },
-        report.task.task_id,
-        status_label(report.previous_status),
-        status_label(report.status),
-        report.message
-    );
-    if let Some(ticket_id) = report.task.background_ticket_id.as_deref() {
-        println!("  ticket: {}", ticket_id);
-    }
-    if !report.task.reason.trim().is_empty() {
-        println!("  reason: {}", report.task.reason);
-    }
-    if let Some(error) = report.task.last_error.as_deref() {
-        println!("  error:  {}", error);
-    }
-    Ok(())
-}
-
-fn print_retry_lifecycle_report(
-    report: &OffdeskTaskLifecycleReport,
-    superseded_denied_approvals: usize,
-    json: bool,
-    include_denied_reset: bool,
-) -> Result<()> {
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&RetryTaskLifecycleReport {
-                report,
-                superseded_denied_approvals,
-            })?
-        );
-        return Ok(());
-    }
-
-    print_lifecycle_report(report, false)?;
-    if include_denied_reset {
-        println!(
-            "  superseded denied approvals: {}",
-            superseded_denied_approvals
-        );
-    }
-    Ok(())
-}
-
 fn print_tasks(tasks: &[OffdeskTaskView]) {
     let open = tasks
         .iter()
@@ -8466,7 +8406,7 @@ fn print_task_rows(tasks: &[&OffdeskTaskView]) {
         println!(
             "{:<24} {:<18} {:<18} {:<14} {}",
             task.task_id,
-            status_label(task.status),
+            task_status_label(task.status),
             task.capability_id,
             format!("{:?}", task.runner_kind).to_lowercase(),
             task.background_ticket_id.as_deref().unwrap_or("-")
@@ -8645,20 +8585,6 @@ fn parse_offdesk_task_status(value: &str) -> std::result::Result<OffdeskTaskStat
         "cancelled" => Ok(OffdeskTaskStatus::Cancelled),
         _ => Err("expected one of: queued, pending-approval, launched, running, completed, failed, resume-pending, cancelled".to_string()),
     }
-}
-
-fn status_label(status: OffdeskTaskStatus) -> String {
-    match status {
-        OffdeskTaskStatus::Queued => "queued",
-        OffdeskTaskStatus::PendingApproval => "pending-approval",
-        OffdeskTaskStatus::Launched => "launched",
-        OffdeskTaskStatus::Running => "running",
-        OffdeskTaskStatus::Completed => "completed",
-        OffdeskTaskStatus::Failed => "failed",
-        OffdeskTaskStatus::ResumePending => "resume-pending",
-        OffdeskTaskStatus::Cancelled => "cancelled",
-    }
-    .to_string()
 }
 
 fn print_capabilities(capabilities: &[CapabilityDescriptor]) {
