@@ -683,9 +683,16 @@ direction is defined in `docs/project-direction.md`.
    resume-artifact updates, and denied-approval supersession remain in their
    existing stores and command handlers. Existing lifecycle contracts remain
    covered, and a legacy-state regression verifies standard and retry-wrapper
-   secret exclusion at the final operator boundary. Next move assess the
-   remaining gate/launch result presentation without moving scheduler
-   evaluation or background-launch authority.
+   secret exclusion at the final operator boundary. Offdesk scheduler-gate and
+   background-launch terminal/JSON presentation now live in
+   `src/cli/offdesk/scheduler_launch_presentation.rs`; scheduler evaluation,
+   approval creation, background launch execution and persistence, and
+   adaptive-wiki usage recording remain in the command handlers and stores.
+   Existing gate and launch contracts remain covered, and JSON/human
+   regressions verify project, request, task, ticket, preview, reason, and
+   launch-summary secret exclusion at the final operator boundary. Next move
+   assess pending-approval presentation without moving approval resolution or
+   ledger authority.
 1. Apply the deferred council verdicts with the new `wiki edit --kind
    --agent-mode/--clear-agent-modes` primitive, then curate the live candidate
    portfolio through the project-ranked queue.

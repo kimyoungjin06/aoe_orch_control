@@ -5358,6 +5358,129 @@ fn offdesk_launch_with_brief_records_background_run() -> Result<()> {
 
 #[test]
 #[serial]
+fn offdesk_gate_and_launch_presentation_redact_json_and_human_outputs() -> Result<()> {
+    let temp = tempdir()?;
+    let secret = "sk-secretsecretsecretsecret";
+
+    let gate_json_output = forager_command(temp.path())
+        .arg("offdesk")
+        .arg("gate")
+        .arg("dispatch.runtime")
+        .arg("--project-key")
+        .arg(format!("project token={secret}"))
+        .arg("--request-id")
+        .arg(format!("request-json token={secret}"))
+        .arg("--task-id")
+        .arg(format!("task-json token={secret}"))
+        .arg("--preview")
+        .arg(format!("preview token={secret}"))
+        .arg("--reason")
+        .arg(format!("reason token={secret}"))
+        .arg("--json")
+        .output()?;
+    assert!(gate_json_output.status.success());
+    let gate_json_stdout = String::from_utf8_lossy(&gate_json_output.stdout);
+    assert!(!gate_json_stdout.contains(secret));
+    assert!(gate_json_stdout.contains("[REDACTED]"));
+    let gate_json: serde_json::Value = serde_json::from_slice(&gate_json_output.stdout)?;
+    assert_eq!(gate_json["status"], "pending_approval");
+
+    let gate_human_output = forager_command(temp.path())
+        .arg("offdesk")
+        .arg("gate")
+        .arg("dispatch.runtime")
+        .arg("--project-key")
+        .arg(format!("project token={secret}"))
+        .arg("--request-id")
+        .arg(format!("request-human token={secret}"))
+        .arg("--task-id")
+        .arg(format!("task-human token={secret}"))
+        .arg("--preview")
+        .arg(format!("preview token={secret}"))
+        .arg("--reason")
+        .arg(format!("reason token={secret}"))
+        .output()?;
+    assert!(gate_human_output.status.success());
+    let gate_human_stdout = String::from_utf8_lossy(&gate_human_output.stdout);
+    assert!(gate_human_stdout.contains("Pending approval: dispatch.runtime"));
+    assert!(gate_human_stdout.contains("preview:     preview token=[REDACTED]"));
+    assert!(gate_human_stdout.contains("reason:      reason token=[REDACTED]"));
+    assert!(!gate_human_stdout.contains(secret));
+
+    let project_key = format!("launch-project token={secret}");
+    let request_id = format!("launch-request token={secret}");
+    let task_id = format!("launch-task token={secret}");
+    let brief_path = temp.path().join("redaction-brief.json");
+    fs::write(
+        &brief_path,
+        serde_json::to_string_pretty(&json!({
+            "request_id": request_id,
+            "task_id": task_id,
+            "project_key": project_key,
+            "approved": true,
+            "allowed_runtime_mutations": ["background.launch"],
+            "allowed_canonical_mutations": [],
+            "fresh_until": Utc::now() + Duration::minutes(10)
+        }))?,
+    )?;
+
+    let launch_json_output = forager_command(temp.path())
+        .arg("offdesk")
+        .arg("launch")
+        .arg("background.launch")
+        .arg("--runner")
+        .arg("local-background")
+        .arg("--project-key")
+        .arg(&project_key)
+        .arg("--request-id")
+        .arg(&request_id)
+        .arg("--task-id")
+        .arg(&task_id)
+        .arg("--ticket-id")
+        .arg(format!("ticket-json token={secret}"))
+        .arg("--launch-spec")
+        .arg(format!("legacy launch token={secret}"))
+        .arg("--brief")
+        .arg(&brief_path)
+        .arg("--json")
+        .output()?;
+    assert!(launch_json_output.status.success());
+    let launch_json_stdout = String::from_utf8_lossy(&launch_json_output.stdout);
+    assert!(!launch_json_stdout.contains(secret));
+    let launch_json: serde_json::Value = serde_json::from_slice(&launch_json_output.stdout)?;
+    assert_eq!(launch_json["gate"]["status"], "proceed");
+    assert!(launch_json["probe"]["ticket_id"]
+        .as_str()
+        .expect("ticket id")
+        .contains("[REDACTED]"));
+
+    let launch_human_output = forager_command(temp.path())
+        .arg("offdesk")
+        .arg("launch")
+        .arg("background.launch")
+        .arg("--runner")
+        .arg("local-background")
+        .arg("--project-key")
+        .arg(&project_key)
+        .arg("--request-id")
+        .arg(&request_id)
+        .arg("--task-id")
+        .arg(&task_id)
+        .arg("--ticket-id")
+        .arg(format!("ticket-human token={secret}"))
+        .arg("--brief")
+        .arg(&brief_path)
+        .output()?;
+    assert!(launch_human_output.status.success());
+    let launch_human_stdout = String::from_utf8_lossy(&launch_human_output.stdout);
+    assert!(launch_human_stdout.contains("Proceed: background.launch"));
+    assert!(launch_human_stdout.contains("ticket_id: ticket-human token=[REDACTED]"));
+    assert!(!launch_human_stdout.contains(secret));
+    Ok(())
+}
+
+#[test]
+#[serial]
 fn offdesk_poll_persists_background_phase_transition() -> Result<()> {
     let temp = tempdir()?;
     let profile_dir = profile_dir(temp.path());
