@@ -1159,6 +1159,77 @@ fn offdesk_resume_json_reports_artifacts() -> Result<()> {
 
 #[test]
 #[serial]
+fn offdesk_resume_presentation_redacts_legacy_json_and_human_state() -> Result<()> {
+    let temp = tempdir()?;
+    let profile_dir = profile_dir(temp.path());
+    fs::create_dir_all(&profile_dir)?;
+    let now = Utc::now();
+    let secret = "sk-secretsecretsecretsecret";
+    fs::write(
+        profile_dir.join("task_resume_state.json"),
+        serde_json::to_string_pretty(&json!([
+            {
+                "task_id": "task",
+                "request_id": "request",
+                "project_key": "project",
+                "status": "resume_pending",
+                "phase": "background",
+                "runner_target": "local_background",
+                "last_evidence_artifacts": [format!("/tmp/token={secret}")],
+                "evidence": [
+                    {
+                        "kind": "log_tail",
+                        "summary": format!("legacy summary token={secret}"),
+                        "path": format!("/tmp/token={secret}"),
+                        "present": true,
+                        "observed_at": now
+                    }
+                ],
+                "last_log_tail": format!("legacy tail token={secret}"),
+                "next_safe_resume_step": format!("inspect token={secret}"),
+                "interrupted_at": now,
+                "interruption_reason": format!("restart token={secret}"),
+                "fresh_until": now + Duration::minutes(10)
+            }
+        ]))?,
+    )?;
+
+    let json_output = forager_command(temp.path())
+        .args(["offdesk", "resume", "--json"])
+        .output()?;
+    assert!(json_output.status.success());
+    let json_stdout = String::from_utf8_lossy(&json_output.stdout);
+    assert!(!json_stdout.contains(secret));
+    let states: serde_json::Value = serde_json::from_slice(&json_output.stdout)?;
+    assert!(states[0]["last_log_tail"]
+        .as_str()
+        .expect("last log tail")
+        .contains("[REDACTED]"));
+
+    let human_output = forager_command(temp.path())
+        .args(["offdesk", "resume"])
+        .output()?;
+    assert!(human_output.status.success());
+    let human_stdout = String::from_utf8_lossy(&human_output.stdout);
+    assert!(human_stdout.contains("TASK"));
+    assert!(human_stdout.contains("evidence: log_tail"));
+    assert!(human_stdout.contains("[REDACTED]"));
+    assert!(!human_stdout.contains(secret));
+
+    fs::write(profile_dir.join("task_resume_state.json"), "[]\n")?;
+    let empty_output = forager_command(temp.path())
+        .args(["offdesk", "resume"])
+        .output()?;
+    assert!(empty_output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&empty_output.stdout).trim(),
+        "No task resume artifacts found."
+    );
+    Ok(())
+}
+
+#[test]
+#[serial]
 fn offdesk_gate_creates_pending_approval_for_runtime_mutation_without_brief() -> Result<()> {
     let temp = tempdir()?;
 
@@ -9208,6 +9279,77 @@ fn offdesk_background_ack_clears_stale_attention_for_cancelled_linked_task() -> 
         .iter()
         .any(|action| action["kind"] == "recovery_required"));
     assert!(!profile_dir.join("task_resume_state.json").exists());
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn offdesk_background_ack_presentation_redacts_legacy_acknowledgement() -> Result<()> {
+    let temp = tempdir()?;
+    let profile_dir = profile_dir(temp.path());
+    fs::create_dir_all(&profile_dir)?;
+    let now = Utc::now();
+    let secret = "sk-secretsecretsecretsecret";
+    fs::write(
+        profile_dir.join("background_runs.json"),
+        serde_json::to_string_pretty(&json!([
+            {
+                "ticket_id": "ticket",
+                "task_id": "task",
+                "runner_kind": "local_background",
+                "phase": "recovery_acknowledged",
+                "runtime_handle_alive": false,
+                "operator_recovery_ack": {
+                    "acknowledged_at": now,
+                    "acknowledged_by": format!("operator token={secret}"),
+                    "reason": format!("legacy reason token={secret}"),
+                    "previous_phase": "stale_lost_callback",
+                    "linked_task_ids": [format!("task-token={secret}")],
+                    "source_surface": format!("legacy token={secret}"),
+                    "does_not_authorize": []
+                }
+            }
+        ]))?,
+    )?;
+
+    let json_output = forager_command(temp.path())
+        .args([
+            "offdesk",
+            "background-ack",
+            "ticket",
+            "--reason",
+            "already acknowledged",
+            "--json",
+        ])
+        .output()?;
+    assert!(json_output.status.success());
+    let json_stdout = String::from_utf8_lossy(&json_output.stdout);
+    assert!(!json_stdout.contains(secret));
+    let report: serde_json::Value = serde_json::from_slice(&json_output.stdout)?;
+    assert_eq!(
+        report["status"]["decision"]["phase"],
+        "recovery_acknowledged"
+    );
+    assert!(report["acknowledgement"]["reason"]
+        .as_str()
+        .expect("acknowledgement reason")
+        .contains("[REDACTED]"));
+
+    let human_output = forager_command(temp.path())
+        .args([
+            "offdesk",
+            "background-ack",
+            "ticket",
+            "--reason",
+            "already acknowledged",
+        ])
+        .output()?;
+    assert!(human_output.status.success());
+    let human_stdout = String::from_utf8_lossy(&human_output.stdout);
+    assert!(human_stdout.contains("Acknowledged background recovery ticket"));
+    assert!(human_stdout.contains("[REDACTED]"));
+    assert!(human_stdout.contains("no retry, resume, closeout, cleanup"));
+    assert!(!human_stdout.contains(secret));
     Ok(())
 }
 

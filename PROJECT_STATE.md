@@ -667,7 +667,15 @@ direction is defined in `docs/project-direction.md`.
    JSON/human pause output now have integration regressions that verify
    actionable copy and secret exclusion. Next move continue with another
    bounded runtime presentation cluster without moving scheduler, store, or
-   mutation authority.
+   mutation authority. Offdesk resume-state and background recovery
+   acknowledgement terminal/JSON presentation now live in
+   `src/cli/offdesk/runtime_recovery_presentation.rs`; resume-store reads,
+   background polling, recovery validation, and acknowledgement persistence
+   remain in the command handlers and stores. Existing JSON and human resume
+   contracts remain covered, and legacy resume/acknowledgement regressions
+   verify secret exclusion at the final operator boundary. Next move extract
+   the remaining background polling or task-lifecycle presentation without
+   moving reconciliation or scheduler authority.
 1. Apply the deferred council verdicts with the new `wiki edit --kind
    --agent-mode/--clear-agent-modes` primitive, then curate the live candidate
    portfolio through the project-ranked queue.
