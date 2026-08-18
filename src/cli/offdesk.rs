@@ -14,6 +14,7 @@ mod plan_queries;
 mod plan_registry;
 mod remote_operator_presentation;
 mod runtime_recovery_presentation;
+mod scheduler_launch_presentation;
 mod task_lifecycle_presentation;
 mod wiki_audit_presentation;
 mod wiki_brief_presentation;
@@ -61,6 +62,9 @@ use remote_operator_presentation::{
 use runtime_recovery_presentation::{
     present_background_ack_report, present_background_poll_outcomes, present_background_statuses,
     present_resume_states,
+};
+use scheduler_launch_presentation::{
+    present_background_launch_outcome, present_scheduler_gate_outcome,
 };
 use task_lifecycle_presentation::{
     present_retry_task_lifecycle_report, present_task_lifecycle_report, task_status_label,
@@ -150,8 +154,8 @@ use crate::offdesk::{
     OffdeskTaskInput, OffdeskTaskStatus, OffdeskTaskStore, OffdeskTaskView, OffdeskTickOptions,
     OperatorPauseStore, PendingActionApproval, ProviderCapacityState, ProviderCapacityStore,
     ProviderFallbackRecommendation, RiskLevel, SchedulerGate, SchedulerGateRequest,
-    SchedulerGateStatus, TaskResumeState, TaskResumeStore, WorkSliceExecutionReceipt,
-    WorkSliceExecutionStatus, WORK_SLICE_EXECUTION_RECEIPTS_FILE,
+    TaskResumeState, TaskResumeStore, WorkSliceExecutionReceipt, WorkSliceExecutionStatus,
+    WORK_SLICE_EXECUTION_RECEIPTS_FILE,
 };
 use crate::session::{get_profile_dir, resolved_app_dir_path, DEFAULT_PROFILE};
 
@@ -4316,13 +4320,7 @@ async fn gate(profile: &str, args: GateArgs) -> Result<()> {
     .with_adaptive_wiki(AdaptiveWikiStore::new(&profile_dir))
     .evaluate(request, brief.as_ref(), Utc::now())?;
 
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&outcome)?);
-        return Ok(());
-    }
-
-    print_gate_outcome(&outcome);
-    Ok(())
+    present_scheduler_gate_outcome(&outcome, args.json)
 }
 
 async fn launch(profile: &str, args: LaunchArgs) -> Result<()> {
@@ -4393,27 +4391,7 @@ async fn launch(profile: &str, args: LaunchArgs) -> Result<()> {
     };
     append_adaptive_wiki_usage_for_launch(&profile_dir, &outcome, agent_mode, now)?;
 
-    if json {
-        println!("{}", serde_json::to_string_pretty(&outcome)?);
-        return Ok(());
-    }
-
-    print_gate_outcome(&outcome.gate);
-    if let Some(probe) = outcome.probe {
-        println!("  ticket_id: {}", probe.ticket_id);
-        println!("  runner:    {:?}", probe.runner_kind);
-        println!("  phase:     {:?}", probe.phase);
-        if let Some(agent_mode) = probe.agent_mode {
-            println!(
-                "  agent_mode: {}",
-                adaptive_wiki_agent_mode_cli_value(agent_mode)
-            );
-        }
-        if let Some(packet) = probe.implementation_packet.as_ref() {
-            println!("  packet:    {} ({})", packet.packet_id, packet.outcome);
-        }
-    }
-    Ok(())
+    present_background_launch_outcome(&outcome, json)
 }
 
 async fn poll(profile: &str, args: PollArgs) -> Result<()> {
@@ -8059,85 +8037,6 @@ fn load_execution_brief(path: Option<&PathBuf>) -> Result<Option<ExecutionBrief>
 
 fn shell_quote_arg(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
-}
-
-fn print_gate_outcome(outcome: &crate::offdesk::SchedulerGateOutcome) {
-    match outcome.status {
-        SchedulerGateStatus::Proceed => {
-            println!(
-                "Proceed: {} ({}) via {:?}",
-                outcome.capability_id, outcome.risk_level, outcome.approval_mode
-            );
-        }
-        SchedulerGateStatus::PendingApproval => {
-            println!(
-                "Pending approval: {} ({})",
-                outcome.capability_id, outcome.risk_level
-            );
-            if let Some(approval) = &outcome.approval {
-                println!("  approval_id: {}", approval.approval_id);
-                println!("  action_id:   {}", approval.action_id());
-                if !approval.preview.trim().is_empty() {
-                    println!("  preview:     {}", approval.preview);
-                }
-                if !approval.reason.trim().is_empty() {
-                    println!("  reason:      {}", approval.reason);
-                }
-            }
-        }
-        SchedulerGateStatus::Denied => {
-            println!("Denied: {} - {}", outcome.capability_id, outcome.reason);
-        }
-        SchedulerGateStatus::Blocked => {
-            println!("Blocked: {} - {}", outcome.capability_id, outcome.reason);
-            if let Some(capacity) = outcome.provider_capacity.as_ref() {
-                println!("  provider:  {}", capacity.provider_id);
-                println!("  model:     {}", capacity.model.as_deref().unwrap_or("-"));
-                println!("  scope:     {}", capacity.matched_scope);
-                if let Some(retry_at) = outcome.retry_at {
-                    println!("  retry_at:  {retry_at}");
-                }
-            }
-            if let Some(fallback) = outcome.provider_fallback.as_ref() {
-                let recommended = fallback
-                    .candidates
-                    .iter()
-                    .filter(|candidate| candidate.recommended)
-                    .count();
-                println!(
-                    "  fallback:  {} candidates, {} recommended",
-                    fallback.candidates.len(),
-                    recommended
-                );
-            }
-        }
-    }
-    if !outcome.adaptive_wiki.is_empty() {
-        println!("  adaptive_wiki: {} entries", outcome.adaptive_wiki.len());
-        for entry in outcome.adaptive_wiki.iter().take(3) {
-            println!(
-                "    - {} {:?} {:?} agent_modes={}: {}",
-                entry.id,
-                entry.scope,
-                entry.activation_mode,
-                adaptive_wiki_agent_modes_label(&entry.agent_modes),
-                entry.instruction
-            );
-        }
-    }
-    if !outcome.adaptive_wiki_runtime.is_empty() {
-        println!(
-            "  adaptive_wiki_runtime: {} entries policy review_expired={:?}",
-            outcome.adaptive_wiki_runtime.len(),
-            outcome.adaptive_wiki_runtime_policy.review_expired
-        );
-    }
-    if let Some(decision) = outcome.adaptive_wiki_runtime_decision.as_ref() {
-        println!(
-            "  adaptive_wiki_runtime_decision: {:?} ({})",
-            decision.status, decision.reason
-        );
-    }
 }
 
 fn wiki_scope_label(scope: AdaptiveWikiScope, scope_ref: &str) -> String {
