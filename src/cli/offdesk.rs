@@ -6,6 +6,7 @@ mod closeout_report;
 mod decision_ingest;
 mod deck;
 mod hosted_harness;
+mod operator_control_presentation;
 mod parsing;
 mod plan_commands;
 mod plan_presentation;
@@ -40,6 +41,7 @@ use hosted_harness::{
     build_harness_prompt_packet, hosted_harness_profile, hosted_harness_profiles,
     HarnessPromptRequest,
 };
+use operator_control_presentation::{present_learning_scan_report, present_operator_pause_state};
 use parsing::*;
 use plan_commands::{
     prepare_offdesk_plan_launch, record_offdesk_plan_review, register_offdesk_plan,
@@ -132,16 +134,16 @@ use crate::offdesk::{
     DecisionReceiptInput, DecisionRecord, DecisionRecordView, DecisionResolutionInput,
     DecisionStatus, DecisionValidationIssue, ExecutionBrief, ImplementationPacket,
     ImplementationPacketCoverageStatus, ImplementationPacketExecutionEvidence,
-    ImplementationPacketSummary, LatestImplementationPacket, LearningScanReport,
-    LocalCommandLaunchSpec, MutationRestoreOperation, MutationRestorePlan, MutationSnapshot,
-    MutationSnapshotStore, MutationSnapshotVerification, OffdeskModeAssessment,
-    OffdeskModeLifecycle, OffdeskNextSafeAction, OffdeskPendingApprovalView,
-    OffdeskPlanReviewDecision, OffdeskTask, OffdeskTaskInput, OffdeskTaskLifecycleReport,
-    OffdeskTaskStatus, OffdeskTaskStore, OffdeskTaskView, OffdeskTickOptions, OperatorPauseState,
-    OperatorPauseStore, PendingActionApproval, ProviderCapacityState, ProviderCapacityStore,
-    ProviderFallbackRecommendation, ResumeStatus, RiskLevel, SchedulerGate, SchedulerGateRequest,
-    SchedulerGateStatus, TaskResumeState, TaskResumeStore, WorkSliceExecutionReceipt,
-    WorkSliceExecutionStatus, WORK_SLICE_EXECUTION_RECEIPTS_FILE,
+    ImplementationPacketSummary, LatestImplementationPacket, LocalCommandLaunchSpec,
+    MutationRestoreOperation, MutationRestorePlan, MutationSnapshot, MutationSnapshotStore,
+    MutationSnapshotVerification, OffdeskModeAssessment, OffdeskModeLifecycle,
+    OffdeskNextSafeAction, OffdeskPendingApprovalView, OffdeskPlanReviewDecision, OffdeskTask,
+    OffdeskTaskInput, OffdeskTaskLifecycleReport, OffdeskTaskStatus, OffdeskTaskStore,
+    OffdeskTaskView, OffdeskTickOptions, OperatorPauseStore, PendingActionApproval,
+    ProviderCapacityState, ProviderCapacityStore, ProviderFallbackRecommendation, ResumeStatus,
+    RiskLevel, SchedulerGate, SchedulerGateRequest, SchedulerGateStatus, TaskResumeState,
+    TaskResumeStore, WorkSliceExecutionReceipt, WorkSliceExecutionStatus,
+    WORK_SLICE_EXECUTION_RECEIPTS_FILE,
 };
 use crate::session::{get_profile_dir, resolved_app_dir_path, DEFAULT_PROFILE};
 
@@ -4231,63 +4233,23 @@ async fn pause_dispatch(profile: &str, args: PauseArgs) -> Result<()> {
         Some(&args.by),
         Utc::now(),
     )?;
-    print_operator_pause_state(&state, args.json)
+    present_operator_pause_state(&state, args.json)
 }
 
 async fn unpause_dispatch(profile: &str, args: UnpauseArgs) -> Result<()> {
     let state =
         OperatorPauseStore::new(get_profile_dir(profile)?).resume(Some(&args.by), Utc::now())?;
-    print_operator_pause_state(&state, args.json)
+    present_operator_pause_state(&state, args.json)
 }
 
 async fn pause_status(profile: &str, args: JsonArgs) -> Result<()> {
     let state = OperatorPauseStore::new(get_profile_dir(profile)?).load()?;
-    print_operator_pause_state(&state, args.json)
+    present_operator_pause_state(&state, args.json)
 }
 
 async fn learning_scan(profile: &str, args: JsonArgs) -> Result<()> {
     let report = scan_and_emit_learning_signals(get_profile_dir(profile)?, Utc::now())?;
-    print_learning_scan_report(&report, args.json)
-}
-
-fn print_learning_scan_report(report: &LearningScanReport, json: bool) -> Result<()> {
-    if json {
-        println!("{}", serde_json::to_string_pretty(report)?);
-        return Ok(());
-    }
-    if report.emitted.is_empty() {
-        println!(
-            "No new learning signals ({} already recorded).",
-            report.skipped_already_processed
-        );
-        return Ok(());
-    }
-    println!(
-        "Emitted {} learning candidate(s) ({} already recorded):",
-        report.emitted.len(),
-        report.skipped_already_processed
-    );
-    for signal in &report.emitted {
-        println!("  [{}] {}", signal.source.as_str(), signal.claim);
-    }
-    println!("Candidates are recommendation-only; review with `forager offdesk wiki candidates`.");
-    Ok(())
-}
-
-fn print_operator_pause_state(state: &OperatorPauseState, json: bool) -> Result<()> {
-    if json {
-        println!("{}", serde_json::to_string_pretty(state)?);
-        return Ok(());
-    }
-    if state.paused {
-        println!("Offdesk dispatch is PAUSED; new work is held until resume.");
-        if let Some(reason) = state.reason.as_deref() {
-            println!("  reason: {reason}");
-        }
-    } else {
-        println!("Offdesk dispatch is active.");
-    }
-    Ok(())
+    present_learning_scan_report(&report, args.json)
 }
 
 async fn retry_task(profile: &str, args: RetryTaskArgs) -> Result<()> {
