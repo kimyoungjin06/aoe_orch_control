@@ -673,9 +673,13 @@ direction is defined in `docs/project-direction.md`.
    background polling, recovery validation, and acknowledgement persistence
    remain in the command handlers and stores. Existing JSON and human resume
    contracts remain covered, and legacy resume/acknowledgement regressions
-   verify secret exclusion at the final operator boundary. Next move extract
-   the remaining background polling or task-lifecycle presentation without
-   moving reconciliation or scheduler authority.
+   verify secret exclusion at the final operator boundary. Background poll and
+   inventory terminal/JSON presentation now share the same adapter while
+   polling and task reconciliation remain in the command handlers. Legacy
+   background-state regressions cover both commands, their empty states, and
+   secret exclusion at the final operator boundary. Next move extract the
+   remaining task-lifecycle presentation without moving task-store mutation or
+   scheduler authority.
 1. Apply the deferred council verdicts with the new `wiki edit --kind
    --agent-mode/--clear-agent-modes` primitive, then curate the live candidate
    portfolio through the project-ranked queue.

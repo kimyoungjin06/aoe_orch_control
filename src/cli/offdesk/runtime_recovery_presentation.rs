@@ -1,14 +1,17 @@
 //! Offdesk runtime-recovery presentation.
 //!
-//! Command handlers retain resume-store reads, background polling, recovery
-//! validation, and acknowledgement persistence. This module only renders
-//! completed resume and acknowledgement results.
+//! Command handlers retain resume-store reads, background polling, task
+//! reconciliation, recovery validation, and acknowledgement persistence. This
+//! module only renders completed runtime-recovery results.
 
 use anyhow::Result;
 use chrono::Utc;
 
-use super::{operator_safe_json_value, BackgroundAckReport};
-use crate::offdesk::{operator_safe_text, ResumeStatus, TaskResumeState};
+use super::{operator_safe_json_value, BackgroundAckReport, BackgroundProbeStatus};
+use crate::offdesk::{
+    operator_safe_text, BackgroundPollOutcome, BackgroundProbe, BackgroundRecoveryDecision,
+    OffdeskModeAssessment, OffdeskNextSafeAction, ResumeStatus, TaskResumeState,
+};
 
 pub(super) fn present_resume_states(states: &[TaskResumeState], json: bool) -> Result<()> {
     if json {
@@ -107,4 +110,98 @@ pub(super) fn present_background_ack_report(
         "  note:   no retry, resume, closeout, cleanup, or accepted-truth action is authorized by this acknowledgement"
     );
     Ok(())
+}
+
+pub(super) fn present_background_poll_outcomes(
+    outcomes: &[BackgroundPollOutcome],
+    json: bool,
+) -> Result<()> {
+    if json {
+        present_operator_safe_json(outcomes)?;
+        return Ok(());
+    }
+    if outcomes.is_empty() {
+        println!("No matching background runner probes found.");
+        return Ok(());
+    }
+    for outcome in outcomes {
+        present_background_probe(&outcome.probe, &outcome.decision, &outcome.mode_assessment);
+        present_next_safe_action(&outcome.next_safe_action);
+    }
+    Ok(())
+}
+
+pub(super) fn present_background_statuses(
+    statuses: &[BackgroundProbeStatus],
+    json: bool,
+) -> Result<()> {
+    if json {
+        present_operator_safe_json(statuses)?;
+        return Ok(());
+    }
+    if statuses.is_empty() {
+        println!("No background runner probes found.");
+        return Ok(());
+    }
+    for status in statuses {
+        present_background_probe(&status.probe, &status.decision, &status.mode_assessment);
+    }
+    Ok(())
+}
+
+fn present_operator_safe_json(value: &(impl serde::Serialize + ?Sized)) -> Result<()> {
+    let value = operator_safe_json_value(serde_json::to_value(value)?);
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
+}
+
+fn present_background_probe(
+    probe: &BackgroundProbe,
+    decision: &BackgroundRecoveryDecision,
+    mode_assessment: &OffdeskModeAssessment,
+) {
+    println!(
+        "{} {:?} -> {:?}: {}",
+        operator_safe_text(&probe.ticket_id),
+        probe.runner_kind,
+        decision.phase,
+        operator_safe_text(&decision.evidence)
+    );
+    present_mode_assessment(mode_assessment);
+    if let Some(observed_at) = probe.last_observed_at {
+        println!("  observed_at: {observed_at}");
+    }
+    if let Some(tail) = probe.last_log_tail.as_deref() {
+        println!("  tail: {}", operator_safe_text(tail));
+    }
+}
+
+fn present_mode_assessment(assessment: &OffdeskModeAssessment) {
+    println!(
+        "  mode_verdict: {} risk: {}",
+        assessment.mode_verdict.label(),
+        assessment.mode_risk.label()
+    );
+    println!(
+        "  mode_risk_detail: {}",
+        operator_safe_text(&assessment.mode_risk_detail)
+    );
+    if assessment.review_stage_required {
+        println!("  review_stage_required: true");
+    }
+}
+
+fn present_next_safe_action(action: &OffdeskNextSafeAction) {
+    println!("  next:    {}", operator_safe_text(&action.detail));
+    if !action.commands.is_empty() {
+        let commands = action
+            .commands
+            .iter()
+            .map(|command| operator_safe_text(command))
+            .collect::<Vec<_>>();
+        println!("  command: {}", commands.join(" | "));
+    }
+    if action.requires_operator_review {
+        println!("  review:  operator review required");
+    }
 }
