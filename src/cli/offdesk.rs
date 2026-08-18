@@ -57,7 +57,10 @@ use plan_queries::{query_offdesk_plan_detail, query_offdesk_plans, OffdeskPlanLi
 use remote_operator_presentation::{
     present_remote_operator_pending, present_remote_operator_status,
 };
-use runtime_recovery_presentation::{present_background_ack_report, present_resume_states};
+use runtime_recovery_presentation::{
+    present_background_ack_report, present_background_poll_outcomes, present_background_statuses,
+    present_resume_states,
+};
 use wiki_audit_presentation::{
     present_wiki_graph, present_wiki_lint, present_wiki_markdown_export,
 };
@@ -4428,35 +4431,7 @@ async fn poll(profile: &str, args: PollArgs) -> Result<()> {
         notification_cooldown,
     )?;
     reconcile_tasks_with_background_outcomes(get_profile_dir(profile)?, &outcomes, now)?;
-
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&outcomes)?);
-        return Ok(());
-    }
-
-    if outcomes.is_empty() {
-        println!("No matching background runner probes found.");
-        return Ok(());
-    }
-
-    for outcome in outcomes {
-        println!(
-            "{} {:?} -> {:?}: {}",
-            outcome.probe.ticket_id,
-            outcome.probe.runner_kind,
-            outcome.decision.phase,
-            outcome.decision.evidence
-        );
-        print_mode_assessment(&outcome.mode_assessment);
-        if let Some(observed_at) = outcome.probe.last_observed_at {
-            println!("  observed_at: {observed_at}");
-        }
-        if let Some(tail) = outcome.probe.last_log_tail.as_deref() {
-            println!("  tail: {tail}");
-        }
-        print_next_safe_action(&outcome.next_safe_action);
-    }
-    Ok(())
+    present_background_poll_outcomes(&outcomes, args.json)
 }
 
 async fn pending(profile: &str, args: PendingArgs) -> Result<()> {
@@ -4673,34 +4648,7 @@ async fn background(profile: &str, args: JsonArgs) -> Result<()> {
                 probe: outcome.probe,
             })
             .collect();
-
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&statuses)?);
-        return Ok(());
-    }
-
-    if statuses.is_empty() {
-        println!("No background runner probes found.");
-        return Ok(());
-    }
-
-    for status in statuses {
-        println!(
-            "{} {:?} -> {:?}: {}",
-            status.probe.ticket_id,
-            status.probe.runner_kind,
-            status.decision.phase,
-            status.decision.evidence
-        );
-        print_mode_assessment(&status.mode_assessment);
-        if let Some(observed_at) = status.probe.last_observed_at {
-            println!("  observed_at: {observed_at}");
-        }
-        if let Some(tail) = status.probe.last_log_tail.as_deref() {
-            println!("  tail: {tail}");
-        }
-    }
-    Ok(())
+    present_background_statuses(&statuses, args.json)
 }
 
 async fn background_ack(profile: &str, args: BackgroundAckArgs) -> Result<()> {

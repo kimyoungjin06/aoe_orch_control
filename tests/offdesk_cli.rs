@@ -5459,6 +5459,88 @@ fn offdesk_poll_marks_stale_background_heartbeat() -> Result<()> {
 
 #[test]
 #[serial]
+fn offdesk_background_poll_presentation_redacts_legacy_json_and_human_state() -> Result<()> {
+    let temp = tempdir()?;
+    let profile_dir = profile_dir(temp.path());
+    fs::create_dir_all(&profile_dir)?;
+    let secret = "sk-secretsecretsecretsecret";
+    fs::write(
+        profile_dir.join("background_runs.json"),
+        serde_json::to_string_pretty(&json!([
+            {
+                "ticket_id": "ticket",
+                "project_key": format!("project-token={secret}"),
+                "runner_kind": "local_background",
+                "phase": "launched",
+                "launch_spec_summary": format!("legacy launch token={secret}"),
+                "runtime_handle_alive": false,
+                "last_log_tail": format!("legacy tail token={secret}")
+            }
+        ]))?,
+    )?;
+
+    let poll_json_output = forager_command(temp.path())
+        .args(["offdesk", "poll", "ticket", "--json"])
+        .output()?;
+    assert!(poll_json_output.status.success());
+    let poll_json_stdout = String::from_utf8_lossy(&poll_json_output.stdout);
+    assert!(!poll_json_stdout.contains(secret));
+    let outcomes: serde_json::Value = serde_json::from_slice(&poll_json_output.stdout)?;
+    assert_eq!(outcomes[0]["decision"]["phase"], "stale_lost_callback");
+    assert!(outcomes[0]["probe"]["launch_spec_summary"]
+        .as_str()
+        .expect("launch spec summary")
+        .contains("[REDACTED]"));
+
+    let poll_human_output = forager_command(temp.path())
+        .args(["offdesk", "poll", "ticket"])
+        .output()?;
+    assert!(poll_human_output.status.success());
+    let poll_human_stdout = String::from_utf8_lossy(&poll_human_output.stdout);
+    assert!(poll_human_stdout.contains("ticket LocalBackground -> StaleLostCallback"));
+    assert!(poll_human_stdout.contains("tail: legacy tail token=[REDACTED]"));
+    assert!(poll_human_stdout.contains("next:"));
+    assert!(!poll_human_stdout.contains(secret));
+
+    let background_json_output = forager_command(temp.path())
+        .args(["offdesk", "background", "--json"])
+        .output()?;
+    assert!(background_json_output.status.success());
+    let background_json_stdout = String::from_utf8_lossy(&background_json_output.stdout);
+    assert!(!background_json_stdout.contains(secret));
+    let statuses: serde_json::Value = serde_json::from_slice(&background_json_output.stdout)?;
+    assert_eq!(statuses[0]["decision"]["phase"], "stale_lost_callback");
+
+    let background_human_output = forager_command(temp.path())
+        .args(["offdesk", "background"])
+        .output()?;
+    assert!(background_human_output.status.success());
+    let background_human_stdout = String::from_utf8_lossy(&background_human_output.stdout);
+    assert!(background_human_stdout.contains("tail: legacy tail token=[REDACTED]"));
+    assert!(!background_human_stdout.contains(secret));
+
+    fs::write(profile_dir.join("background_runs.json"), "[]\n")?;
+    let empty_poll_output = forager_command(temp.path())
+        .args(["offdesk", "poll"])
+        .output()?;
+    assert!(empty_poll_output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&empty_poll_output.stdout).trim(),
+        "No matching background runner probes found."
+    );
+    let empty_background_output = forager_command(temp.path())
+        .args(["offdesk", "background"])
+        .output()?;
+    assert!(empty_background_output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&empty_background_output.stdout).trim(),
+        "No background runner probes found."
+    );
+    Ok(())
+}
+
+#[test]
+#[serial]
 fn offdesk_launch_executes_local_background_command_and_poll_completes() -> Result<()> {
     let temp = tempdir()?;
     let brief_path = temp.path().join("brief.json");
