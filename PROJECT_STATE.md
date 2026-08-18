@@ -659,7 +659,15 @@ direction is defined in `docs/project-direction.md`.
    attention panel now consumes the existing operator summary and prioritized
    next-safe-action contracts without adding execution authority. Next move
    continue the bounded Offdesk CLI presentation extraction after the panel is
-   proven in daily operation.
+   proven in daily operation. Offdesk learning-scan and operator-pause
+   terminal/JSON presentation now live in
+   `src/cli/offdesk/operator_control_presentation.rs`; learning-signal scans
+   and pause-state reads and writes remain in the command handlers and stores.
+   Existing JSON behavior remains covered, and human learning-scan plus
+   JSON/human pause output now have integration regressions that verify
+   actionable copy and secret exclusion. Next move continue with another
+   bounded runtime presentation cluster without moving scheduler, store, or
+   mutation authority.
 1. Apply the deferred council verdicts with the new `wiki edit --kind
    --agent-mode/--clear-agent-modes` primitive, then curate the live candidate
    portfolio through the project-ranked queue.

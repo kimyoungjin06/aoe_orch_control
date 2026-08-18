@@ -11665,6 +11665,91 @@ fn offdesk_pause_unpause_round_trips_and_tick_holds_dispatch() -> Result<()> {
 
 #[test]
 #[serial]
+fn offdesk_pause_presentation_redacts_secrets_for_json_and_humans() -> Result<()> {
+    let temp = tempdir()?;
+    let profile = profile_dir(temp.path());
+    fs::create_dir_all(&profile)?;
+    let secret = "sk-secretsecretsecretsecret";
+
+    let pause = forager_command(temp.path())
+        .args([
+            "offdesk",
+            "pause",
+            "--reason",
+            &format!("emergency token={secret}"),
+            "--by",
+            "test",
+            "--json",
+        ])
+        .output()?;
+    assert!(pause.status.success());
+    let json_stdout = String::from_utf8_lossy(&pause.stdout);
+    assert!(!json_stdout.contains(secret));
+    let pause: serde_json::Value = serde_json::from_slice(&pause.stdout)?;
+    assert_eq!(pause["paused"], true);
+    assert!(pause["reason"]
+        .as_str()
+        .expect("pause reason")
+        .contains("[REDACTED]"));
+
+    let status = forager_command(temp.path())
+        .args(["offdesk", "pause-status"])
+        .output()?;
+    assert!(status.status.success());
+    let human_stdout = String::from_utf8_lossy(&status.stdout);
+    assert!(human_stdout.contains("Offdesk dispatch is PAUSED"));
+    assert!(human_stdout.contains("reason: emergency token=[REDACTED]"));
+    assert!(!human_stdout.contains(secret));
+
+    let unpause = forager_command(temp.path())
+        .args(["offdesk", "unpause", "--by", "test"])
+        .output()?;
+    assert!(unpause.status.success());
+    assert!(String::from_utf8_lossy(&unpause.stdout).contains("Offdesk dispatch is active."));
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn offdesk_learning_scan_human_presentation_is_actionable_and_operator_safe() -> Result<()> {
+    let temp = tempdir()?;
+    let profile = profile_dir(temp.path());
+    fs::create_dir_all(&profile)?;
+    let now = Utc::now();
+    let secret = "sk-secretsecretsecretsecret";
+    fs::write(
+        profile.join("offdesk_tasks.json"),
+        serde_json::to_string_pretty(&json!([durable_task_with(
+            "task-learning-human",
+            "dispatch.runtime",
+            "failed",
+            now,
+            "cargo build",
+            temp.path()
+        )]))?,
+    )?;
+
+    let scan = forager_command(temp.path())
+        .args(["offdesk", "learning-scan"])
+        .output()?;
+    assert!(scan.status.success());
+    let stdout = String::from_utf8_lossy(&scan.stdout);
+    assert!(stdout.contains("Emitted 1 learning candidate(s) (0 already recorded):"));
+    assert!(stdout.contains("[task_failed]"));
+    assert!(stdout.contains("Candidates are recommendation-only"));
+    assert!(!stdout.contains(secret));
+
+    let rescan = forager_command(temp.path())
+        .args(["offdesk", "learning-scan"])
+        .output()?;
+    assert!(rescan.status.success());
+    assert!(String::from_utf8_lossy(&rescan.stdout)
+        .contains("No new learning signals (1 already recorded)."));
+    Ok(())
+}
+
+#[test]
+#[serial]
 fn offdesk_learning_scan_emits_candidates_once_and_tick_auto_scans() -> Result<()> {
     use forager::offdesk::{
         AdaptiveWikiKind, AdaptiveWikiStore, BackgroundRunnerKind, OffdeskTask, OffdeskTaskInput,
