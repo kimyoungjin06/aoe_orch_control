@@ -13,6 +13,7 @@ mod plan_presentation;
 mod plan_queries;
 mod plan_registry;
 mod remote_operator_presentation;
+mod runtime_recovery_presentation;
 mod wiki_audit_presentation;
 mod wiki_brief_presentation;
 mod wiki_catalog;
@@ -56,6 +57,7 @@ use plan_queries::{query_offdesk_plan_detail, query_offdesk_plans, OffdeskPlanLi
 use remote_operator_presentation::{
     present_remote_operator_pending, present_remote_operator_status,
 };
+use runtime_recovery_presentation::{present_background_ack_report, present_resume_states};
 use wiki_audit_presentation::{
     present_wiki_graph, present_wiki_lint, present_wiki_markdown_export,
 };
@@ -140,10 +142,9 @@ use crate::offdesk::{
     OffdeskNextSafeAction, OffdeskPendingApprovalView, OffdeskPlanReviewDecision, OffdeskTask,
     OffdeskTaskInput, OffdeskTaskLifecycleReport, OffdeskTaskStatus, OffdeskTaskStore,
     OffdeskTaskView, OffdeskTickOptions, OperatorPauseStore, PendingActionApproval,
-    ProviderCapacityState, ProviderCapacityStore, ProviderFallbackRecommendation, ResumeStatus,
-    RiskLevel, SchedulerGate, SchedulerGateRequest, SchedulerGateStatus, TaskResumeState,
-    TaskResumeStore, WorkSliceExecutionReceipt, WorkSliceExecutionStatus,
-    WORK_SLICE_EXECUTION_RECEIPTS_FILE,
+    ProviderCapacityState, ProviderCapacityStore, ProviderFallbackRecommendation, RiskLevel,
+    SchedulerGate, SchedulerGateRequest, SchedulerGateStatus, TaskResumeState, TaskResumeStore,
+    WorkSliceExecutionReceipt, WorkSliceExecutionStatus, WORK_SLICE_EXECUTION_RECEIPTS_FILE,
 };
 use crate::session::{get_profile_dir, resolved_app_dir_path, DEFAULT_PROFILE};
 
@@ -4658,19 +4659,7 @@ fn background_mode_lifecycle(
 
 async fn resume(profile: &str, args: JsonArgs) -> Result<()> {
     let states = resume_store(profile)?.load()?;
-
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&states)?);
-        return Ok(());
-    }
-
-    if states.is_empty() {
-        println!("No task resume artifacts found.");
-        return Ok(());
-    }
-
-    print_resume_states(&states);
-    Ok(())
+    present_resume_states(&states, args.json)
 }
 
 async fn background(profile: &str, args: JsonArgs) -> Result<()> {
@@ -4738,7 +4727,7 @@ async fn background_ack(profile: &str, args: BackgroundAckArgs) -> Result<()> {
                 mode_assessment: outcome.mode_assessment.clone(),
             },
         };
-        print_background_ack_report(&report, args.json)?;
+        present_background_ack_report(&report, args.json)?;
         return Ok(());
     }
 
@@ -4810,27 +4799,7 @@ async fn background_ack(profile: &str, args: BackgroundAckArgs) -> Result<()> {
         acknowledgement,
         status,
     };
-    print_background_ack_report(&report, args.json)?;
-    Ok(())
-}
-
-fn print_background_ack_report(report: &BackgroundAckReport, json: bool) -> Result<()> {
-    if json {
-        println!("{}", serde_json::to_string_pretty(report)?);
-        return Ok(());
-    }
-    println!(
-        "Acknowledged background recovery {} -> {:?}",
-        report.ticket_id, report.status.decision.phase
-    );
-    println!("  by:     {}", report.acknowledgement.acknowledged_by);
-    println!("  reason: {}", report.acknowledgement.reason);
-    if !report.linked_task_ids.is_empty() {
-        println!("  tasks:  {}", report.linked_task_ids.join(", "));
-    }
-    println!(
-        "  note:   no retry, resume, closeout, cleanup, or accepted-truth action is authorized by this acknowledgement"
-    );
+    present_background_ack_report(&report, args.json)?;
     Ok(())
 }
 
@@ -8302,60 +8271,6 @@ fn print_approval_views(approvals: &[OffdeskPendingApprovalView]) {
             );
         }
         print_next_safe_action(&approval_view.next_safe_action);
-    }
-}
-
-fn print_resume_states(states: &[TaskResumeState]) {
-    let now = Utc::now();
-    println!(
-        "{:<24} {:<16} {:<8} {:<18} NEXT STEP",
-        "TASK", "STATUS", "FRESH", "RUNNER"
-    );
-    for state in states {
-        let fresh = if state.status == ResumeStatus::ResumePending {
-            if state.is_fresh_at(now) {
-                "fresh"
-            } else {
-                "stale"
-            }
-        } else {
-            "-"
-        };
-        println!(
-            "{:<24} {:<16} {:<8} {:<18} {}",
-            state.task_id,
-            format!("{:?}", state.status).to_lowercase(),
-            fresh,
-            state.runner_target,
-            state.next_safe_resume_step
-        );
-        println!("  resume_id: {}", state.resume_id());
-        for evidence in state.evidence.iter().take(3) {
-            let present = evidence
-                .present
-                .map(|present| if present { "present" } else { "missing" });
-            match (evidence.path.as_deref(), present) {
-                (Some(path), Some(present)) => {
-                    println!(
-                        "  evidence: {}: {} ({present}, {path})",
-                        evidence.kind, evidence.summary
-                    );
-                }
-                (Some(path), None) => {
-                    println!(
-                        "  evidence: {}: {} ({path})",
-                        evidence.kind, evidence.summary
-                    );
-                }
-                _ => println!("  evidence: {}: {}", evidence.kind, evidence.summary),
-            }
-        }
-        if state.evidence.len() > 3 {
-            println!("  evidence: +{} more", state.evidence.len() - 3);
-        }
-        if let Some(tail) = state.last_log_tail.as_deref() {
-            println!("  tail: {tail}");
-        }
     }
 }
 
