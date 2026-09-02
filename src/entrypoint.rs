@@ -15,10 +15,24 @@ pub async fn run_cli() -> Result<()> {
 
     let cli = Cli::parse();
     let explicit_profile = cli.profile.clone();
+    let profile_independent_read_only = matches!(
+        cli.command.as_ref(),
+        Some(Commands::Offdesk { command })
+            if matches!(
+                command.as_ref(),
+                cli::offdesk::OffdeskCommands::RemoteSession { .. }
+            )
+    );
     let profile = explicit_profile
         .clone()
         .or_else(|| std::env::var("AGENT_OF_EMPIRES_PROFILE").ok())
-        .or_else(configured_default_profile)
+        .or_else(|| {
+            if profile_independent_read_only {
+                None
+            } else {
+                configured_default_profile()
+            }
+        })
         .unwrap_or_default();
     let profile = normalize_profile_name(&profile)?;
     maybe_warn_legacy_alias(&cli);
@@ -47,6 +61,7 @@ pub async fn run_cli() -> Result<()> {
             if matches!(
                 command.as_ref(),
                 cli::offdesk::OffdeskCommands::DebugBundle(_)
+                    | cli::offdesk::OffdeskCommands::RemoteSession { .. }
             ) =>
         {
             return cli::offdesk::run(&profile, *command).await;

@@ -15,6 +15,7 @@
 [Hosted Harness Agents](hosted-harness-agents.md)
 
 [Remote Operator](remote-operator.md)
+[Remote Session Creation And Isolation Plan](remote-session-creation-isolation-plan.md)
 
 [Evidence Search And Memory Boundary](evidence-search-and-memory-boundary.md)
 

@@ -18,6 +18,7 @@ pub mod operator_pause;
 pub mod orchestration;
 pub mod provider;
 pub mod redaction;
+pub mod remote_session;
 pub mod resume;
 pub mod runner;
 pub mod scheduler;
@@ -130,6 +131,7 @@ pub use redaction::{
     force_redact, force_redact_with_report, operator_safe_report, operator_safe_text,
     strip_runner_context, strip_runner_context_with_report, RedactionOutcome,
 };
+pub use remote_session::*;
 pub use resume::{
     ResumeEvidence, ResumePendingInput, ResumeStatus, TaskResumeState, TaskResumeStore,
 };
