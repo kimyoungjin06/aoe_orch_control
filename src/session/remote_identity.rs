@@ -349,6 +349,7 @@ fn is_sha256(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
     use tempfile::tempdir;
 
     fn fixture() -> RemoteSessionIdentityV1 {
@@ -397,6 +398,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn live_tmux_observation_binds_every_identity_plane_when_available() -> Result<()> {
         if std::process::Command::new("tmux")
@@ -462,5 +464,11 @@ mod tests {
             crate::offdesk::remote_session_policy_harness_launch_sha256(&launch_profile)?
         );
         Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn machine_identity_remains_fail_closed_until_macos_observation_is_implemented() {
+        assert!(machine_identity_sha256().is_err());
     }
 }
