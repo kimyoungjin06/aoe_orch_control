@@ -8,6 +8,7 @@ mod groups;
 mod instance;
 pub mod profile_config;
 pub mod project_registry;
+pub mod remote_identity;
 pub mod repo_config;
 mod storage;
 
@@ -26,6 +27,7 @@ pub use profile_config::{
     SessionConfigOverride, ThemeConfigOverride, TmuxConfigOverride, UpdatesConfigOverride,
     WorktreeConfigOverride,
 };
+pub use remote_identity::{RemoteSessionIdentityV1, RemoteSessionWorktreeKindV1};
 pub use repo_config::{
     check_hook_trust, execute_hooks, load_repo_config, merge_repo_config_unchecked,
     profile_to_repo_config, repo_config_to_profile, resolve_config_with_repo, save_repo_config,

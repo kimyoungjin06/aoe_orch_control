@@ -221,6 +221,32 @@ impl Session {
         process::get_foreground_pid(pane_pid).or(Some(pane_pid))
     }
 
+    /// Exact tmux process-instance identity for session-scoped receipts.
+    pub(crate) fn runtime_identity(&self) -> Result<String> {
+        if !self.exists() {
+            bail!("tmux session is not running");
+        }
+        let output = Command::new("tmux")
+            .args([
+                "display-message",
+                "-p",
+                "-t",
+                self.target_name(),
+                "#{session_id}|#{session_created}|#{pane_id}|#{pane_pid}",
+            ])
+            .output()?;
+        if !output.status.success() {
+            bail!("failed to observe tmux runtime identity");
+        }
+        let identity = String::from_utf8(output.stdout)?;
+        let identity = identity.trim();
+        let fields = identity.split('|').collect::<Vec<_>>();
+        if fields.len() != 4 || fields.iter().any(|field| field.is_empty()) {
+            bail!("tmux runtime identity is incomplete");
+        }
+        Ok(identity.to_string())
+    }
+
     pub fn detect_status(&self, tool: &str) -> Result<Status> {
         let content = self.capture_pane(50)?;
         Ok(super::status_detection::detect_status_from_content(

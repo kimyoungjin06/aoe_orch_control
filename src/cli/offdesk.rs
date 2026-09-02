@@ -13,6 +13,7 @@ mod plan_presentation;
 mod plan_queries;
 mod plan_registry;
 mod remote_operator_presentation;
+mod remote_session_presentation;
 mod runtime_recovery_presentation;
 mod scheduler_launch_presentation;
 mod task_lifecycle_presentation;
@@ -58,6 +59,9 @@ use plan_presentation::{
 use plan_queries::{query_offdesk_plan_detail, query_offdesk_plans, OffdeskPlanListQuery};
 use remote_operator_presentation::{
     present_remote_operator_pending, present_remote_operator_status,
+};
+use remote_session_presentation::{
+    present_remote_session_policy_inspection, present_remote_session_policy_resolution,
 };
 use runtime_recovery_presentation::{
     present_background_ack_report, present_background_poll_outcomes, present_background_statuses,
@@ -121,26 +125,27 @@ use crate::offdesk::{
     build_graph_export_files, build_usage_records_with_policy, default_capability_registry,
     implementation_packet_from_path, implementation_packet_record_from_path,
     latest_implementation_packet_for_project, launch_background_command, launch_background_run,
-    operator_safe_report, pending_approval_operator_views, poll_background_runs,
+    load_remote_session_policy_for_inspection, operator_safe_report,
+    pending_approval_operator_views, poll_background_runs,
     receipt_decision_record as transition_receipt_decision_record, recommend_provider_fallback,
     reconcile_tasks_with_background_outcomes,
-    resolve_decision_record as transition_resolve_decision_record, run_offdesk_tick,
-    scan_and_emit_learning_signals, work_slice_execution_receipts_from_path, ActionApprovalRequest,
-    AdaptiveWikiActivationMode, AdaptiveWikiAgentMode, AdaptiveWikiAgentModeFilter,
-    AdaptiveWikiAuditAction, AdaptiveWikiAuditRecord, AdaptiveWikiCandidate,
-    AdaptiveWikiCandidateInput, AdaptiveWikiConfidence, AdaptiveWikiEntry, AdaptiveWikiEntryEdit,
-    AdaptiveWikiHumanCandidate, AdaptiveWikiHumanEntry, AdaptiveWikiKind,
-    AdaptiveWikiLiveEpisodeFilter, AdaptiveWikiOrigin, AdaptiveWikiProjectionBudget,
-    AdaptiveWikiProjectionPolicy, AdaptiveWikiProjectionReviewExpiredPolicy,
-    AdaptiveWikiPromotionReceipt, AdaptiveWikiPromotionReceiptAuthority, AdaptiveWikiQuery,
-    AdaptiveWikiReviewProposal, AdaptiveWikiReviewProposalAction,
-    AdaptiveWikiReviewProposalDecision, AdaptiveWikiReviewProposalEventRecord,
-    AdaptiveWikiReviewQueueFilter, AdaptiveWikiRuntimePolicyAckScopeMode, AdaptiveWikiScope,
-    AdaptiveWikiScopeSuggestion, AdaptiveWikiSignalKind, AdaptiveWikiStore,
-    AdaptiveWikiUsageContext, ApprovalLedger, ApprovalStatus, BackgroundLaunchOutcome,
-    BackgroundLaunchRequest, BackgroundProbe, BackgroundRecoveryAcknowledgement,
-    BackgroundRecoveryDecision, BackgroundRunStore, BackgroundRunnerKind, BackgroundRunnerPhase,
-    CapabilityArtifactRef, CapabilityDescriptor,
+    resolve_decision_record as transition_resolve_decision_record,
+    resolve_remote_session_policy_target, run_offdesk_tick, scan_and_emit_learning_signals,
+    work_slice_execution_receipts_from_path, ActionApprovalRequest, AdaptiveWikiActivationMode,
+    AdaptiveWikiAgentMode, AdaptiveWikiAgentModeFilter, AdaptiveWikiAuditAction,
+    AdaptiveWikiAuditRecord, AdaptiveWikiCandidate, AdaptiveWikiCandidateInput,
+    AdaptiveWikiConfidence, AdaptiveWikiEntry, AdaptiveWikiEntryEdit, AdaptiveWikiHumanCandidate,
+    AdaptiveWikiHumanEntry, AdaptiveWikiKind, AdaptiveWikiLiveEpisodeFilter, AdaptiveWikiOrigin,
+    AdaptiveWikiProjectionBudget, AdaptiveWikiProjectionPolicy,
+    AdaptiveWikiProjectionReviewExpiredPolicy, AdaptiveWikiPromotionReceipt,
+    AdaptiveWikiPromotionReceiptAuthority, AdaptiveWikiQuery, AdaptiveWikiReviewProposal,
+    AdaptiveWikiReviewProposalAction, AdaptiveWikiReviewProposalDecision,
+    AdaptiveWikiReviewProposalEventRecord, AdaptiveWikiReviewQueueFilter,
+    AdaptiveWikiRuntimePolicyAckScopeMode, AdaptiveWikiScope, AdaptiveWikiScopeSuggestion,
+    AdaptiveWikiSignalKind, AdaptiveWikiStore, AdaptiveWikiUsageContext, ApprovalLedger,
+    ApprovalStatus, BackgroundLaunchOutcome, BackgroundLaunchRequest, BackgroundProbe,
+    BackgroundRecoveryAcknowledgement, BackgroundRecoveryDecision, BackgroundRunStore,
+    BackgroundRunnerKind, BackgroundRunnerPhase, CapabilityArtifactRef, CapabilityDescriptor,
     CloseoutDecisionResolution as WorkflowCloseoutDecisionResolution,
     CloseoutImplementationPacketCoverage, CloseoutImplementationPacketCoverageInput,
     CloseoutPacketCoverageDetail, CloseoutReviewRecord, CloseoutVerdict, DecisionLedger,
@@ -186,6 +191,12 @@ pub enum OffdeskCommands {
     RemoteOperator {
         #[command(subcommand)]
         command: RemoteOperatorCommands,
+    },
+
+    /// Inspect remote interactive-session policy without opening launch authority
+    RemoteSession {
+        #[command(subcommand)]
+        command: RemoteSessionCommands,
     },
 
     /// List pending action approvals
@@ -840,6 +851,51 @@ pub enum RemoteOperatorCommands {
 
     /// Render one read-only Offdesk plan detail projection
     Show(RemoteOperatorShowArgs),
+}
+
+#[derive(Subcommand)]
+pub enum RemoteSessionCommands {
+    /// Validate and summarize one owner-only policy without reading profile state
+    #[command(name = "policy-inspect")]
+    PolicyInspect(RemoteSessionPolicyInspectArgs),
+
+    /// Resolve one exact root and executable without creating a request
+    #[command(name = "policy-resolve")]
+    PolicyResolve(RemoteSessionPolicyResolveArgs),
+}
+
+#[derive(Args)]
+pub struct RemoteSessionPolicyInspectArgs {
+    /// Owner-only remote session policy JSON file
+    #[arg(long)]
+    policy: PathBuf,
+
+    /// Output as JSON
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+pub struct RemoteSessionPolicyResolveArgs {
+    /// Owner-only remote session policy JSON file
+    #[arg(long)]
+    policy: PathBuf,
+
+    /// Explicit absolute parent boundary containing every allowed project root
+    #[arg(long)]
+    installation_boundary: PathBuf,
+
+    /// Exact root ID from the policy
+    #[arg(long)]
+    root_id: String,
+
+    /// Exact fixed launch profile ID authorized for the root
+    #[arg(long)]
+    launch_profile_id: String,
+
+    /// Output as JSON
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args)]
@@ -2762,6 +2818,7 @@ pub async fn run(profile: &str, command: OffdeskCommands) -> Result<()> {
         OffdeskCommands::PlanReview(args) => plan_review(profile, args).await,
         OffdeskCommands::PlanLaunchPrep(args) => plan_launch_prep(profile, args).await,
         OffdeskCommands::RemoteOperator { command } => remote_operator(profile, command).await,
+        OffdeskCommands::RemoteSession { command } => remote_session(command),
         OffdeskCommands::Pending(args) => pending(profile, args).await,
         OffdeskCommands::Gate(args) => gate(profile, args).await,
         OffdeskCommands::Launch(args) => launch(profile, args).await,
@@ -2799,6 +2856,26 @@ pub async fn run(profile: &str, command: OffdeskCommands) -> Result<()> {
         OffdeskCommands::CloseoutDecision(args) => closeout_decision(profile, args).await,
         OffdeskCommands::CloseoutRetire(args) => closeout_retire(profile, args).await,
         OffdeskCommands::Wiki(args) => wiki(profile, args).await,
+    }
+}
+
+fn remote_session(command: RemoteSessionCommands) -> Result<()> {
+    match command {
+        RemoteSessionCommands::PolicyInspect(args) => {
+            let loaded = load_remote_session_policy_for_inspection(&args.policy)?;
+            loaded.ensure_source_active()?;
+            present_remote_session_policy_inspection(&loaded.inspection(), args.json)
+        }
+        RemoteSessionCommands::PolicyResolve(args) => {
+            let resolved = resolve_remote_session_policy_target(
+                &args.policy,
+                &args.installation_boundary,
+                &args.root_id,
+                &args.launch_profile_id,
+            )?;
+            resolved.ensure_active()?;
+            present_remote_session_policy_resolution(resolved.report(), args.json)
+        }
     }
 }
 
