@@ -811,6 +811,7 @@ fn write_owner_only_policy(path: &Path) -> Result<()> {
 }
 
 fn owner_only_policy_parent(base: &Path) -> Result<PathBuf> {
+    let base = fs::canonicalize(base)?;
     let parent = base.join("policy-parent");
     fs::create_dir(&parent)?;
     #[cfg(unix)]
@@ -886,6 +887,8 @@ fn write_resolution_policy(policy: &Path, root: &Path, executable: &Path) -> Res
 }
 
 fn resolution_fixture(base: &Path) -> Result<(PathBuf, PathBuf, PathBuf)> {
+    fs::create_dir_all(base)?;
+    let base = fs::canonicalize(base)?;
     let installation = base.join("installation");
     let root = installation.join("projects").join("forager");
     let bin = installation.join("bin");
@@ -905,7 +908,7 @@ fn resolution_fixture(base: &Path) -> Result<(PathBuf, PathBuf, PathBuf)> {
     }
     let executable = bin.join("codex-fixed");
     write_executable(&executable, native_test_executable(true))?;
-    let policy = owner_only_policy_parent(base)?.join("remote-session-policy.json");
+    let policy = owner_only_policy_parent(&base)?.join("remote-session-policy.json");
     write_resolution_policy(&policy, &root, &executable)?;
     Ok((policy, installation, executable))
 }
