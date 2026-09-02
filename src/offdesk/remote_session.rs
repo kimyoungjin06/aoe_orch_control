@@ -2393,6 +2393,142 @@ fn native_linux_elf_machine() -> u16 {
 }
 
 #[cfg(any(target_os = "macos", test))]
+fn select_macos_macho_slice(
+    executable: &mut File,
+    size_bytes: u64,
+    started_at: Instant,
+    budget: Duration,
+    expected_cpu_type: u32,
+) -> Result<(u64, u64)> {
+    const FAT_HEADER_BYTES: u64 = 8;
+    const FAT_ARCH_BYTES: u64 = 20;
+    const FAT_ARCH_64_BYTES: u64 = 32;
+    const MAX_FAT_ARCHITECTURES: u32 = 64;
+
+    ensure!(
+        size_bytes >= 4,
+        "remote session Mach-O executable is truncated"
+    );
+    let mut prefix = [0u8; FAT_HEADER_BYTES as usize];
+    let prefix_bytes = usize::try_from(size_bytes.min(FAT_HEADER_BYTES))
+        .context("remote session Mach-O prefix size overflow")?;
+    read_exact_at_with_budget(
+        executable,
+        0,
+        &mut prefix[..prefix_bytes],
+        started_at,
+        budget,
+    )?;
+    if prefix[..4] == [0xcf, 0xfa, 0xed, 0xfe] {
+        return Ok((0, size_bytes));
+    }
+
+    ensure!(
+        size_bytes >= FAT_HEADER_BYTES,
+        "remote session universal Mach-O header is truncated"
+    );
+    let arch_bytes = match &prefix[..4] {
+        [0xca, 0xfe, 0xba, 0xbe] => FAT_ARCH_BYTES,
+        [0xca, 0xfe, 0xba, 0xbf] => FAT_ARCH_64_BYTES,
+        _ => bail!("remote session executable is not a supported thin or universal 64-bit Mach-O"),
+    };
+    let architecture_count = big_u32(&prefix, 4)?;
+    ensure!(
+        (1..=MAX_FAT_ARCHITECTURES).contains(&architecture_count),
+        "remote session universal Mach-O architecture count is invalid"
+    );
+    let table_bytes = u64::from(architecture_count)
+        .checked_mul(arch_bytes)
+        .and_then(|bytes| bytes.checked_add(FAT_HEADER_BYTES))
+        .context("remote session universal Mach-O table size overflow")?;
+    ensure!(
+        table_bytes <= size_bytes,
+        "remote session universal Mach-O architecture table exceeds the file"
+    );
+
+    let mut slices = Vec::with_capacity(architecture_count as usize);
+    let mut host_slice = None;
+    for index in 0..architecture_count {
+        let entry_offset = FAT_HEADER_BYTES
+            .checked_add(u64::from(index) * arch_bytes)
+            .context("remote session universal Mach-O entry offset overflow")?;
+        let mut entry = [0u8; FAT_ARCH_64_BYTES as usize];
+        read_exact_at_with_budget(
+            executable,
+            entry_offset,
+            &mut entry[..arch_bytes as usize],
+            started_at,
+            budget,
+        )?;
+        let cpu_type = big_u32(&entry, 0)?;
+        let (slice_offset, slice_size, alignment) = if arch_bytes == FAT_ARCH_BYTES {
+            (
+                u64::from(big_u32(&entry, 8)?),
+                u64::from(big_u32(&entry, 12)?),
+                big_u32(&entry, 16)?,
+            )
+        } else {
+            ensure!(
+                big_u32(&entry, 28)? == 0,
+                "remote session universal Mach-O reserved field is not zero"
+            );
+            (
+                big_u64(&entry, 8)?,
+                big_u64(&entry, 16)?,
+                big_u32(&entry, 24)?,
+            )
+        };
+        ensure!(
+            alignment <= 63,
+            "remote session universal Mach-O slice alignment is invalid"
+        );
+        let alignment_bytes = 1u64
+            .checked_shl(alignment)
+            .context("remote session universal Mach-O alignment overflow")?;
+        ensure!(
+            slice_offset >= table_bytes && slice_offset % alignment_bytes == 0,
+            "remote session universal Mach-O slice offset is invalid"
+        );
+        let slice_end = slice_offset
+            .checked_add(slice_size)
+            .context("remote session universal Mach-O slice range overflow")?;
+        ensure!(
+            slice_size >= 32 && slice_end <= size_bytes,
+            "remote session universal Mach-O slice exceeds the file"
+        );
+        ensure!(
+            slices
+                .iter()
+                .all(|(start, end)| slice_end <= *start || slice_offset >= *end),
+            "remote session universal Mach-O slices overlap"
+        );
+        slices.push((slice_offset, slice_end));
+        if cpu_type == expected_cpu_type {
+            ensure!(
+                host_slice.replace((slice_offset, slice_size)).is_none(),
+                "remote session universal Mach-O has multiple host slices"
+            );
+        }
+    }
+    host_slice.context("remote session universal Mach-O has no host architecture slice")
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn read_macho_slice_exact_with_budget(
+    executable: &mut File,
+    slice_offset: u64,
+    relative_offset: u64,
+    buffer: &mut [u8],
+    started_at: Instant,
+    budget: Duration,
+) -> Result<()> {
+    let absolute_offset = slice_offset
+        .checked_add(relative_offset)
+        .context("remote session Mach-O slice offset overflow")?;
+    read_exact_at_with_budget(executable, absolute_offset, buffer, started_at, budget)
+}
+
+#[cfg(any(target_os = "macos", test))]
 fn validate_macos_macho_executable(
     executable: &mut File,
     size_bytes: u64,
@@ -2408,15 +2544,29 @@ fn validate_macos_macho_executable(
     const LC_MAIN: u32 = 0x8000_0028;
     const VM_PROT_EXECUTE: u32 = 0x4;
 
+    let (slice_offset, slice_size) = select_macos_macho_slice(
+        executable,
+        size_bytes,
+        started_at,
+        budget,
+        expected_cpu_type,
+    )?;
     ensure!(
-        size_bytes >= MACHO64_HEADER_BYTES as u64,
+        slice_size >= MACHO64_HEADER_BYTES as u64,
         "remote session Mach-O executable is truncated"
     );
     let mut header = [0u8; MACHO64_HEADER_BYTES];
-    read_exact_at_with_budget(executable, 0, &mut header, started_at, budget)?;
+    read_macho_slice_exact_with_budget(
+        executable,
+        slice_offset,
+        0,
+        &mut header,
+        started_at,
+        budget,
+    )?;
     ensure!(
         header[..4] == [0xcf, 0xfa, 0xed, 0xfe],
-        "remote session executable is not a supported thin 64-bit little-endian Mach-O"
+        "remote session executable host slice is not a supported 64-bit little-endian Mach-O"
     );
     ensure!(
         little_u32(&header, 4)? == expected_cpu_type,
@@ -2440,7 +2590,7 @@ fn validate_macos_macho_executable(
         .checked_add(u64::from(command_bytes))
         .context("remote session Mach-O load-command size overflow")?;
     ensure!(
-        commands_end <= size_bytes,
+        commands_end <= slice_size,
         "remote session Mach-O load commands exceed the file"
     );
 
@@ -2452,7 +2602,14 @@ fn validate_macos_macho_executable(
     let mut runtime_loader = None;
     for _ in 0..command_count {
         let mut command_header = [0u8; 8];
-        read_exact_at_with_budget(executable, offset, &mut command_header, started_at, budget)?;
+        read_macho_slice_exact_with_budget(
+            executable,
+            slice_offset,
+            offset,
+            &mut command_header,
+            started_at,
+            budget,
+        )?;
         let command = little_u32(&command_header, 0)?;
         let command_size = little_u32(&command_header, 4)?;
         ensure!(
@@ -2472,7 +2629,14 @@ fn validate_macos_macho_executable(
                 "remote session Mach-O segment command is truncated"
             );
             let mut segment = [0u8; 72];
-            read_exact_at_with_budget(executable, offset, &mut segment, started_at, budget)?;
+            read_macho_slice_exact_with_budget(
+                executable,
+                slice_offset,
+                offset,
+                &mut segment,
+                started_at,
+                budget,
+            )?;
             let virtual_address = little_u64(&segment, 24)?;
             let virtual_size = little_u64(&segment, 32)?;
             let file_offset = little_u64(&segment, 40)?;
@@ -2501,7 +2665,7 @@ fn validate_macos_macho_executable(
                 .checked_add(virtual_size)
                 .context("remote session Mach-O virtual segment range overflow")?;
             ensure!(
-                file_end <= size_bytes,
+                file_end <= slice_size,
                 "remote session Mach-O segment exceeds the file"
             );
             if init_protection & VM_PROT_EXECUTE != 0 && file_size > 0 {
@@ -2518,7 +2682,14 @@ fn validate_macos_macho_executable(
                 "remote session Mach-O main command has an invalid size"
             );
             let mut main = [0u8; 24];
-            read_exact_at_with_budget(executable, offset, &mut main, started_at, budget)?;
+            read_macho_slice_exact_with_budget(
+                executable,
+                slice_offset,
+                offset,
+                &mut main,
+                started_at,
+                budget,
+            )?;
             main_entry_offset = Some(little_u64(&main, 8)?);
         } else if command == LC_UNIXTHREAD {
             ensure!(
@@ -2530,7 +2701,14 @@ fn validate_macos_macho_executable(
                 "remote session Mach-O thread entry command exceeds its budget"
             );
             let mut thread = vec![0u8; command_size as usize];
-            read_exact_at_with_budget(executable, offset, &mut thread, started_at, budget)?;
+            read_macho_slice_exact_with_budget(
+                executable,
+                slice_offset,
+                offset,
+                &mut thread,
+                started_at,
+                budget,
+            )?;
             thread_entry_address = Some(macho_unixthread_program_counter(
                 &thread,
                 expected_cpu_type,
@@ -2545,7 +2723,14 @@ fn validate_macos_macho_executable(
                 "remote session Mach-O runtime-loader command is invalid"
             );
             let mut dylinker = vec![0u8; command_size as usize];
-            read_exact_at_with_budget(executable, offset, &mut dylinker, started_at, budget)?;
+            read_macho_slice_exact_with_budget(
+                executable,
+                slice_offset,
+                offset,
+                &mut dylinker,
+                started_at,
+                budget,
+            )?;
             let name_offset = little_u32(&dylinker, 8)? as usize;
             ensure!(
                 (12..dylinker.len()).contains(&name_offset),
@@ -2700,6 +2885,26 @@ fn little_u64(bytes: &[u8], offset: usize) -> Result<u64> {
         .try_into()
         .expect("validated u64 slice length");
     Ok(u64::from_le_bytes(value))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn big_u32(bytes: &[u8], offset: usize) -> Result<u32> {
+    let value: [u8; 4] = bytes
+        .get(offset..offset + 4)
+        .context("native executable big-endian u32 field is truncated")?
+        .try_into()
+        .expect("validated big-endian u32 slice length");
+    Ok(u32::from_be_bytes(value))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn big_u64(bytes: &[u8], offset: usize) -> Result<u64> {
+    let value: [u8; 8] = bytes
+        .get(offset..offset + 8)
+        .context("native executable big-endian u64 field is truncated")?
+        .try_into()
+        .expect("validated big-endian u64 slice length");
+    Ok(u64::from_be_bytes(value))
 }
 
 fn ensure_supported_local_remote_session_filesystem(file: &File) -> Result<()> {
@@ -3867,6 +4072,36 @@ mod s2b_tests {
             )?,
             None
         );
+
+        let host_slice = fixture(NativeExecutableRole::Program, 0x8000_0028, 128, 320);
+        let mut other_slice = host_slice.clone();
+        other_slice[4..8].copy_from_slice(&0x0100_000cu32.to_le_bytes());
+        let mut universal = vec![0u8; 704];
+        universal[..4].copy_from_slice(&[0xca, 0xfe, 0xba, 0xbe]);
+        universal[4..8].copy_from_slice(&2u32.to_be_bytes());
+        universal[8..12].copy_from_slice(&0x0100_000cu32.to_be_bytes());
+        universal[16..20].copy_from_slice(&64u32.to_be_bytes());
+        universal[20..24].copy_from_slice(&320u32.to_be_bytes());
+        universal[24..28].copy_from_slice(&4u32.to_be_bytes());
+        universal[28..32].copy_from_slice(&0x0100_0007u32.to_be_bytes());
+        universal[36..40].copy_from_slice(&384u32.to_be_bytes());
+        universal[40..44].copy_from_slice(&320u32.to_be_bytes());
+        universal[44..48].copy_from_slice(&4u32.to_be_bytes());
+        universal[64..384].copy_from_slice(&other_slice);
+        universal[384..704].copy_from_slice(&host_slice);
+        assert_eq!(validate(&universal, NativeExecutableRole::Program)?, None);
+
+        let mut duplicate_host = universal.clone();
+        duplicate_host[8..12].copy_from_slice(&0x0100_0007u32.to_be_bytes());
+        assert!(validate(&duplicate_host, NativeExecutableRole::Program).is_err());
+
+        let mut overlapping = universal.clone();
+        overlapping[36..40].copy_from_slice(&368u32.to_be_bytes());
+        assert!(validate(&overlapping, NativeExecutableRole::Program).is_err());
+
+        let mut missing_host = universal.clone();
+        missing_host[28..32].copy_from_slice(&0x0100_000cu32.to_be_bytes());
+        assert!(validate(&missing_host, NativeExecutableRole::Program).is_err());
 
         let mut misaligned = fixture(NativeExecutableRole::Program, 0x8000_0028, 128, 320);
         misaligned[20..24].copy_from_slice(&97u32.to_le_bytes());

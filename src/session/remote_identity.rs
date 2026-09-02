@@ -407,8 +407,9 @@ mod tests {
             return Ok(());
         }
         let temp = tempdir()?;
-        let project_root = temp.path().join("project-root");
-        let worktree = temp.path().join("worktree");
+        let canonical_temp = std::fs::canonicalize(temp.path())?;
+        let project_root = canonical_temp.join("project-root");
+        let worktree = canonical_temp.join("worktree");
         std::fs::create_dir(&project_root)?;
         std::fs::create_dir(&worktree)?;
         let mut instance = Instance::new("remote-identity", &worktree.to_string_lossy());
